@@ -1,0 +1,20 @@
+# Optional. NOT included by default (see docker-compose.mail.yml / README) - only start this alongside
+# the rest of the stack if you've set `mail:pki:backend: "openbao"` (see config.mongo.ts/config.sql.ts).
+# The default `mail:pki:backend: "local"` needs no extra container at all (LocalX509CertificateAuthority
+# persists its CA key/cert to a local volume instead).
+#
+# Usage: docker compose -f docker-compose.mail.yml -f docker-compose.openbao.yml up
+#
+# This starts OpenBao in dev mode, which is convenient for trying the "openbao" CA backend locally but is
+# NOT a production configuration (dev mode keeps everything in memory, auto-unseals, and disables TLS) -
+# see OpenBao's own docs for a real PKI-mount deployment, and set mail:pki:openbao:{address,token} to
+# match whatever you actually stand up.
+services:
+    openbao:
+        image: openbao/openbao:latest
+        ports:
+            - "8200:8200"
+        environment:
+            BAO_DEV_ROOT_TOKEN_ID: "dev-only-root-token"
+        cap_add:
+            - IPC_LOCK

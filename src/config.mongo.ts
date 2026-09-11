@@ -164,6 +164,44 @@ conf.defaults({
             key_dir: "/var/lib/rspamd/dkim",
             selector: "mail",
         },
+        // Consumed by RapidMX-Key header / MDN receipt processing (KeyringUtils, ReceiptUtils in
+        // @rapidmx/restapi) to decide which Authentication-Results the upstream MTA/DKIM-verifier can be
+        // trusted to have stamped. Left empty by default (fail closed - per @rapidmx/restapi's own design,
+        // an unset trusted_authserv_id means every Authentication-Results header is treated as
+        // unauthenticated, so RapidMX-Key/receipt trust checks pass nothing at all). An admin MUST set this
+        // to the exact authserv-id string their MTA (Postfix/rspamd - see docker-compose.mail.yml) stamps
+        // before enabling E2E encryption or receipt verification in production.
+        security: {
+            trusted_authserv_id: "",
+        },
+        // EncryptionCertificateAuthority backend selection (see server.mongo.ts) plus that backend's own
+        // config. `backend: "local"` (default) needs only `local_ca.*` below; `backend: "openbao"` needs
+        // `openbao.*` instead and a running OpenBao/Vault PKI mount (not started by this repo's
+        // docker-compose by default - see docker-compose.openbao.yml.example).
+        pki: {
+            backend: "local",
+            local_ca: {
+                dir: "/var/lib/rapidmx/pki",
+                subject: "CN=RapidMX Local Encryption CA",
+                validity_days: 397,
+            },
+            openbao: {
+                address: "http://127.0.0.1:8200",
+                mount: "pki",
+                role: "rapidmx",
+                // Never commit a real token here - set via the RAPIDMX_MAIL__PKI__OPENBAO__TOKEN env var
+                // (nconf's `__`-separated env-var convention, see conf.env({ separator: "__" }) above).
+                token: "",
+                timeout_ms: 5_000,
+                serial_map_path: "/var/lib/rapidmx/pki/openbao-serials.json",
+            },
+            // ManualSigningCertificateEnrollment's on-disk store of in-flight CSR enrollments awaiting a
+            // human to paste the CA-issued certificate back in. Automated RFC 8823 ACME enrollment is
+            // tracked separately and not yet an option here.
+            manual_enrollment: {
+                store_path: "/var/lib/rapidmx/pki/manual-enrollments.json",
+            },
+        },
     },
     giphy: {
         api_key: DEFAULT_GIPHY_API_KEY,

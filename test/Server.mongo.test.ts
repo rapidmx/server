@@ -14,7 +14,15 @@ import { MongoMemoryServer } from "mongodb-memory-server";
 import { Logger, sleep } from "@rapidrest/core";
 import { ObjectFactory, Server } from "@rapidrest/service-core";
 import { request } from "@rapidrest/service-core/test";
-import { FsDkimKeyProvider, LocalFsBlobStore, NodeDnsResolver, PostfixSendmailTransport } from "@rapidmx/restapi";
+import {
+    FsDkimKeyProvider,
+    LocalFsBlobStore,
+    LocalX509CertificateAuthority,
+    ManualSigningCertificateEnrollment,
+    NodeDnsResolver,
+    OpenBaoPkiCertificateAuthority,
+    PostfixSendmailTransport,
+} from "@rapidmx/restapi";
 import { MongoTextSearchProvider } from "@rapidmx/restapi/search";
 import { ClamAvScanProvider, RspamdSpamScanProvider } from "@rapidmx/restapi/scan";
 
@@ -39,6 +47,15 @@ describe("Server Tests", () => {
     objectFactory.register(PostfixSendmailTransport, "MailTransport");
     objectFactory.register(NodeDnsResolver, "DnsResolver");
     objectFactory.register(FsDkimKeyProvider, "DkimKeyProvider");
+    // Mirrors server.mongo.ts's config-driven CA backend selection (mail:pki:backend) - not currently
+    // exercised by any mounted route/test, but kept in sync so registering a KeyVault-style route later
+    // doesn't hit a "no class found with name: EncryptionCertificateAuthority" surprise here.
+    const caBackend: string = config.get("mail:pki:backend") || "local";
+    objectFactory.register(
+        caBackend === "openbao" ? OpenBaoPkiCertificateAuthority : LocalX509CertificateAuthority,
+        "EncryptionCertificateAuthority"
+    );
+    objectFactory.register(ManualSigningCertificateEnrollment, "SigningCertificateEnrollment");
     const server: Server = new Server({ config, basePath: "./src/mongo", logger, objectFactory });
 
     beforeAll(async () => {

@@ -13,7 +13,15 @@ import { fileURLToPath } from "url";
 import { dirname } from "path";
 import { JWTUtils, EventUtils, Logger } from "@rapidrest/core";
 import { ObjectFactory, Server } from "@rapidrest/service-core";
-import { FsDkimKeyProvider, LocalFsBlobStore, NodeDnsResolver, PostfixSendmailTransport } from "@rapidmx/restapi";
+import {
+    FsDkimKeyProvider,
+    LocalFsBlobStore,
+    LocalX509CertificateAuthority,
+    ManualSigningCertificateEnrollment,
+    NodeDnsResolver,
+    OpenBaoPkiCertificateAuthority,
+    PostfixSendmailTransport,
+} from "@rapidmx/restapi";
 import { PostgresFullTextSearchProvider } from "@rapidmx/restapi/search";
 import { ClamAvScanProvider, RspamdSpamScanProvider } from "@rapidmx/restapi/scan";
 import {
@@ -56,6 +64,20 @@ objectFactory.register(NodeDnsResolver, "DnsResolver");
 // dkimSelector/dkimPublicKey by hand). See @rapidmx/restapi's dkim/DkimKeyProvider.ts doc comment for the
 // security tradeoff this represents before changing it back.
 objectFactory.register(FsDkimKeyProvider, "DkimKeyProvider");
+// EncryptionCertificateAuthority backend is config-driven (mail:pki:backend) rather than hardcoded like
+// every provider above, since an admin needs to pick this per-deployment without a code change: `"local"`
+// (default) is zero-infra (LocalX509CertificateAuthority persists its CA key/cert to mail:pki:local_ca:dir),
+// `"openbao"` delegates to a self-hosted OpenBao/Vault PKI mount (mail:pki:openbao:*) for production use.
+// See config.sql.ts for the full key list and .claude/NOTES.md for why this one provider breaks from the
+// rest of this file's hardcoded-per-file convention.
+const caBackend: string = config.get("mail:pki:backend") || "local";
+objectFactory.register(
+    caBackend === "openbao" ? OpenBaoPkiCertificateAuthority : LocalX509CertificateAuthority,
+    "EncryptionCertificateAuthority"
+);
+// ManualSigningCertificateEnrollment is the only real (CA-agnostic, human-in-the-loop) implementation
+// available today; automated RFC 8823 ACME enrollment is tracked separately (see @rapidmx/restapi's specs).
+objectFactory.register(ManualSigningCertificateEnrollment, "SigningCertificateEnrollment");
 
 let server: any = undefined;
 

@@ -3990,3 +3990,52 @@ empirically (see below), not assumed:
 - Not committed alongside the unrelated concurrent `package.json`/`yarn.lock` change (JP's own,
   pointing `@rapidmx/restapi` at `link:../restapi` - a separate fix for a separate build error)
   sitting in the working tree at the same time - kept scoped to just this fix.
+
+### 2026-09-11 (continued) — Mount the four E2E-encryption routes from `@rapidmx/restapi` 0.6.0 that were never wired in
+
+`@rapidmx/restapi` has shipped the entire server-side E2E encryption surface (key vault, `.well-known`
+discovery, discovery proxy, encryption policy) since well before 0.6.0, but none of it was mounted here
+- confirmed via a full commit-history review that this was simply never done, not a deliberate
+deferral. **Escrow Scoping and RFC 8823 ACME automated cert enrollment are being built directly in
+`restapi` by a separate effort and are explicitly out of scope for this repo** - don't duplicate that
+work here; only wire up what restapi's current published release already provides.
+
+- Mounted `KeyVaultRoute`/`KeyLookupRoute` (`@ApiRoute("mail/mailboxes")`, same base path as
+  `MailboxRoute` - they only add their own `/:id/keyvault*` / `/:id/keys/lookup` sub-paths onto it),
+  `EncryptionPolicyRoute` (`@ApiRoute("mail/encryption-policy")`), and `KeyDiscoveryRoute` (bare
+  `@Route("/.well-known/rapidmx/keys")`, unauthenticated, no `/api` prefix - same precedent as
+  `MailIngestRoute`) - one file each in `src/mongo/routes/` and `src/sql/routes/`, exact base paths
+  confirmed via restapi's own `test/server-{mongo,sql}/routes/*.ts` registrations rather than guessed.
+- Registered `EncryptionCertificateAuthority` in `server.mongo.ts`/`server.sql.ts`, **config-driven**
+  via `mail:pki:backend` (`"local"` default → `LocalX509CertificateAuthority`, zero-infra; `"openbao"`
+  → `OpenBaoPkiCertificateAuthority`) - **this is the first config-driven DI provider selection
+  anywhere in this repo**; every other provider (`BlobStore`, `SearchProvider`, `SpamScanProvider`,
+  etc.) is hardcoded per file. Don't read the inconsistency as a mistake - it's deliberate, because an
+  admin needs to pick the CA backend per-deployment without a code change, and the alternative
+  (imposing OpenBao as a required new container dependency) wasn't wanted. `SigningCertificateEnrollment`
+  is registered unconditionally as `ManualSigningCertificateEnrollment` (the only real implementation
+  that exists today - CA-agnostic, human pastes the issued cert back in).
+- Added `mail:pki:*` (backend selector + `local_ca`/`openbao`/`manual_enrollment` sub-keys, matching
+  each class's own `@Config` defaults exactly - see restapi's `src/pki/*.ts`) and
+  `mail:security:trusted_authserv_id` (empty default; RapidMX-Key/MDN-receipt DKIM trust checks fail
+  closed until an admin sets this to match their MTA's real `authserv-id`) to `config.mongo.ts`/
+  `config.sql.ts`. Also added `invalidWhereValuesBehavior: { null: "sql-null" }` to both SQL datastores
+  in `config.sql.ts` (`acl` and `sql`) - restapi's README documents this as required on every SQL
+  datastore or `AttachmentExtractionJob`/`SearchIndexJob`/`EasDeviceStateCleanupJob` throw; it was
+  simply missing here.
+- Mirrored the two new DI registrations into `test/Server.{mongo,sql}.test.ts` per this repo's
+  established convention (any `@Inject`-string-token provider needs registering in both the real
+  server script *and* these two test files, since they build their own `Server` instead of importing
+  `server.{mongo,sql}.ts` - see the `DnsResolver` precedent already documented in this file). Verified
+  by running the real test suite with these routes newly mounted, not just by reading the diff -
+  `routes.KeyVaultRoute`/`KeyLookupRoute`/`KeyDiscoveryRoute`/`EncryptionPolicyRoute` and
+  `EncryptionCertificateAuthority`/`SigningCertificateEnrollment` all register and instantiate cleanly
+  at startup, full suite still green (15 files / 103 tests).
+- Did **not** add OpenBao to `docker-compose.mail.yml` (would impose a new container dependency by
+  default). Added a separate opt-in `docker-compose.openbao.yml` (dev-mode OpenBao, clearly marked
+  not-for-production) an admin can layer in with `-f` only if they set `mail:pki:backend: "openbao"`.
+- Scope note for future sessions: this pass deliberately did not implement DNSSEC validation, OCSP/CRL
+  revocation checking, or client-side (web-client/react-shared/electron-client) E2E work - those are
+  either owned elsewhere (escrow/ACME in `restapi`) or were explicitly deferred by JP mid-session
+  (client-side spec implementation is a separate, much larger follow-on; see the approved plan at
+  session time for the full phase breakdown if picking this back up).
