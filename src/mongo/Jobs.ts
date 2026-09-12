@@ -15,6 +15,7 @@ export {
     ExternalShareExpirationJobMongo,
     MailboxImportJobMongo,
     MailboxQuotaRecalcJobMongo,
+    MatterExportJobMongo,
     MeetingSchedulingJobMongo,
     QuarantineRetentionJobMongo,
     RetentionEnforcementJobMongo,

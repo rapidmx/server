@@ -15,6 +15,7 @@ export {
     ExternalShareExpirationJobSQL,
     MailboxImportJobSQL,
     MailboxQuotaRecalcJobSQL,
+    MatterExportJobSQL,
     MeetingSchedulingJobSQL,
     QuarantineRetentionJobSQL,
     RetentionEnforcementJobSQL,

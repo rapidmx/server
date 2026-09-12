@@ -4488,3 +4488,23 @@ page
   not yet built). Client-side work (a third section on `apps/www/settings/privacy` for self-service
   erasure requests, plus the new shared `apps/admin/data-requests` page hosting admin-mediated
   export/import creation and erasure approve/deny review) is `web-client`'s own Phase 6 entry, same date.
+
+### 2026-09-12 (continued) — Phase 7: eDiscovery - Matter export + Matter-scoped search (Group F)
+
+- New `src/mongo/routes/MatterExportRequestRoute.ts`/`src/sql/routes/MatterExportRequestRoute.ts`, mounted
+  at `escrow/matter-export-requests` - one-line subclasses of restapi's
+  `MatterExportRequestRouteMongo`/`SQL`. Purely holder-facing (`requireEscrowHolder()` against the
+  matter's own `escrowScopeId`), unlike every other async-request route this batch added - no
+  self-service/mailbox-owner path exists or is meant to.
+- New `src/mongo/routes/MatterSearchRoute.ts`/`src/sql/routes/MatterSearchRoute.ts`, mounted at
+  `escrow/matter-search` - same one-line-subclass pattern, also holder-gated. Fans out the same
+  `SearchProvider` the existing per-mailbox `mail/search` route already uses, once per the matter's own
+  custodian mailboxes; response is keyed by `mailboxUid`, one page per custodian - no merged cross-mailbox
+  ranking or cursor pagination, matching the route's own documented scope trim.
+- Added `MatterExportJobMongo`/`SQL` to `Jobs.ts`. No new DI registration needed - reuses the same
+  `"BlobStore"` token every other export/import job in this batch already required.
+- This closes out the full seven-feature compliance-roadmap batch (Legal Hold, non-owner access auditing,
+  retention policy, GDPR export, mailbox import, GDPR erasure, eDiscovery). Client-side work (two new
+  sections on `apps/escrow/matters/[uid].tsx` - "Export this matter" and "Search this matter's
+  custodians" - plus the new `matterExportApi.ts`/`matterSearchApi.ts` react-shared wrappers) is
+  `web-client`'s/`react-shared`'s own Phase 7 entry, same date.
