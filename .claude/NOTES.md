@@ -4168,3 +4168,12 @@ registration).
 - `test/Server.mongo.test.ts`/`test/Server.sql.test.ts`: mirrored the DI registration but kept it
   hardcoded to `LocalFsBlobStore` regardless of config, same reasoning as the existing
   `NodeDnsResolver`-in-tests convention (no live network calls from a test run).
+
+### 2026-09-12 (continued) — Phase 3 of consuming restapi's 11 post-0.6.0 commits: Label routes
+
+New `src/mongo/routes/LabelRoute.ts`/`src/sql/routes/LabelRoute.ts` - one-line `@ApiRoute("mail/labels")`
+subclasses of restapi's `LabelRouteMongo`/`SQL`, the exact same pattern as every other scoped-child route
+in this repo (`MailSignatureRoute.ts` etc.) - no other server-side wiring needed. Confirmed
+`test/Server.mongo.test.ts`/`test/Server.sql.test.ts` still start/stop/restart cleanly with the new route
+mounted. Client-side work (Labels settings page, message label-assignment UI) is in `react-shared`'s and
+`web-client`'s own NOTES.md, same date.
