@@ -4363,3 +4363,29 @@ session: `yarn build` in `restapi` → `yarn patch @rapidmx/restapi` → replace
   unlocks (2 needed no consuming-side code at all - Legal Hold enforcement and non-owner-access
   auditing - the rest are new async-request entities: retention policy, GDPR export, mailbox import,
   GDPR erasure, and eDiscovery Matter export/search).
+
+### 2026-09-12 (continued) — Phase 1: auditing non-owner mailbox/message access (Group B) - verified,
+zero code needed
+
+`GET /mailboxes/:id` and `GET /messages/:id/content` now record `AuditAction.MAILBOX_ACCESSED`/
+`MESSAGE_CONTENT_ACCESSED` server-side whenever the caller isn't the mailbox's own owner - entirely
+transparent, no new fields/routes/DI/config, riding on the pre-existing `AuditLogEntry`/
+`recordAuditLog()`/`/mail/audit-log` machinery already mounted. Confirmed both new action strings are
+present in the patched restapi build (`node_modules/@rapidmx/restapi/dist/types/models/types.d.ts`), and
+confirmed `web-client`'s existing `apps/admin/audit-log/index.tsx` renders `entry.action` as plain text
+and `entry.details` as raw `JSON.stringify` with no hardcoded action list - so these new rows show up the
+moment this batch's patch is live, with nothing to build on either side. Verification-only phase; no
+files changed.
+
+### 2026-09-12 (continued) — Phase 2: Legal Hold enforcement (Group A) - verified, zero server code
+needed
+
+A permanent (`purge=true`) message delete or any mailbox delete now 409s
+(`"This action is blocked by an active legal hold: <matter uid>."`) if the mailbox is a custodian on an
+open `Matter`. Confirmed transparent to this repo by reading both sides directly rather than assuming:
+`server`'s own `src/mongo/routes/MailboxRoute.ts`/`MessageRoute.ts` are (and remain) plain one-line
+`extends MailboxRouteMongo {}`/`extends MessageRouteMongo {}` subclasses with zero overrides, and
+restapi's own `MailboxRouteMongo`/`MessageRouteMongo` already set `matterClass = MatterMongo` themselves
+- so this "just worked" the moment Phase 0's patch landed, no route/DI/config change needed here.
+Verification-only phase on this side; the one real gap (nothing in `web-client` could actually trigger a
+mailbox delete to exercise this) is `web-client`'s own Phase 2 entry, same date.
