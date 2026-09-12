@@ -4538,3 +4538,28 @@ page
     back clean - explicitly checked and noted rather than omitted. A separate, client-side finding from
     the same review round (a stale-response race in several async-request list sections) is
     `web-client`'s own NOTES.md entry, same date - no `server` change needed for it.
+
+- **2026-09-12 (continued) — Fixed the two missing job registrations flagged as an aside during the
+  adversarial review above: `OofReplySuppressionCleanupJob` and `ScheduledSendJob` were never registered in
+  either `Jobs.ts`, despite restapi already exporting both from `jobs/mongo/index.js`/`jobs/sql/index.js`.
+  Unrelated to the compliance-roadmap batch itself (both predate it), but real, user-visible bugs, not
+  cosmetic gaps:**
+  - **`ScheduledSendJob` is the actual delivery mechanism for an already-shipped `web-client` feature**
+    ("Schedule send" in Compose, `ScheduleSendPicker.tsx`/`ComposeWindow.tsx`'s `handleScheduleSend()`,
+    `MessageDetailPane.tsx`'s "Scheduled for ..." banner and cancel action). `BaseMessageRoute.send()`'s
+    deferred-send branch sets `scheduledSendTime` on the message and leaves it in Outbox; only this job
+    ever polls for a due `scheduledSendTime` and actually relays it. With the job never running, a user
+    could schedule a send, see it confirmed as "Scheduled for ...", and it would simply **never send** -
+    silently stuck in Outbox forever, with no error surfaced anywhere. Verified its dependencies
+    (`@Inject("BlobStore")`, `@Inject("MailTransport")`, `@Inject(ScanPipeline)`,
+    `@Inject(NotificationUtils)`) are all either already-registered string tokens or self-resolvable
+    concrete classes - no new DI registration needed, matching every other job added this session.
+  - **`OofReplySuppressionCleanupJob`** purges aging `OofReplySuppression` rows (written elsewhere by the
+    out-of-office auto-reply path to avoid re-replying to the same sender repeatedly) once they're past
+    `retention_days`. Those rows were already being created in normal operation; without this job they
+    just accumulated unbounded - an unbounded storage-growth bug, lower severity than the scheduled-send
+    gap but real. Same "no new DI token" shape as `QuarantineRetentionJob`, the pattern it's structurally
+    copied from.
+  - Added both to `src/mongo/Jobs.ts`/`src/sql/Jobs.ts`'s re-export lists, alphabetically. Full suite
+    re-verified at 146/146, plus a direct `Server.mongo.test.ts`/`Server.sql.test.ts` start/stop/restart
+    check to confirm both jobs actually instantiate cleanly under the existing DI registrations.

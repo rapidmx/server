@@ -17,8 +17,10 @@ export {
     MailboxQuotaRecalcJobSQL,
     MatterExportJobSQL,
     MeetingSchedulingJobSQL,
+    OofReplySuppressionCleanupJobSQL,
     QuarantineRetentionJobSQL,
     RetentionEnforcementJobSQL,
     ScanQueueJobSQL,
+    ScheduledSendJobSQL,
     SearchIndexJobSQL,
 } from "@rapidmx/restapi/sql";
