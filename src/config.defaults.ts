@@ -40,6 +40,23 @@ export const DEFAULT_GIPHY_API_KEY = "ChangeMeGiphyApiKey";
  * `config.sql.ts` (the default value) and `BaseMailComposeRoute` (the fallback when unset) agree on it.
  */
 export const DEFAULT_MAX_COMPOSE_ATTACHMENT_BYTES = 25_000_000;
+/**
+ * Default cap, in bytes, on any single raw HTTP request body (`max_body_size`, read by
+ * `@rapidrest/service-core`'s own `Server.js`) — the framework's own built-in default is a much smaller
+ * 10 MiB, buffered entirely in memory per request before any route handler runs. Raised here to 100 MiB
+ * so `BaseMailboxImportRoute.create()` (a raw-bytes Mbox/PST upload, `mail:mailbox-import-requests`) can
+ * actually accept a realistically-sized personal mailbox export - a real day-to-day Mbox/PST archive
+ * routinely exceeds 10MB, so leaving the framework default in place would make the entire import feature
+ * unusable in practice. Kept deliberately moderate rather than raised further: this framework buffers a
+ * request's whole body in memory before the route ever sees it, so a much higher global cap widens the
+ * memory-exhaustion blast radius of *every* endpoint, not just this one - there is no per-route override,
+ * only this single global value. A genuinely multi-gigabyte PST archive (a decades-old, never-archived
+ * mailbox) will still exceed this and needs an operator to raise `max_body_size` further for their own
+ * deployment - a disclosed, real limitation, not a bug. As a side effect, this also fixes a pre-existing,
+ * unrelated gap: a single mail attachment upload (`uploadAttachment`) larger than 10MB already 413'd
+ * before this change, well under `mail:compose:max_attachment_bytes`'s own 25MB budget above.
+ */
+export const DEFAULT_MAX_BODY_SIZE_BYTES = 100 * 1024 * 1024;
 
 /** Minimal shape of the `nconf` config object this guard needs — matches `config.sql.ts`/`config.mongo.ts`'s export. */
 export interface SecretsConfig {

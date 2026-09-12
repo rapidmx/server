@@ -4429,3 +4429,36 @@ mailbox delete to exercise this) is `web-client`'s own Phase 2 entry, same date.
 - Client-side self-service UI (`apps/www/settings/privacy`) is `web-client`'s own Phase 4 entry, same
   date; the admin-mediated create/browse UI is deferred to the shared `apps/admin/data-requests` page
   built in Phase 6.
+
+### 2026-09-12 (continued) — Phase 5: Mailbox import (Mbox + PST) (Group D2)
+
+- New `src/mongo/routes/MailboxImportRequestRoute.ts`/`src/sql/routes/MailboxImportRequestRoute.ts`,
+  mounted at `mail/mailbox-import-requests` - one-line subclasses of restapi's
+  `MailboxImportRequestRouteMongo`/`SQL`. `create()` takes the uploaded file's **raw bytes as the request
+  body** (`req.rawBody`), with `format`/`targetFolderUid`/`mailboxUid` as query-string params, not JSON -
+  same convention `BaseMailIngestRoute.deliver()` already uses.
+- Added `MailboxImportJobMongo`/`SQL` to `Jobs.ts`. Needs no new DI registration - `"BlobStore"` is
+  already required, and its other injected dependency (`ScanPipeline`, class-token not string-token) is
+  already resolvable via the existing `ScanQueueJob` wiring.
+- **A real, concrete constraint found and fixed, not just noted**: `@rapidrest/service-core`'s own HTTP
+  layer (`http/uWS/Adapters.js`) buffers an entire request body in memory before any route handler runs,
+  and defaults to a **10 MiB** cap (`max_body_size` config key) when nothing overrides it - confirmed by
+  reading `readBody()`/`Server.js` directly, not assumed. A real personal Mbox/PST mailbox archive
+  routinely exceeds that by a wide margin, which would have made this entire feature 413 on any
+  realistically-sized upload. Added `DEFAULT_MAX_BODY_SIZE_BYTES` (100 MiB) to `config.defaults.ts`,
+  applied via `max_body_size` in both `config.mongo.ts`/`config.sql.ts` - a deliberately moderate
+  increase, not a large one: this framework has no per-route override and buffers the *whole* body in
+  memory, so raising the cap widens every endpoint's memory-exhaustion blast radius, not just this one. A
+  genuinely multi-gigabyte PST (a decades-old, never-archived mailbox) will still exceed 100 MiB and needs
+  an operator to raise this further for their own deployment - a disclosed, real limitation of a
+  buffer-the-whole-body architecture, not something this phase can fully close. Side effect, not the
+  point of this change: this also happens to fix a pre-existing, unrelated gap where a single mail
+  attachment upload (`uploadAttachment`) larger than 10MB already 413'd, despite
+  `mail:compose:max_attachment_bytes`'s own separate 25MB compose-time budget implying attachments that
+  size were always meant to be supported.
+- Full suite re-verified stable at 146/146 (same transient parallel-test-file flakiness as Phases 3-4,
+  confirmed not a real regression by running `test/Server.mongo.test.ts`/`test/Server.sql.test.ts` in
+  isolation, which passed cleanly, before re-running the full suite to a clean pass).
+- Client-side self-service UI (a second section on `apps/www/settings/privacy`, plus a new
+  `mailboxImportApi.ts` raw-upload wrapper) is `web-client`'s own Phase 5 entry, same date; admin-mediated
+  import is deferred to the shared `apps/admin/data-requests` page built in Phase 6.

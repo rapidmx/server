@@ -11,6 +11,7 @@ import {
     DEFAULT_COOKIE_SECRET,
     DEFAULT_GIPHY_API_KEY,
     DEFAULT_MAIL_INGEST_SECRET,
+    DEFAULT_MAX_BODY_SIZE_BYTES,
     DEFAULT_MAX_COMPOSE_ATTACHMENT_BYTES,
 } from "./config.defaults.js";
 
@@ -33,6 +34,9 @@ conf.defaults({
     version: packageInfo.version,
     base_path: join(_dirname, "sql"),
     cookie_secret: DEFAULT_COOKIE_SECRET,
+    // See DEFAULT_MAX_BODY_SIZE_BYTES's own doc comment - the framework's own built-in default (10 MiB)
+    // is too small for a real Mbox/PST mailbox-import upload.
+    max_body_size: DEFAULT_MAX_BODY_SIZE_BYTES,
     cors: {
         origins: ["http://localhost:3000"],
     },

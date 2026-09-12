@@ -12,6 +12,7 @@ export {
     DomainVerificationJobSQL,
     EasDeviceStateCleanupJobSQL,
     ExternalShareExpirationJobSQL,
+    MailboxImportJobSQL,
     MailboxQuotaRecalcJobSQL,
     MeetingSchedulingJobSQL,
     QuarantineRetentionJobSQL,
