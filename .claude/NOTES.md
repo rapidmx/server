@@ -4177,3 +4177,35 @@ in this repo (`MailSignatureRoute.ts` etc.) - no other server-side wiring needed
 `test/Server.mongo.test.ts`/`test/Server.sql.test.ts` still start/stop/restart cleanly with the new route
 mounted. Client-side work (Labels settings page, message label-assignment UI) is in `react-shared`'s and
 `web-client`'s own NOTES.md, same date.
+
+### 2026-09-12 (continued) — Phase 4 of consuming restapi's 11 post-0.6.0 commits: RFC 8823 ACME
+signing-certificate enrollment
+
+- `server.mongo.ts`/`server.sql.ts`: `SigningCertificateEnrollment` is now config-driven
+  (`mail:pki:signing_enrollment:backend`: `"manual"` default / `"rfc8823"`), the same
+  `mail:pki:backend`/`mail:blob:backend` pattern again - `ManualSigningCertificateEnrollment` (a stub
+  that just throws) stays the safe default; `Rfc8823AcmeSigningCertificateEnrollment` opts in explicitly.
+- `config.mongo.ts`/`config.sql.ts`: new `mail:pki:signing_enrollment` block plus
+  `mail:pki:rfc8823:{directory_url,contact_email,store_dir}`, and a new top-level
+  `mail:jobs:acme_enrollment_driver:{schedule,expiry_warning_days}` block for the driver job below.
+- **A real, load-bearing gap found and fixed**: `AcmeEnrollmentDriverJobMongo`/`SQL` (the job that
+  advances every pending enrollment and auto-installs an issued certificate into the mailbox's
+  `KeyVault`) was missing from `src/mongo/Jobs.ts`/`src/sql/Jobs.ts`'s re-export lists. This repo's
+  `ClassLoader`/`ObjectFactory` only discovers jobs through those re-exports at startup - without this
+  fix, switching the DI backend to `"rfc8823"` alone would have silently left the job never running at
+  all, with no error anywhere to point at why. Verified the fix actually works (not just "looks right"):
+  ran `test/Server.mongo.test.ts`/`test/Server.sql.test.ts` and grepped the full output for "acme",
+  confirming both jobs log "Registering class" → "Starting service" → "Stopping background service" on
+  every start/stop cycle. (A first look truncated to `tail -40` missed this entirely and briefly looked
+  like a regression - the full untruncated grep is what actually confirmed it.)
+- `test/Server.mongo.test.ts`/`test/Server.sql.test.ts`: mirrored the DI registration but kept it
+  hardcoded to `ManualSigningCertificateEnrollment`, same reasoning as every other backend-selector test
+  registration in this file - a test run has no business making live ACME calls against a real CA.
+- New REST endpoints this unlocks (`BaseKeyVaultRoute`, already mounted): `POST
+  /:id/keyvault/keys/sign-enrollment` and `GET /:id/keyvault/keys/sign-enrollment/:enrollmentId` - no new
+  route class needed here, they ride on the existing `KeyVaultRoute` mount.
+- Entirely invisible on the mail side by design: the CA's challenge email is intercepted before ever
+  being filed to a folder, and the automated reply goes out via direct transport relay, never persisted
+  as a `Message` - no inbox/Sent-folder UI treatment needed anywhere in the client repos.
+- Client-side work (keypair/CSR generation, the "Enable digital signatures" Settings UI, and the
+  asynchronous status-polling) is in `react-shared`'s and `web-client`'s own NOTES.md, same date.

@@ -63,6 +63,9 @@ describe("Server Tests", () => {
         caBackend === "openbao" ? OpenBaoPkiCertificateAuthority : LocalX509CertificateAuthority,
         "EncryptionCertificateAuthority"
     );
+    // Always ManualSigningCertificateEnrollment here, even though server.sql.ts's real registration is
+    // config-driven (mail:pki:signing_enrollment:backend) - a test run has no business making live ACME
+    // network calls against a real certificate authority.
     objectFactory.register(ManualSigningCertificateEnrollment, "SigningCertificateEnrollment");
     const server: Server = new Server({ config, basePath: "./src/sql", logger, objectFactory });
 

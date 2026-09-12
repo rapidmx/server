@@ -236,11 +236,36 @@ conf.defaults({
                 timeout_ms: 5_000,
                 serial_map_path: "/var/lib/rapidmx/pki/openbao-serials.json",
             },
+            // SigningCertificateEnrollment backend selection (see server.mongo.ts) plus that backend's
+            // own config. `signing_enrollment.backend: "manual"` (default) needs only
+            // `manual_enrollment.*` below; `"rfc8823"` needs `rfc8823.*` instead.
+            signing_enrollment: {
+                backend: "manual",
+            },
             // ManualSigningCertificateEnrollment's on-disk store of in-flight CSR enrollments awaiting a
-            // human to paste the CA-issued certificate back in. Automated RFC 8823 ACME enrollment is
-            // tracked separately and not yet an option here.
+            // human to paste the CA-issued certificate back in.
             manual_enrollment: {
                 store_path: "/var/lib/rapidmx/pki/manual-enrollments.json",
+            },
+            // Rfc8823AcmeSigningCertificateEnrollment's config - real RFC 8823 email-reply-00 ACME
+            // automation. `directory_url` defaults to a public ACME CA that supports this challenge
+            // type; `contact_email` is optional (sent to the CA, not this deployment's own mailboxes);
+            // `store_dir` persists the one ACME account key/URL for the whole deployment plus
+            // per-enrollment state, mirroring `local_ca.dir`'s own disk-persistence pattern.
+            rfc8823: {
+                directory_url: "https://acme.castle.cloud/acme/directory",
+                contact_email: "",
+                store_dir: "/var/lib/rapidmx/pki/rfc8823",
+            },
+        },
+        // AcmeEnrollmentDriverJobMongo's own schedule/config - registered unconditionally regardless of
+        // `mail:pki:signing_enrollment:backend` (see server.mongo.ts's own comment on why), so this is
+        // harmless to leave at its default even when RFC 8823 automation isn't enabled.
+        jobs: {
+            acme_enrollment_driver: {
+                // Every 5 minutes, cron syntax (seconds field included).
+                schedule: "0 */5 * * * *",
+                expiry_warning_days: 30,
             },
         },
     },

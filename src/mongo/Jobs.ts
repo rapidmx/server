@@ -5,6 +5,7 @@
 // The following re-exports needed job classes so that they are properly picked up by
 // the ClassLoader (and ObjectFactory) during server startup
 export {
+    AcmeEnrollmentDriverJobMongo,
     AttachmentExtractionJobMongo,
     CalendarReminderJobMongo,
     DomainVerificationJobMongo,

@@ -21,6 +21,7 @@ import {
     NodeDnsResolver,
     OpenBaoPkiCertificateAuthority,
     PostfixSendmailTransport,
+    Rfc8823AcmeSigningCertificateEnrollment,
     S3BlobStore,
 } from "@rapidmx/restapi";
 import { PostgresFullTextSearchProvider } from "@rapidmx/restapi/search";
@@ -87,9 +88,18 @@ objectFactory.register(
     caBackend === "openbao" ? OpenBaoPkiCertificateAuthority : LocalX509CertificateAuthority,
     "EncryptionCertificateAuthority"
 );
-// ManualSigningCertificateEnrollment is the only real (CA-agnostic, human-in-the-loop) implementation
-// available today; automated RFC 8823 ACME enrollment is tracked separately (see @rapidmx/restapi's specs).
-objectFactory.register(ManualSigningCertificateEnrollment, "SigningCertificateEnrollment");
+// SigningCertificateEnrollment backend is config-driven (mail:pki:signing_enrollment:backend) rather
+// than hardcoded, same pattern as mail:pki:backend above: `"manual"` (default) is the CA-agnostic,
+// human-in-the-loop flow (mail:pki:manual_enrollment:store_path); `"rfc8823"` automates public-CA
+// enrollment end to end via RFC 8823 email-reply-00 ACME (mail:pki:rfc8823:*) - see config.sql.ts for
+// the full key list. AcmeEnrollmentDriverJobSQL (src/sql/Jobs.ts) is registered unconditionally
+// regardless of this setting - it feature-detects the injected SigningCertificateEnrollment and is a
+// no-op under the manual/default backend, so there's nothing to gate here.
+const signingEnrollmentBackend: string = config.get("mail:pki:signing_enrollment:backend") || "manual";
+objectFactory.register(
+    signingEnrollmentBackend === "rfc8823" ? Rfc8823AcmeSigningCertificateEnrollment : ManualSigningCertificateEnrollment,
+    "SigningCertificateEnrollment"
+);
 
 let server: any = undefined;
 
