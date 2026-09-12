@@ -3,10 +3,10 @@
 ///////////////////////////////////////////////////////////////////////////////
 
 /**
- * Resolves the on-disk path to the `@rapidmx/web-client` package's `www`/`admin` app directory -
+ * Resolves the on-disk path to the `@rapidmx/web-client` package's `www`/`admin`/`escrow` app directory -
  * portal-linked for now (`portal:../web-client` in package.json — see `.claude/NOTES.md`'s 2026-09-10
- * spike entry for the full rationale/history). Used as `WwwRoute`/`AdminConsoleRoute`'s `appDir`
- * override in place of the old local `apps/www`/`apps/admin`.
+ * spike entry for the full rationale/history). Used as `WwwRoute`/`AdminConsoleRoute`/`EscrowConsoleRoute`'s
+ * `appDir` override in place of the old local `apps/www`/`apps/admin`/`apps/escrow`.
  *
  * Mirrors `@rapidrest/react`'s own `ReactRoute.resolveAppFile()` `hasTsxContext` detection exactly: in
  * a tsx/test context, page files are imported directly as `.tsx` straight from the package's own `apps/`
@@ -17,7 +17,7 @@
  * `node_modules` package's independent `dist/` — hence resolving the correct directory explicitly here
  * rather than relying on it.
  */
-export function webClientAppDir(name: "www" | "admin"): string {
+export function webClientAppDir(name: "www" | "admin" | "escrow"): string {
     const mainEntry: string = process.argv[1] ?? "";
     const hasTsxContext: boolean =
         mainEntry.endsWith(".ts") ||

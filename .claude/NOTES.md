@@ -4262,3 +4262,34 @@ mounting restapi's four new route classes, plus a new gap-filling proxy route
 - Client-side work (mailbox-owner escrow wrapping UI, admin/holder UI for
   EscrowScope/Matter/EscrowAccessRequest/audit log) is Phase 5b/5c, not yet built - tracked as the next
   step in this batch.
+
+### 2026-09-12 (continued) — Phase 5c of consuming restapi's 11 post-0.6.0 commits: Escrow Scoping,
+mounting `@rapidmx/web-client`'s new holder-facing console
+
+`web-client` built two new UI areas on top of Phase 5a's mounted routes: an admin `EscrowScope` CRUD area
+under its existing `apps/admin` (reachable through `AdminConsoleRoute`, already mounted - no `server`
+change needed there), and a brand-new **holder-facing** `apps/escrow` app for `Matter`/
+`EscrowAccessRequest`/audit-log work - deliberately its own top-level app, not nested under `apps/admin`,
+since `specs/end-to-end_encryption.md`'s "Separation of duties" treats holding an `EscrowScope` as a role
+distinct from server administration (a trusted admin with no holder grant gets the same 403 from every
+holder-gated restapi route as anyone else - see Phase 5a's own entry above).
+
+- `apps/escrow` needed its own server-side mount or it would have been unreachable dead code - the same
+  `ReactRoute`/`webClientAppDir()` mechanism `AdminConsoleRoute`/`WwwRoute` already use, just pointed at a
+  third app directory:
+  - `src/routes/webClientAppDir.ts`: widened from `"www" | "admin"` to `"www" | "admin" | "escrow"` - no
+    other change, the function's own path-resolution logic already generalizes.
+  - `src/mongo/routes/EscrowConsoleRoute.ts`/`src/sql/routes/EscrowConsoleRoute.ts` (new): `@Route("/escrow")`,
+    one-line-per-backend subclasses of `ReactRoute`, structurally identical to `AdminConsoleRoute` except
+    `fetchProps()` omits `impersonationBaseUrl` - this console never impersonates a mailbox owner, it only
+    ever acts as the signed-in holder themselves.
+- Confirmed via `test/Server.mongo.test.ts`/`test/Server.sql.test.ts` that both new routes register and
+  the server starts/stops cleanly with them mounted, same as every other route addition this session.
+- `web-client`'s own NOTES.md (same date) has the full UI breakdown: the admin `EscrowScope` pages, the
+  holder-facing `Matter`/`EscrowAccessRequest`/audit-log pages, and a documented, deliberate limitation of
+  `apps/escrow`'s own access gate (there is no clean canary endpoint to distinguish "holds nothing" from
+  "holds no scope at all" up front, unlike `AdminShell`'s trusted-role probe - every actual holder-gated
+  action still enforces server-side and surfaces its own 403).
+- This closes out all five phases of consuming restapi's 11 post-`v0.6.0` commits (S3BlobStore, Archive
+  folder, Label entity, RFC 8823 ACME signing enrollment, Escrow Scoping) - every phase implemented,
+  tested, and committed across `server`/`react-shared`/`web-client` per JP's own approved plan.
