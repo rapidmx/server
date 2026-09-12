@@ -21,6 +21,7 @@ import {
     NodeDnsResolver,
     OpenBaoPkiCertificateAuthority,
     PostfixSendmailTransport,
+    S3BlobStore,
 } from "@rapidmx/restapi";
 import { PostgresFullTextSearchProvider } from "@rapidmx/restapi/search";
 import { ClamAvScanProvider, RspamdSpamScanProvider } from "@rapidmx/restapi/scan";
@@ -53,7 +54,11 @@ const objectFactory = new ObjectFactory(config, logger);
 // @rapidmx/restapi's routes/jobs pull these via string-token @Inject(...) — they only resolve once
 // something has explicitly registered a concrete implementation under that exact token (there is no
 // config-driven auto-wiring for these). See @rapidmx/restapi's own README ("Usage") and .claude/NOTES.md.
-objectFactory.register(LocalFsBlobStore, "BlobStore");
+// BlobStore backend is config-driven (mail:blob:backend) rather than hardcoded, same pattern as
+// mail:pki:backend below: `"local"` (default) needs only `mail:blob:local:root`; `"s3"` delegates to an
+// S3-compatible bucket (mail:blob:s3:*) for production use - see config.sql.ts for the full key list.
+const blobBackend: string = config.get("mail:blob:backend") || "local";
+objectFactory.register(blobBackend === "s3" ? S3BlobStore : LocalFsBlobStore, "BlobStore");
 objectFactory.register(PostgresFullTextSearchProvider, "SearchProvider");
 objectFactory.register(RspamdSpamScanProvider, "SpamScanProvider");
 objectFactory.register(ClamAvScanProvider, "AvScanProvider");

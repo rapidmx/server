@@ -4149,3 +4149,22 @@ repeatedly for `react-shared` this session, applied to `restapi` for the first t
 - This step is infrastructure only - no new routes/config/DI wiring yet. See the dated entries below
   for each of the five features this patch unlocks (S3 storage, Archive folder, Labels, RFC 8823 ACME,
   Escrow Scoping), landed as separate phases/commits per JP's own approved plan.
+
+### 2026-09-12 (continued) — Phase 1: config-driven S3BlobStore
+
+Smallest, lowest-risk phase of the batch above - deployment-only, zero client-side surface (`BlobStore`
+is transparent to every consumer; nothing about *where* blobs live is ever visible past this one DI
+registration).
+
+- `server.mongo.ts`/`server.sql.ts`: `BlobStore` backend is now config-driven (`mail:blob:backend`:
+  `"local"` default / `"s3"`), the exact same pattern `mail:pki:backend` already established for
+  `EncryptionCertificateAuthority` - `S3BlobStore` needs no new `server` dependency (`@aws-sdk/client-s3`
+  was already an optional peer dep of restapi as of `v0.6.0`, for `SesMailTransport`).
+- `config.mongo.ts`/`config.sql.ts`: new `mail:blob:{backend, s3:{bucket,region,prefix,endpoint,
+  force_path_style,access_key_id,secret_access_key}}` alongside the pre-existing `mail:blob:local:root`.
+  Access key pair left empty by default (falls back to the standard AWS credential chain/IAM role, same
+  posture `SesMailTransport` already uses) - `S3BlobStore` itself throws if only one of the pair is set,
+  so this repo doesn't need to duplicate that validation.
+- `test/Server.mongo.test.ts`/`test/Server.sql.test.ts`: mirrored the DI registration but kept it
+  hardcoded to `LocalFsBlobStore` regardless of config, same reasoning as the existing
+  `NodeDnsResolver`-in-tests convention (no live network calls from a test run).

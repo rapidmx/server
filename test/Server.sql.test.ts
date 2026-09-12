@@ -43,6 +43,8 @@ describe("Server Tests", () => {
     // than importing that script, so it must register the same @rapidmx/restapi string-token dependencies
     // itself or any route touching them (BlobStore/SearchProvider/SpamScanProvider/AvScanProvider/
     // MailTransport/DnsResolver/DkimKeyProvider) fails to instantiate.
+    // Always LocalFsBlobStore here, even though server.sql.ts's real registration is config-driven
+    // (mail:blob:backend) - a test run has no business making live network S3 calls.
     objectFactory.register(LocalFsBlobStore, "BlobStore");
     objectFactory.register(PostgresFullTextSearchProvider, "SearchProvider");
     objectFactory.register(RspamdSpamScanProvider, "SpamScanProvider");

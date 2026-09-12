@@ -125,12 +125,35 @@ conf.defaults({
         branding: {
             public_url: "/api/mail",
         },
+        // BlobStore backend selection (see server.sql.ts) plus that backend's own config.
+        // `backend: "local"` (default) needs only `local.root` below; `backend: "s3"` needs `s3.*`
+        // instead and a real S3-compatible bucket (AWS S3, MinIO, R2, Spaces, ...).
         blob: {
+            backend: "local",
             local: {
                 // Local filesystem root for raw MIME sources, sanitized HTML, attachment binaries, extracted
                 // attachment text, and contact photos (see `LocalFsBlobStore`). Must be a persistent volume
                 // in any real deployment.
                 root: "./data/blobs",
+            },
+            s3: {
+                bucket: "",
+                region: "",
+                // Key prefix for sharing one bucket across environments/deployments - trailing "/" is
+                // stripped by S3BlobStore itself.
+                prefix: "",
+                // Non-empty only for an S3-compatible provider that isn't real AWS S3 (MinIO, R2, Spaces).
+                endpoint: "",
+                // MinIO and most self-hosted S3-compatible servers need path-style requests; real AWS S3
+                // does not. Leave false for AWS.
+                force_path_style: false,
+                // Both empty by default, falling back to the standard AWS credential chain (IAM role) -
+                // the same posture SesMailTransport already uses. Set both (never just one -
+                // S3BlobStore throws if only one is set) to use a static access key pair instead. Never
+                // commit real values here - set via RAPIDMX_MAIL__BLOB__S3__ACCESS_KEY_ID/
+                // RAPIDMX_MAIL__BLOB__S3__SECRET_ACCESS_KEY env vars.
+                access_key_id: "",
+                secret_access_key: "",
             },
         },
         booking: {
