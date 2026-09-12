@@ -53,7 +53,20 @@ service:
     registry: ghcr.io
     repository: rapidmx/server
     tag: 1.0.0-beta.2
-  replicas: 1
+  # 2, not 1: a single pod is a single point of failure against the memory-exhaustion risk documented
+  # below - readBody() runs before ANY middleware (including auth, per @rapidrest/service-core's own
+  # Router.js comment: "Body must be read before any middleware runs"), so an *unauthenticated* caller
+  # opening a handful of concurrent connections against any POST/PUT/PATCH endpoint (not just mailbox
+  # import) can still approach the memory limit below - there is no per-IP/global concurrency cap
+  # anywhere in this stack to prevent that. This is a framework-level design characteristic of
+  # @rapidrest/service-core itself (reads the body before auth, no connection-limit hook) and a
+  # restapi job-level gap (DataExportJob's mbox-format export and MatterExportJob's multi-custodian
+  # aggregation have no row/size cap at all in some paths) - both genuinely out of this repo's scope to
+  # fix in place. Running 2 replicas doesn't close the vulnerability, but it means one pod OOM-killing
+  # no longer takes the *entire* mail server down for every mailbox while a real fix (auth-before-body-
+  # read in service-core, and/or gateway-level rate limiting, and/or restapi capping every export job's
+  # aggregation) gets designed and prioritized separately - flagged to JP rather than guessed at here.
+  replicas: 2
   # Sized for mail:max_body_size's 100 MiB cap (config.defaults.ts's DEFAULT_MAX_BODY_SIZE_BYTES): the
   # framework's readBody() buffers a whole request body in memory with no per-route override, and briefly
   # holds ~2x a request's own body size during assembly (an accumulating chunks array plus the final
@@ -62,7 +75,8 @@ service:
   # requests from different users, or the same user in two tabs) could otherwise approach ~500 MiB in body
   # buffers alone on top of baseline Node/DB-client overhead - comfortably over the previous 512Mi limit
   # on this single-replica deployment, which would OOM-kill the whole pod rather than fail just those two
-  # requests. Raised with margin for that scenario rather than only the single-request case.
+  # requests. Raised with margin for that scenario rather than only the single-request case. This bound
+  # is still per-pod, not global - see the replicas comment above for the remaining gap this doesn't close.
   resources:
     requests:
       cpu: 100m

@@ -4591,3 +4591,51 @@ page
   - Not yet reported to JP as its own item - worth flagging separately from this patch refresh, since he
     owns that repo and would want to fix his own lint gate and review/commit the in-progress Legal Hold
     WIP himself.
+
+- **2026-09-12 (continued) — Adversarial review pass over the last three commits (helm memory resize,
+  job registration, patch refresh). One mitigation applied here; two real findings live entirely in
+  restapi's own source and are out of scope to fix from this repo - documented for JP rather than
+  patched around.**
+  - **[Critical, restapi, not fixed here] `ScheduledSendJob.relayDueMessage()` sends the email via
+    `scanAndRelay()` *before* its own optimistic-lock check.** If a user cancels or edits a scheduled
+    send at the exact moment the job is relaying it, the email still goes out - an irreversible external
+    side effect - while the version-checked `update()` afterward fails and the DB ends up reflecting the
+    user's cancel/edit (e.g. back in Drafts, `scheduledSendTime` cleared) as if nothing was sent. Silent
+    and permanent: `scheduledSendTime` is now null, so nothing ever revisits it. Confirmed restapi's own
+    `test/jobs/{mongo,sql}/ScheduledSendJob*.test.ts` doesn't cover this race either. This was
+    unreachable dead code until Phase [job registration] above wired the job up - registering it was
+    still the right call (the alternative is "Schedule send" permanently doing nothing at all), but the
+    race itself needs an upstream fix (claim the row via a version-checked "sending" transition *before*
+    calling `scanAndRelay()`, mirroring `DataExportJob.processRequest()`'s own claim-before-work pattern)
+    - restapi's own source, not something to patch around from here.
+  - **[High, restapi, not fixed here] Two of the batch's own export jobs have gaps in the same
+    `max_content_rows` capping this session's own NOTES already discusses**: `DataExportJob.
+    buildMboxBundle()` (the mbox-format self-service export) never references `maxContentRows` at all
+    (only `buildJsonBundle()` does) - an mbox export of a large mailbox has no size cap whatsoever.
+    `MatterExportJob` applies its own cap per custodian mailbox, but the combined export across every
+    custodian on a Matter has no aggregate cap. Both run in the same pod the memory budget below is sized
+    for; `server` doesn't and can't override either gap via config (there's no per-job "cap the total,
+    not just per-mailbox" knob to set). Upstream restapi fix needed, not a server-side one.
+  - **[High, mitigated but not closed] The `max_body_size` memory-exhaustion risk documented in this
+    file's earlier entry is worse than originally scoped**: `@rapidrest/service-core`'s own `Router.js`
+    reads the entire request body *before any middleware runs, including authentication* ("Body must be
+    read before any middleware runs" - its own comment) - so the "two concurrent legitimate uploads"
+    framing undersold it: an *unauthenticated* caller opening a handful of concurrent connections against
+    any POST/PUT/PATCH endpoint (not just mailbox import) reaches the same memory ceiling, and nothing in
+    this stack caps concurrent connections or requires auth first. This is a `@rapidrest/service-core`
+    framework design characteristic, not a `restapi` or `server` bug - out of scope to fix in either repo
+    from here. Applied the one safe, in-scope mitigation available: raised `helm/values.yaml`'s
+    `service.replicas` from 1 to 2, so one pod OOM-killing no longer takes the *entire* mail server down
+    for every mailbox while it's happening. Does not close the vulnerability - a real fix needs either
+    auth-before-body-read in `service-core` or real concurrency/rate limiting at the gateway (this chart's
+    `gateway.yaml` uses the Kubernetes Gateway API with no rate-limit policy attached; guessing at the
+    exact CRD/annotation for whichever gateway controller JP's cluster actually runs felt riskier than
+    flagging it as a real, open decision for him).
+  - Everything else reviewed came back clean: `ScheduledSendJob`'s/`OofReplySuppressionCleanupJob`'s own
+    DI dependencies really do resolve under `server`'s existing registrations (re-derived directly from
+    their source, not assumed); the patch refresh's installed `dist` output was directly confirmed to
+    contain what commit `728f8db`'s message claimed (escrow custodian-scope check, Legal Hold on bulk
+    endpoints, `RetentionEnforcementJob` purging Attachment rows/blobs); no `server`-side test asserts on
+    anything the patch changed, so nothing broke, though it also means nothing in this repo would catch a
+    future regression in that surface either - a pre-existing, already-accepted blind spot for every
+    one-line-subclass route in this repo, not new here.
