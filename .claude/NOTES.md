@@ -4410,3 +4410,22 @@ mailbox delete to exercise this) is `web-client`'s own Phase 2 entry, same date.
   resolved on re-run, not a real regression).
 - Client-side admin settings page (`apps/admin/retention-policy`) is `web-client`'s own Phase 3 entry,
   same date.
+
+### 2026-09-12 (continued) — Phase 4: GDPR data export (Group D1)
+
+- New `src/mongo/routes/DataExportRequestRoute.ts`/`src/sql/routes/DataExportRequestRoute.ts`, mounted at
+  `mail/data-export-requests` - one-line subclasses of restapi's `DataExportRequestRouteMongo`/`SQL`.
+  `create()` is both self-service (own mailbox only) and admin-mediated (a trusted caller may supply an
+  explicit `mailboxUid` - an ordinary caller's own is always used regardless); `find`/`findById`/
+  `download` are hand-scoped by the base route to "the requester, the mailbox's own owner, or a trusted
+  admin," not the generic ACL system - nothing extra needed here.
+- Added `DataExportJobMongo`/`SQL` to `Jobs.ts`. Relies on the already-registered `"BlobStore"` DI token
+  (attachments already need it) - no new registration.
+- `test/Server.mongo.test.ts`/`test/Server.sql.test.ts` unaffected (no new `@Inject` token this route/job
+  introduces). Full suite re-verified stable at 146/146 across several runs (the same transient
+  MongoMemoryServer/SQLite resource-contention flakiness noted in Phase 3's entry recurred here too,
+  clearing on every re-run - confirmed via a full second capture rather than just re-running blind, since
+  the failure counts repeated identically enough to warrant checking it wasn't a real regression).
+- Client-side self-service UI (`apps/www/settings/privacy`) is `web-client`'s own Phase 4 entry, same
+  date; the admin-mediated create/browse UI is deferred to the shared `apps/admin/data-requests` page
+  built in Phase 6.

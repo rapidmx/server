@@ -8,6 +8,7 @@ export {
     AcmeEnrollmentDriverJobMongo,
     AttachmentExtractionJobMongo,
     CalendarReminderJobMongo,
+    DataExportJobMongo,
     DomainVerificationJobMongo,
     EasDeviceStateCleanupJobMongo,
     ExternalShareExpirationJobMongo,
