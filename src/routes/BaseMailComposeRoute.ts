@@ -30,6 +30,32 @@ export interface ComposeAssembleInput {
     html: string;
 }
 
+/**
+ * The already-fully-composed input a webmail client submits for an E2E signed and/or encrypted
+ * message — see `assembleDraftRaw()` in `@rapidmx/react-shared`'s `mailApi.ts`. Unlike
+ * `ComposeAssembleInput`, there is no HTML body for this server to sanitize or compose into MIME:
+ * `specs/end-to-end_encryption.md`'s "Digital Signatures" section requires signing to be "the final
+ * step before submission," since "any downstream process that normalises whitespace, re-wraps lines
+ * or re-encodes the body will invalidate the signature" — real crypto (signing/encryption) happens
+ * entirely client-side (`@rapidmx/react-shared`'s `crypto/smimeMessage.ts`), and this server only
+ * ever stores the resulting bytes completely unmodified.
+ */
+export interface ComposeAssembleRawInput {
+    to: Recipient[];
+    cc?: Recipient[];
+    bcc?: Recipient[];
+    /** The message's own top-level `Subject` — for an encrypted message this is the OUTER, RFC
+     * 9788 `hcp_baseline`-obscured value (`"[...]"`), matching what the client already put in the raw
+     * MIME's own outer `Subject:` header; this server never sees (and must never be trusted to
+     * recompute) the real one. */
+    subject: string;
+    /** The complete RFC 5322 message source, already finalized (signed/encrypted, if applicable)
+     * client-side — stored byte-for-byte as this draft's `bodyBlobKey`, never parsed or rewritten.
+     * File attachments are not yet supported on this path (a signed/encrypted message can only
+     * contain a text body) — see this route's own `assembleRaw()` doc comment. */
+    rawMime: string;
+}
+
 function toNodemailerAddress(recipient: Recipient): { name?: string; address: string } {
     return { name: recipient.displayName, address: recipient.address };
 }
@@ -306,6 +332,91 @@ export abstract class BaseMailComposeRoute<M extends Message, A extends Attachme
                 bodyBlobKey,
                 bodyPreview: toPreview(html),
                 hasAttachments: attachmentRecords.length > 0,
+            } as any,
+            message,
+            { user, ignoreACL: true },
+        );
+    }
+
+    @Summary("Assemble an already-composed (signed/encrypted) draft")
+    @Description(
+        "Stores client-supplied raw RFC 5322 MIME source as the draft's bodyBlobKey, completely unmodified - " +
+            "does NOT sanitize, compose, or otherwise touch the bytes, since a signed message's signature " +
+            "would be invalidated by any downstream reformatting. Does NOT send it. Call " +
+            "POST /messages/:id/send afterward to relay it, same as assemble().",
+    )
+    @Returns([Object])
+    @Auth(["jwt"])
+    @Post("/:id/assemble-raw")
+    public async assembleRaw(
+        @Param("id") id: string,
+        body: ComposeAssembleRawInput,
+        @AuthUser user?: JWTUser,
+    ): Promise<M> {
+        if (!this.blobStore || !this.aclUtils) {
+            throw new ApiError(ApiErrors.INTERNAL_ERROR, 500, ApiErrorMessages.INTERNAL_ERROR);
+        }
+        await this.init();
+
+        if (!body?.to?.length || !body.rawMime) {
+            throw new ApiError(ApiErrors.INVALID_REQUEST, 400, ApiErrorMessages.INVALID_REQUEST);
+        }
+
+        const message: M | undefined = await this.messageRepo!.findOne(id, { ignoreACL: true });
+        if (!message) {
+            throw new ApiError(ApiErrors.NOT_FOUND, 404, ApiErrorMessages.NOT_FOUND);
+        }
+        if (!(await this.aclUtils.hasPermission(user, message.folderUid, ACLAction.UPDATE))) {
+            throw new ApiError(ApiErrors.AUTH_PERMISSION_FAILURE, 403, ApiErrorMessages.AUTH_PERMISSION_FAILURE);
+        }
+
+        const folder: F | undefined = await this.folderRepo!.findOne(message.folderUid, { ignoreACL: true });
+        if (folder?.type !== FolderType.DRAFTS) {
+            throw new ApiError(ApiErrors.INVALID_REQUEST, 400, "Only a message in Drafts can be assembled.");
+        }
+
+        const mailbox: X | undefined = await this.mailboxRepo!.findOne(message.mailboxUid, { ignoreACL: true });
+        if (!mailbox) {
+            throw new ApiError(ApiErrors.NOT_FOUND, 404, ApiErrorMessages.NOT_FOUND);
+        }
+
+        // Signed/encrypted messages don't support file attachments yet (a client would have to embed
+        // them as additional MIME parts before signing/encrypting, which crypto/smimeMessage.ts doesn't
+        // build today) - reject rather than silently proceeding with a draft the user thinks includes
+        // files it doesn't, if they uploaded any via the ordinary attachment-upload endpoint first.
+        const attachmentCount = await this.attachmentRepo!.count({ messageUid: message.uid } as any, { ignoreACL: true });
+        if (attachmentCount > 0) {
+            throw new ApiError(
+                ApiErrors.INVALID_REQUEST,
+                400,
+                "A signed or encrypted message cannot include file attachments yet - remove them before sending.",
+            );
+        }
+
+        const bodyBlobKey = `bodies/${crypto.randomUUID()}`;
+        await this.blobStore.put(bodyBlobKey, Buffer.from(body.rawMime, "utf-8"), { contentType: "message/rfc822" });
+
+        const recipients: Recipient[] = [
+            ...body.to.map((r) => ({ ...r, type: RecipientType.TO })),
+            ...(body.cc ?? []).map((r) => ({ ...r, type: RecipientType.CC })),
+            ...(body.bcc ?? []).map((r) => ({ ...r, type: RecipientType.BCC })),
+        ];
+
+        return await this.messageRepo!.update(
+            {
+                uid: message.uid,
+                version: (message as any).version,
+                subject: body.subject,
+                recipients,
+                from: { address: mailbox.primarySmtpAddress, displayName: mailbox.displayName, type: RecipientType.TO },
+                bodyBlobKey,
+                // Never derived from the raw MIME itself - this server has no business parsing a
+                // signed/encrypted body's content just to produce a list-view preview string, and for a
+                // genuinely encrypted message it couldn't anyway. `ScanPipeline` (@rapidmx/restapi) is
+                // still what actually detects `encrypted: true` from the stored MIME structure itself,
+                // independent of this preview being empty.
+                bodyPreview: "",
+                hasAttachments: false,
             } as any,
             message,
             { user, ignoreACL: true },

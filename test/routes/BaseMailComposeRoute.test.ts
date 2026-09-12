@@ -34,6 +34,109 @@ describe("BaseMailComposeRoute Tests (dependency guard clause only)", () => {
             route.assemble("m1", { to: [{ address: "a@example.com" }], html: "<p>hi</p>" }, { uid: "u1" } as any),
         ).rejects.toThrow(/internal error/i);
     });
+
+    it("assembleRaw() throws INTERNAL_ERROR when blobStore/aclUtils are not set.", async () => {
+        const route = objectFactory.newInstance<TestMailComposeRoute>(TestMailComposeRoute, { initialize: false });
+
+        await expect(
+            route.assembleRaw("m1", { to: [{ address: "a@example.com" }], subject: "[...]", rawMime: "raw mime source" }, { uid: "u1" } as any),
+        ).rejects.toThrow(/internal error/i);
+    });
+});
+
+/**
+ * assembleRaw()'s full logic path, mocked at the repo/collaborator boundary rather than exercised
+ * against a real database — `init()` only builds a repo when one isn't already set (see its own
+ * source), so pre-populating the route's private fields before calling a route method bypasses real
+ * DI entirely while still running every real ACL/validation/storage branch this method has.
+ */
+describe("BaseMailComposeRoute.assembleRaw() Tests (mocked collaborators)", () => {
+    const message = { uid: "m1", version: 0, folderUid: "f1", mailboxUid: "mb1" };
+    const draftsFolder = { uid: "f1", type: "drafts" };
+    const mailbox = { uid: "mb1", displayName: "Alice", primarySmtpAddress: "alice@example.com" };
+    const user = { uid: "u1" } as any;
+    const validInput = { to: [{ address: "bob@example.com" }], subject: "[...]", rawMime: "raw mime source" };
+
+    function buildRoute(overrides: Partial<Record<string, any>> = {}) {
+        const route = new (TestMailComposeRoute as any)();
+        (route as any)._objectFactory = { newInstance: vi.fn() };
+        (route as any).messageRepo = { findOne: vi.fn().mockResolvedValue(message), update: vi.fn().mockResolvedValue(message) };
+        (route as any).folderRepo = { findOne: vi.fn().mockResolvedValue(draftsFolder) };
+        (route as any).mailboxRepo = { findOne: vi.fn().mockResolvedValue(mailbox) };
+        (route as any).attachmentRepo = { count: vi.fn().mockResolvedValue(0) };
+        (route as any).aclUtils = { hasPermission: vi.fn().mockResolvedValue(true) };
+        (route as any).blobStore = { put: vi.fn().mockResolvedValue(undefined) };
+        Object.assign(route, overrides);
+        return route as TestMailComposeRoute;
+    }
+
+    it("rejects when 'to' is empty", async () => {
+        const route = buildRoute();
+        await expect(route.assembleRaw("m1", { ...validInput, to: [] }, user)).rejects.toThrow(/invalid/i);
+    });
+
+    it("rejects when rawMime is missing", async () => {
+        const route = buildRoute();
+        await expect(route.assembleRaw("m1", { ...validInput, rawMime: "" }, user)).rejects.toThrow(/invalid/i);
+    });
+
+    it("rejects with NOT_FOUND when the draft doesn't exist", async () => {
+        const route = buildRoute({ messageRepo: { findOne: vi.fn().mockResolvedValue(undefined) } });
+        await expect(route.assembleRaw("m1", validInput, user)).rejects.toThrow(/no resource could be found/i);
+    });
+
+    it("rejects with AUTH_PERMISSION_FAILURE when the caller lacks UPDATE on the folder", async () => {
+        const route = buildRoute({ aclUtils: { hasPermission: vi.fn().mockResolvedValue(false) } });
+        await expect(route.assembleRaw("m1", validInput, user)).rejects.toThrow(/permission/i);
+    });
+
+    it("rejects when the message's folder isn't Drafts", async () => {
+        const route = buildRoute({ folderRepo: { findOne: vi.fn().mockResolvedValue({ uid: "f1", type: "inbox" }) } });
+        await expect(route.assembleRaw("m1", validInput, user)).rejects.toThrow(/only a message in drafts/i);
+    });
+
+    it("rejects with NOT_FOUND when the owning mailbox doesn't exist", async () => {
+        const route = buildRoute({ mailboxRepo: { findOne: vi.fn().mockResolvedValue(undefined) } });
+        await expect(route.assembleRaw("m1", validInput, user)).rejects.toThrow(/no resource could be found/i);
+    });
+
+    it("rejects when the draft already has file attachments uploaded", async () => {
+        const route = buildRoute({ attachmentRepo: { count: vi.fn().mockResolvedValue(2) } });
+        await expect(route.assembleRaw("m1", validInput, user)).rejects.toThrow(/cannot include file attachments/i);
+    });
+
+    it("stores the raw MIME source byte-for-byte and updates the message with server-derived from/recipients", async () => {
+        const route = buildRoute();
+        const result = await route.assembleRaw("m1", validInput, user);
+
+        expect((route as any).blobStore.put).toHaveBeenCalledWith(
+            expect.stringMatching(/^bodies\//),
+            Buffer.from("raw mime source", "utf-8"),
+            { contentType: "message/rfc822" },
+        );
+        const updatePatch = (route as any).messageRepo.update.mock.calls[0][0];
+        expect(updatePatch.subject).toBe("[...]");
+        expect(updatePatch.from).toEqual({ address: "alice@example.com", displayName: "Alice", type: "to" });
+        expect(updatePatch.recipients).toEqual([{ address: "bob@example.com", type: "to" }]);
+        expect(updatePatch.bodyPreview).toBe("");
+        expect(updatePatch.hasAttachments).toBe(false);
+        expect(result).toBe(message);
+    });
+
+    it("includes cc/bcc recipients with their own types", async () => {
+        const route = buildRoute();
+        await route.assembleRaw(
+            "m1",
+            { ...validInput, cc: [{ address: "carol@example.com" }], bcc: [{ address: "dave@example.com" }] },
+            user,
+        );
+        const updatePatch = (route as any).messageRepo.update.mock.calls[0][0];
+        expect(updatePatch.recipients).toEqual([
+            { address: "bob@example.com", type: "to" },
+            { address: "carol@example.com", type: "cc" },
+            { address: "dave@example.com", type: "bcc" },
+        ]);
+    });
 });
 
 describe("sanitizeComposeHtml() Tests", () => {
