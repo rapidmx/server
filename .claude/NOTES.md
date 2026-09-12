@@ -4209,3 +4209,56 @@ signing-certificate enrollment
   as a `Message` - no inbox/Sent-folder UI treatment needed anywhere in the client repos.
 - Client-side work (keypair/CSR generation, the "Enable digital signatures" Settings UI, and the
   asynchronous status-polling) is in `react-shared`'s and `web-client`'s own NOTES.md, same date.
+
+### 2026-09-12 (continued) — Phase 5a of consuming restapi's 11 post-0.6.0 commits: Escrow Scoping -
+mounting restapi's four new route classes, plus a new gap-filling proxy route
+
+- Mounted restapi's four new scoped-child route classes verbatim, one-line-subclass style (mongo + sql),
+  exactly like Labels last phase - no DI wiring needed for any of them (confirmed by grepping for
+  `@Inject` in all four base classes: none):
+  - `EscrowScopeRoute` → `escrow/scopes` - trusted-admin-only for every action (`BaseEscrowScopeRoute`
+    gates `create`/`update`/`delete`/`find`/`count`/`findById` all behind `@RequiresTrustedRole()`).
+    Deliberately admin-only: configuring *who counts as a holder* is an administrative act, distinct
+    from actually holding the eDiscovery/compliance role.
+  - `MatterRoute` → `escrow/matters` - holder-gated, not admin-gated, on every action
+    (`requireEscrowHolder(matter.escrowScopeId, user)`) - a trusted admin who isn't a holder of the
+    specific scope gets the same 403 as anyone else.
+  - `EscrowAccessRequestRoute` → `escrow/access-requests` - same holder-gating; `create()` also validates
+    the target mailbox is a matter custodian and that `mailbox.escrowScopeId` matches the matter's own
+    scope; auto-approves once `approvals.length >= scope.requiredHolders`; `GET /:id/material` (only once
+    `approved`/`fulfilled`) returns still-wrapped `MasterKeyWrap[]` - never raw key material, this server
+    can't decrypt them either.
+  - `EscrowAuditLogRoute` → `escrow/audit-log` - `find`/`count`/`findById` auto-scope to matters under
+    scopes the caller holds (unfiltered for a trusted admin); `GET /verify` (hash-chain integrity check)
+    is `@RequiresTrustedRole()`-only, deliberately not holder-accessible (the chain is global across every
+    scope, so `brokenAtSequence` would leak the existence/volume of *other* scopes' escrow activity);
+    `create`/`update`/`delete`/`truncate` are unconditionally rejected for every caller - the only writer
+    is restapi's own internal `recordEscrowAuditEntry()`, called with `ignoreACL: true`, bypassing this
+    route entirely.
+- **New gap-filling route, `BaseEscrowInfoRoute.ts`** (`src/routes/`, mongo/sql concrete subclasses
+  mounted at `mail/mailboxes` alongside `KeyVaultRoute`/`MessageRawContentRoute` -
+  `GET /:id/escrow-info` → `{escrowScopeId, publicKey}`): restapi has **no non-admin-readable path** to an
+  `EscrowScope`'s public key (re-verified against current source - `BaseEscrowScopeRoute` really does
+  gate every single action behind `@RequiresTrustedRole()`, no lighter sub-route exists), yet a mailbox
+  owner needs exactly that to wrap their own master key against it once an admin assigns
+  `Mailbox.escrowScopeId` (itself confirmed to still be pure metadata - assigning it never auto-creates
+  any wrap; `BaseKeyVaultRoute.resolveAllowEscrow()` is the only place a `MasterKeyWrap{method:"escrow"}`
+  can actually be persisted, via the owner's own `enrollKey()`/`addMasterKeyWrap()` call). Since restapi
+  is owned by another team and off-limits to modify, this is a `server`-only route, same "fills a gap
+  restapi's own routes don't cover" precedent as `BaseMessageRawContentRoute` - reads the *one*
+  `EscrowScope` the caller's own mailbox is assigned to directly via `RepoUtils` (bypassing
+  `BaseEscrowScopeRoute`'s trusted-only gate entirely, deliberately), returning only that scope's id and
+  public key, never a list of scopes, never holder identities.
+  - Access-gated by a deliberate copy of `BaseKeyVaultRoute`'s own private `requireMailboxAccess()` (owner
+    or an explicit ACL `read`/`*` grant, **no trusted-role bypass** - a system admin with no grant on this
+    specific mailbox gets the same 403 as anyone else) rather than the ordinary `ACLUtils.hasPermission()`
+    (which always short-circuits true for a trusted user) - same reasoning `BaseKeyVaultRoute`'s own doc
+    comment gives for every other encryption-adjacent endpoint. Not reusable from restapi (private method,
+    different package) - copied rather than imported, small enough not to be worth a shared-utility
+    round-trip.
+  - Unit-tested with mocked repo/collaborator boundaries (`test/routes/BaseEscrowInfoRoute.test.ts`),
+    same convention as `BaseMessageRawContentRoute.test.ts` - the dependency-guard clause plus every
+    NOT_FOUND/403 branch and both the owner and delegate-with-ACL-grant success paths.
+- Client-side work (mailbox-owner escrow wrapping UI, admin/holder UI for
+  EscrowScope/Matter/EscrowAccessRequest/audit log) is Phase 5b/5c, not yet built - tracked as the next
+  step in this batch.
