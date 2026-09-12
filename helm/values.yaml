@@ -54,12 +54,21 @@ service:
     repository: rapidmx/server
     tag: 1.0.0-beta.2
   replicas: 1
+  # Sized for mail:max_body_size's 100 MiB cap (config.defaults.ts's DEFAULT_MAX_BODY_SIZE_BYTES): the
+  # framework's readBody() buffers a whole request body in memory with no per-route override, and briefly
+  # holds ~2x a request's own body size during assembly (an accumulating chunks array plus the final
+  # Buffer.concat), with the ~1x result then persisting on req.rawBody for the rest of that request's
+  # handling. Two ordinary, non-malicious concurrent uploads at the new cap (e.g. two mailbox-import
+  # requests from different users, or the same user in two tabs) could otherwise approach ~500 MiB in body
+  # buffers alone on top of baseline Node/DB-client overhead - comfortably over the previous 512Mi limit
+  # on this single-replica deployment, which would OOM-kill the whole pod rather than fail just those two
+  # requests. Raised with margin for that scenario rather than only the single-request case.
   resources:
     requests:
       cpu: 100m
-      memory: 256Mi
+      memory: 384Mi
     limits:
-      memory: 512Mi
+      memory: 1Gi
   mongodb:
     acl:
       name: rapidmx_server_acls

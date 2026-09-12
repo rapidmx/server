@@ -4508,3 +4508,33 @@ page
   sections on `apps/escrow/matters/[uid].tsx` - "Export this matter" and "Search this matter's
   custodians" - plus the new `matterExportApi.ts`/`matterSearchApi.ts` react-shared wrappers) is
   `web-client`'s/`react-shared`'s own Phase 7 entry, same date.
+
+- **2026-09-12 (continued) — Adversarial review pass over the compliance-roadmap batch: a real
+  memory/availability finding, fixed.** An adversarial reviewer traced Phase 5's `max_body_size` change
+  (10 MiB → 100 MiB, to stop mailbox-import uploads 413ing) all the way through `@rapidrest/service-core`'s
+  `readBody()` (`http/uWS/Adapters.js`) and cross-checked it against this repo's own committed
+  `helm/values.yaml`, which that phase's original tradeoff analysis never did. Confirmed directly:
+  `readBody()` briefly holds **~2x** a request's own body size in memory during assembly (an accumulating
+  `chunks` array of per-chunk copies, then a final `Buffer.concat()` allocating a second, contiguous copy
+  of the whole body), with the ~1x result then persisting on `req.rawBody` for the rest of that request's
+  handling - and there is no per-route override, so this applies to every endpoint. `helm/values.yaml`'s
+  `service` block (the exact pod running this code) was `replicas: 1`, `resources.limits.memory: 512Mi`.
+  Two ordinary, non-malicious concurrent uploads at the new 100 MiB cap (two different users importing
+  large mailboxes at the same time, or one user in two tabs - not an attack, just plausible real usage)
+  already approach ~500 MiB in body buffers alone, on top of baseline Node/Mongoose/TypeORM/Winston
+  overhead - comfortably over the previous limit, which would OOM-kill the single-replica pod (a hard
+  SIGKILL, not a graceful per-request failure) and take down the whole mail server for every mailbox, not
+  just the two uploaders. Phase 5's own "deliberately moderate, not large" reasoning was correct in
+  direction but never actually did this arithmetic against numbers already sitting in this same repo.
+  - Fix: raised `helm/values.yaml`'s `service.resources` from `256Mi`/`512Mi` (request/limit) to
+    `384Mi`/`1Gi`, sized with margin for a couple of concurrent maximal-size uploads plus baseline process
+    overhead, and documented the reasoning inline in the values file itself so a future cap change has the
+    arithmetic to check against, not just a comment pointing back here.
+  - Everything else this reviewer checked (route mounting correctness, dual mongo+sql Jobs.ts
+    registration - confirmed via `ClassLoader`'s actual base-path re-export mechanism, not assumed -
+    `pst-extractor` version pinning against its real import surface, Legal Hold/erasure enforcement
+    points, erasure route's inability to accept a forged `mailboxUid`, raw-upload 413/content-type
+    handling, and every new react-shared wrapper's wire-shape against restapi's actual route source) came
+    back clean - explicitly checked and noted rather than omitted. A separate, client-side finding from
+    the same review round (a stale-response race in several async-request list sections) is
+    `web-client`'s own NOTES.md entry, same date - no `server` change needed for it.
