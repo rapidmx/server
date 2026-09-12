@@ -4117,3 +4117,35 @@ turned up a stale conclusion from earlier the same day:
   there is nothing to query against at the current release - the spec's "immediate revocation" intent
   is already satisfied via `PublicKey.revokedAt` (`KeyringUtils.findActivePublicKey()` already filters
   on it) plus discovery lookups always being fresh at compose/receive time, not a real remaining gap.
+
+### 2026-09-12 — Phase 0: patch in restapi's 11 post-0.6.0 commits (RFC 8823 ACME, Escrow Scoping,
+Labels, Archive, S3BlobStore)
+
+JP confirmed restapi's next batch of work (11 commits past the `v0.6.0` tag, not yet version-bumped -
+his own release process, unchanged standing rule) is done and asked for it to be fully consumed. Since
+`@rapidmx/restapi` is a real `^0.6.0` npm dependency here (not a workspace link), this needed the same
+`yarn build` → `yarn patch` → replace `dist/` → `yarn patch-commit` → `yarn install` bridge already used
+repeatedly for `react-shared` this session, applied to `restapi` for the first time.
+
+- New `.yarn/patches/@rapidmx-restapi-npm-0.6.0-*.patch`, same mechanism/rationale as the existing
+  react-shared one - full rebuild-and-reapply recipe documented in the sibling repos' own NOTES.md,
+  not repeated here.
+- **`acme-client` (restapi's own new RFC 8823 dependency) had to be added as a direct dependency here
+  too** - patching alone doesn't pull in a patched package's new transitive dependencies (the exact
+  same lesson from `web-client`'s own react-shared patch this session, now confirmed to apply to
+  restapi too): `tsc --noEmit` failed with `Cannot find module 'acme-client'` until added directly,
+  version-matched to what restapi itself declares (`^5.4.0`).
+  `@peculiar/x509`/`node-forge` came along as transitive deps of `acme-client` itself, no extra action.
+- Pre-existing (not caused by this patch, confirmed via `git diff v0.6.0..HEAD -- package.json` showing
+  only `acme-client` added) peer-dependency warnings on `yarn install`
+  (`@rapidrest/service-core@1.8.0` vs restapi's own declared `^2.0.0` want; an
+  `@rapidmx/activesync`-vs-restapi range mismatch) - both already existed at `v0.6.0` and this repo
+  already worked fine against them all session, so left alone rather than "fixed" as part of this
+  unrelated patch bump.
+- `test/Server.mongo.test.ts`/`test/Server.sql.test.ts` still pass unchanged (start/stop/restart) -
+  confirms the patched restapi loads cleanly; the new `AcmeEnrollmentDriverJobMongo`/`SQL` jobs
+  correctly do **not** yet appear in the background-service start/stop log, since they aren't
+  registered in `src/{mongo,sql}/Jobs.ts` yet - that's real Phase 4 work, not done in this step.
+- This step is infrastructure only - no new routes/config/DI wiring yet. See the dated entries below
+  for each of the five features this patch unlocks (S3 storage, Archive folder, Labels, RFC 8823 ACME,
+  Escrow Scoping), landed as separate phases/commits per JP's own approved plan.
