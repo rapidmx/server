@@ -29,6 +29,7 @@ import {
     enableDevAutoLoginIfApplicable,
     mountDevImpersonationRouteIfApplicable,
 } from "./dev/enableDevAutoLogin.js";
+import { DohDnssecDnsResolver } from "./dns/DohDnssecDnsResolver.js";
 
 import * as fs from "fs";
 import { readFile } from "fs/promises";
@@ -57,7 +58,13 @@ objectFactory.register(PostgresFullTextSearchProvider, "SearchProvider");
 objectFactory.register(RspamdSpamScanProvider, "SpamScanProvider");
 objectFactory.register(ClamAvScanProvider, "AvScanProvider");
 objectFactory.register(PostfixSendmailTransport, "MailTransport");
-objectFactory.register(NodeDnsResolver, "DnsResolver");
+// DnsResolver backend is config-driven (mail:dns:resolver) rather than hardcoded, same rationale as
+// mail:pki:backend below: `"node"` (default) is Node's own built-in resolver with no DNSSEC validation,
+// `"doh-dnssec"` validates DNSSEC (specs/end-to-end_encryption.md's Transport Trust requirement) via a
+// trusted upstream DoH resolver (mail:dns:doh:*) instead - see DohDnssecDnsResolver.ts's own doc comment
+// for why Node's built-in resolver can't do this itself.
+const dnsResolverBackend: string = config.get("mail:dns:resolver") || "node";
+objectFactory.register(dnsResolverBackend === "doh-dnssec" ? DohDnssecDnsResolver : NodeDnsResolver, "DnsResolver");
 // Opts into automatic per-domain DKIM key generation (writing into the shared volume the Postfix/rspamd
 // container reads from - see docker-compose.mail.yml's `dkim_rspamd_keys` volume and `mail:dkim:*`
 // config) rather than the library's default manual model (`NullDkimKeyProvider`, an admin fills in

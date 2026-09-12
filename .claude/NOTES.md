@@ -4067,3 +4067,53 @@ either way.
   against a real database - `init()`'s real DI path is exercised indirectly through the mounted route
   in normal server operation, same documented convention as `BaseMailComposeRoute.test.ts`'s own top
   comment.
+
+### 2026-09-11 (continued) — DNSSEC-validating DnsResolver; confirmed Rotation Notification's receive
+side is already fully implemented in restapi 0.6.0 (no client/server work needed)
+
+Closing out the previously-deferred DNSSEC item from the entry above, plus a re-investigation that
+turned up a stale conclusion from earlier the same day:
+
+- **Rotation Notification (Group E5) receive-side was already believed to be a client-side gap** (a
+  prior investigation this session concluded restapi only implemented the *sending* half). Re-reading
+  `@rapidmx/restapi/src/jobs/ScanQueueJob.ts` directly before building anything showed this was wrong:
+  `maybeRefreshRotatedKey()` (called from `processReceipt()` whenever an inbound MDN carries either of
+  `ReceiptUtils`'s `rotatedKeyFingerprint`/`policyId` extension fields) already re-runs real Discovery
+  via `KeyringUtils.discoverAndMergeKeys()` and never trusts the MDN's own claimed value directly -
+  confirmed shipped in the published `0.6.0` (`CHANGELOG.md`'s `[0.6.0]` section, not `[Unreleased]`).
+  `server` already runs restapi's `ScanQueueJobMongo`/`SQL` unmodified (`src/mongo/Jobs.ts`/
+  `src/sql/Jobs.ts`), so this is live in the current deployment with zero code changes needed anywhere
+  in this stack. **Lesson**: verify a "gap" against the actual current file contents (and confirm the
+  release boundary in CHANGELOG.md) before scoping client-side work to fill it - a prior pass's
+  disclosed gap list is a starting point, not a fact to build on unchecked.
+- **Added `DohDnssecDnsResolver`** (`src/dns/DohDnssecDnsResolver.ts`), a `DnsResolver` implementation
+  satisfying `specs/end-to-end_encryption.md`'s Transport Trust requirement ("Requesting servers SHOULD
+  validate DNSSEC on the TXT lookup where available"). Node's built-in `dns` module (what restapi's own
+  `NodeDnsResolver` wraps) does not validate DNSSEC at all, so real validation needs an external
+  validating resolver in the query path - this delegates to a trusted upstream DoH resolver
+  (Cloudflare's `cloudflare-dns.com/dns-query` by default) over TLS and reads back the JSON response's
+  `AD` (Authenticated Data) flag, which a validating resolver only sets once every RRSIG in the chain
+  checked out. TLS on the DoH request itself is what makes this trustworthy end-to-end (a validating
+  resolver's answer tampered with in-flight after validation would defeat the point).
+  - **Fails closed by default** (`mail:dns:doh:require_ad: true`) - a domain that fails DNSSEC
+    validation, or isn't signed at all, is treated as a lookup failure, mirroring
+    `mail:security:trusted_authserv_id`'s existing empty-default fail-closed convention. An admin who
+    needs unsigned-zone interop sets `require_ad: false` explicitly.
+  - Config-driven selection (`mail:dns:resolver`: `"node"` default / `"doh-dnssec"`), the same pattern
+    `mail:pki:backend` established for `EncryptionCertificateAuthority` - wired into both
+    `server.mongo.ts`/`server.sql.ts`. `Server.mongo.test.ts`/`Server.sql.test.ts` deliberately keep
+    `NodeDnsResolver` hardcoded regardless of config (no live network DoH queries from a test run).
+  - New `test/dns/DohDnssecDnsResolver.test.ts`: TXT single/multi-chunk parsing (including backslash-
+    escaped quotes and a non-quoted fallback), MX priority/exchange parsing, every throw path (HTTP
+    failure, non-zero `Status`, missing `AD`, no matching-type answers, no `Answer` field at all), a
+    different-type answer being filtered out, and one test proving `@Config`-decorated fields actually
+    read from the DI container's config rather than only ever using their hardcoded defaults.
+  - Scope note: this only affects `FederationUtils.resolveFederationPolicy()`'s `_rapidmx` TXT lookup
+    and `DomainVerificationUtils`/`DnsSetupUtils`'s own TXT/MX checks, since all three currently share
+    one process-wide `DnsResolver` registration - there's no way to apply DNSSEC only to the federation
+    lookup without restapi itself exposing a second injection token.
+- Confirmed real OCSP/CRL revocation checking remains correctly out of scope (not merely deferred):
+  `LocalX509CertificateAuthority`'s own doc comments state it has no CRL/OCSP responder at all, so
+  there is nothing to query against at the current release - the spec's "immediate revocation" intent
+  is already satisfied via `PublicKey.revokedAt` (`KeyringUtils.findActivePublicKey()` already filters
+  on it) plus discovery lookups always being fresh at compose/receive time, not a real remaining gap.

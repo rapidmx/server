@@ -48,6 +48,9 @@ describe("Server Tests", () => {
     objectFactory.register(RspamdSpamScanProvider, "SpamScanProvider");
     objectFactory.register(ClamAvScanProvider, "AvScanProvider");
     objectFactory.register(PostfixSendmailTransport, "MailTransport");
+    // Always NodeDnsResolver here, even though server.sql.ts's real registration is config-driven
+    // (mail:dns:resolver) - a test run has no business making live network DoH queries, and nothing this
+    // suite exercises depends on DNSSEC validation actually happening.
     objectFactory.register(NodeDnsResolver, "DnsResolver");
     objectFactory.register(FsDkimKeyProvider, "DkimKeyProvider");
     // Mirrors server.sql.ts's config-driven CA backend selection (mail:pki:backend) - not currently

@@ -190,6 +190,24 @@ conf.defaults({
         security: {
             trusted_authserv_id: "",
         },
+        // DnsResolver backend selection (see server.sql.ts) plus that backend's own config.
+        // `resolver: "node"` (default) uses Node's own built-in resolver, with no DNSSEC validation.
+        // `resolver: "doh-dnssec"` validates DNSSEC on every lookup via a trusted upstream DoH resolver
+        // instead, per specs/end-to-end_encryption.md's Transport Trust requirement - see
+        // DohDnssecDnsResolver.ts's own doc comment for why this needs an external validating resolver
+        // rather than something Node's built-in `dns` module can do on its own.
+        dns: {
+            resolver: "node",
+            doh: {
+                endpoint: "https://cloudflare-dns.com/dns-query",
+                // Fail closed by default (mirrors mail:security:trusted_authserv_id's own empty-default
+                // fail-closed convention above): a domain that fails DNSSEC validation, or isn't signed at
+                // all, is treated as a lookup failure. Set to false to downgrade to "validate when
+                // possible" for interoperability with unsigned zones - an explicit, informed admin choice.
+                require_ad: true,
+                timeout_ms: 5_000,
+            },
+        },
         // EncryptionCertificateAuthority backend selection (see server.sql.ts) plus that backend's own
         // config. `backend: "local"` (default) needs only `local_ca.*` below; `backend: "openbao"` needs
         // `openbao.*` instead and a running OpenBao/Vault PKI mount (not started by this repo's
