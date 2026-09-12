@@ -4207,6 +4207,15 @@ signing-certificate enrollment
 - Entirely invisible on the mail side by design: the CA's challenge email is intercepted before ever
   being filed to a folder, and the automated reply goes out via direct transport relay, never persisted
   as a `Message` - no inbox/Sent-folder UI treatment needed anywhere in the client repos.
+- **Correction (2026-09-12, from an adversarial review pass)**: this entry originally implied the job is
+  fully inert under the `"manual"` default. That's only true of its `driveEnrollments()` half. Its other
+  half, `flagExpiringSigningCerts()`, runs unconditionally on every tick regardless of backend - an
+  unfiltered `mailboxRepo.find({})` scan of every mailbox, writing a `SIGNING_CERT_EXPIRING` audit entry
+  for any with a near-expiry signing key. Re-exporting this job in `Jobs.ts` is therefore a real new
+  periodic DB-scan + audit-log-write cost for *every* deployment upgrading through this batch, not just
+  ones opting into `"rfc8823"`. Confirmed intentional on restapi's side (flagging an expiring signing key
+  is useful even under manual enrollment, since nothing else would notice) - not gated, just corrected
+  the misleading comments in `server.mongo.ts`/`server.sql.ts` that claimed otherwise.
 - Client-side work (keypair/CSR generation, the "Enable digital signatures" Settings UI, and the
   asynchronous status-polling) is in `react-shared`'s and `web-client`'s own NOTES.md, same date.
 
@@ -4293,3 +4302,41 @@ holder-gated restapi route as anyone else - see Phase 5a's own entry above).
 - This closes out all five phases of consuming restapi's 11 post-`v0.6.0` commits (S3BlobStore, Archive
   folder, Label entity, RFC 8823 ACME signing enrollment, Escrow Scoping) - every phase implemented,
   tested, and committed across `server`/`react-shared`/`web-client` per JP's own approved plan.
+
+### 2026-09-12 (continued) — Adversarial review pass over the restapi-consumption batch (Phase 0-5c)
+
+Two independent adversarial review agents (backend/authz-focused and client-crypto/frontend-focused)
+went over the full diff. Most of the batch held up - the `BaseEscrowInfoRoute` access-check copy was
+verified faithful to `BaseKeyVaultRoute.requireMailboxAccess()`, and every access-model claim in the new
+Escrow route comments was checked against restapi's actual source and found accurate. Two real findings,
+both fixed here:
+
+- **A misleading comment, not a functional bug**: `server.mongo.ts`/`server.sql.ts` claimed
+  `AcmeEnrollmentDriverJobMongo`/`SQL` is "a no-op under the manual/default backend." Traced the job's own
+  `run()` (`@rapidmx/restapi`'s `AcmeEnrollmentDriverJob.ts`): only its `driveEnrollments()` half
+  feature-detects the backend and no-ops without `rfc8823`. Its other half, `flagExpiringSigningCerts()`,
+  runs unconditionally on every tick regardless of backend - an unfiltered scan of every mailbox, writing
+  a `SIGNING_CERT_EXPIRING` audit entry for any with a near-expiry signing key. So re-exporting this job
+  in `Jobs.ts` (Phase 4) is a real new periodic DB-scan + audit-log-write cost for *every* deployment
+  upgrading through this batch, not just `rfc8823` ones - confirmed intentional on restapi's side (useful
+  under manual enrollment too, since nothing else would notice an expiring key), so not gated, just
+  corrected the comments in both `server.mongo.ts`/`server.sql.ts` (and the Phase 4 entry above) that
+  claimed otherwise.
+- **A real test-coverage gap**: the new `mail:blob:backend`/`mail:pki:signing_enrollment:backend`
+  ternaries in `server.mongo.ts`/`server.sql.ts` were never actually exercised by any test -
+  `Server.mongo.test.ts`/`Server.sql.test.ts` hardcode the safe default instead (matching this file's own
+  established, pre-existing convention for `mail:pki:backend`/`mail:dns:resolver`, which have the
+  identical gap - not new to this batch, just not fixed here either since those two are out of this
+  batch's own commit-range scope). A typo like `"S3"` vs `"s3"` in either new ternary would not have been
+  caught by CI. Extracted the selection logic into a small, pure `selectConfigDrivenBackend()`
+  (`src/lib/configDrivenBackend.ts`) used by both new selectors - deliberately generic over two
+  independently-inferred type parameters (`<A, B>`, not a single `<T>`) so TypeScript doesn't try to unify
+  two unrelated candidate classes into one type and reject the call, the same way the original inline
+  ternary's own union-typed result never needed to. Directly unit-tested
+  (`test/lib/configDrivenBackend.test.ts`) - default/alternate/case-sensitivity/wrong-value branches, all
+  real assertions against the actual comparison logic, not a hardcoded stand-in for it. Could not import
+  `server.mongo.ts`/`server.sql.ts` directly to test the ternaries in place: both files run `void
+  start(...)` unconditionally at module load with no "only if this is the main module" guard, so an
+  `import` from a test process would attempt to actually start a server - the same reason
+  `Server.mongo.test.ts`/`Server.sql.test.ts` already re-implement DI registration instead of importing
+  either script.

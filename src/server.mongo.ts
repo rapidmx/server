@@ -32,6 +32,7 @@ import {
     mountDevImpersonationRouteIfApplicable,
 } from "./dev/enableDevAutoLogin.js";
 import { DohDnssecDnsResolver } from "./dns/DohDnssecDnsResolver.js";
+import { selectConfigDrivenBackend } from "./lib/configDrivenBackend.js";
 
 import * as fs from "fs";
 import { readFile } from "fs/promises";
@@ -58,8 +59,7 @@ const objectFactory = new ObjectFactory(config, logger);
 // BlobStore backend is config-driven (mail:blob:backend) rather than hardcoded, same pattern as
 // mail:pki:backend below: `"local"` (default) needs only `mail:blob:local:root`; `"s3"` delegates to an
 // S3-compatible bucket (mail:blob:s3:*) for production use - see config.mongo.ts for the full key list.
-const blobBackend: string = config.get("mail:blob:backend") || "local";
-objectFactory.register(blobBackend === "s3" ? S3BlobStore : LocalFsBlobStore, "BlobStore");
+objectFactory.register(selectConfigDrivenBackend(config, "mail:blob:backend", "s3", LocalFsBlobStore, S3BlobStore), "BlobStore");
 objectFactory.register(MongoTextSearchProvider, "SearchProvider");
 objectFactory.register(RspamdSpamScanProvider, "SpamScanProvider");
 objectFactory.register(ClamAvScanProvider, "AvScanProvider");
@@ -93,11 +93,22 @@ objectFactory.register(
 // human-in-the-loop flow (mail:pki:manual_enrollment:store_path); `"rfc8823"` automates public-CA
 // enrollment end to end via RFC 8823 email-reply-00 ACME (mail:pki:rfc8823:*) - see config.mongo.ts for
 // the full key list. AcmeEnrollmentDriverJobMongo (src/mongo/Jobs.ts) is registered unconditionally
-// regardless of this setting - it feature-detects the injected SigningCertificateEnrollment and is a
-// no-op under the manual/default backend, so there's nothing to gate here.
-const signingEnrollmentBackend: string = config.get("mail:pki:signing_enrollment:backend") || "manual";
+// regardless of this setting, not because it's a full no-op under "manual": only its
+// driveEnrollments() half feature-detects the injected SigningCertificateEnrollment and no-ops without
+// rfc8823. Its other half, flagExpiringSigningCerts(), runs unconditionally on every tick regardless of
+// backend - an unfiltered scan of every mailbox, writing a SIGNING_CERT_EXPIRING audit entry for any
+// with a near-expiry signing key - so re-exporting this job is a real new periodic DB-scan + audit-log-
+// write cost for every deployment upgrading through this batch, not just rfc8823 ones. Confirmed
+// intentional on restapi's side (flagging an expiring signing key is useful under "manual" too, since
+// nothing else would notice), so left as-is rather than gated - just don't assume it's inert.
 objectFactory.register(
-    signingEnrollmentBackend === "rfc8823" ? Rfc8823AcmeSigningCertificateEnrollment : ManualSigningCertificateEnrollment,
+    selectConfigDrivenBackend(
+        config,
+        "mail:pki:signing_enrollment:backend",
+        "rfc8823",
+        ManualSigningCertificateEnrollment,
+        Rfc8823AcmeSigningCertificateEnrollment,
+    ),
     "SigningCertificateEnrollment"
 );
 
