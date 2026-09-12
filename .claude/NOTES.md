@@ -4389,3 +4389,24 @@ restapi's own `MailboxRouteMongo`/`MessageRouteMongo` already set `matterClass =
 - so this "just worked" the moment Phase 0's patch landed, no route/DI/config change needed here.
 Verification-only phase on this side; the one real gap (nothing in `web-client` could actually trigger a
 mailbox delete to exercise this) is `web-client`'s own Phase 2 entry, same date.
+
+### 2026-09-12 (continued) — Phase 3: Retention Policy (Group C)
+
+- New `src/mongo/routes/RetentionPolicyRoute.ts`/`src/sql/routes/RetentionPolicyRoute.ts` - one-line
+  `@ApiRoute("mail/retention-policy")` subclasses of restapi's `RetentionPolicyRouteMongo`/`SQL`, same
+  pattern as every other route mount this session. `GET` is readable by any authenticated user (never
+  404s - returns `{}` when nothing's configured yet); `PUT` is `@RequiresTrustedRole()`-only, both
+  enforced by the base route itself, nothing extra needed here.
+- Added `RetentionEnforcementJobMongo`/`SQL` to `src/{mongo,sql}/Jobs.ts`'s re-export lists. Unlike the
+  ACME driver job two batches ago, this one's `run()` genuinely no-ops per field
+  (`if (policy.messageRetentionDays) { ... }`) when the singleton `RetentionPolicy` row has nothing
+  configured - confirmed by reading `RetentionEnforcementJob.ts` directly rather than assuming, so
+  registering it unconditionally carries no surprise operational cost the way the ACME job's
+  `flagExpiringSigningCerts()` half did.
+- No new DI token, no new config registration needed - the job reads `mail:jobs:retention_enforcement:*`
+  directly with library-side defaults (`schedule: "0 0 4 * * *"`, `batch_size: 500`).
+- Full suite re-verified: 146/146 passing (a couple of transient MongoMemoryServer/SQLite resource-
+  contention flakes under parallel test-file execution during this phase, unrelated to this change -
+  resolved on re-run, not a real regression).
+- Client-side admin settings page (`apps/admin/retention-policy`) is `web-client`'s own Phase 3 entry,
+  same date.

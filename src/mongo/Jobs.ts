@@ -14,6 +14,7 @@ export {
     MailboxQuotaRecalcJobMongo,
     MeetingSchedulingJobMongo,
     QuarantineRetentionJobMongo,
+    RetentionEnforcementJobMongo,
     ScanQueueJobMongo,
     SearchIndexJobMongo,
 } from "@rapidmx/restapi/mongo";
