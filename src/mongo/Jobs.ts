@@ -11,6 +11,7 @@ export {
     DataExportJobMongo,
     DomainVerificationJobMongo,
     EasDeviceStateCleanupJobMongo,
+    ErasureExecutionJobMongo,
     ExternalShareExpirationJobMongo,
     MailboxImportJobMongo,
     MailboxQuotaRecalcJobMongo,

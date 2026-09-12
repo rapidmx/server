@@ -11,6 +11,7 @@ export {
     DataExportJobSQL,
     DomainVerificationJobSQL,
     EasDeviceStateCleanupJobSQL,
+    ErasureExecutionJobSQL,
     ExternalShareExpirationJobSQL,
     MailboxImportJobSQL,
     MailboxQuotaRecalcJobSQL,

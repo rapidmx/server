@@ -4462,3 +4462,29 @@ mailbox delete to exercise this) is `web-client`'s own Phase 2 entry, same date.
 - Client-side self-service UI (a second section on `apps/www/settings/privacy`, plus a new
   `mailboxImportApi.ts` raw-upload wrapper) is `web-client`'s own Phase 5 entry, same date; admin-mediated
   import is deferred to the shared `apps/admin/data-requests` page built in Phase 6.
+
+### 2026-09-12 (continued) — Phase 6: GDPR right-to-erasure (Group E) + the shared admin "Data Requests"
+page
+
+- New `src/mongo/routes/DataSubjectErasureRequestRoute.ts`/`src/sql/routes/DataSubjectErasureRequestRoute.ts`,
+  mounted at `mail/erasure-requests` - one-line subclasses of restapi's
+  `DataSubjectErasureRequestRouteMongo`/`SQL`. `create()` is deliberately **self-service only** here -
+  unlike `DataExportRequestRoute`/`MailboxImportRequestRoute`, there is no admin-on-behalf-of path or
+  `mailboxUid` override; it is always the caller's own mailbox. `approve()`/`deny()` are
+  `@RequiresTrustedRole()`-only; `approve()` 409s (citing the blocking Matter uid) if the mailbox is a
+  custodian on an active legal hold - `ErasureExecutionJob` re-checks this again immediately before the
+  actual destructive cascade, since a hold can be placed in the gap between approval and that job run.
+- Added `ErasureExecutionJobMongo`/`SQL` to `Jobs.ts`. Read the concrete Mongo class directly rather than
+  trusting the earlier investigation's own summary of "what gets purged" - it's a genuinely comprehensive
+  full-mailbox wipe (messages, contacts, contact lists, calendar events, tasks, notes, attachments,
+  labels, mail filter rules, signatures, booking types/bookings, OOF suppressions, device sync state,
+  quarantine entries, ingest queue entries, focused-inbox overrides, and even any of the mailbox's own
+  in-flight `DataExportRequest`/`MailboxImportRequest` rows) - not just the smaller subset originally
+  summarized. No new DI token needed.
+- Full suite re-verified stable at 146/146 (same transient parallel-test-file flakiness noted in every
+  phase since Phase 3, confirmed not a regression by re-running to a clean pass).
+- This closes out all seven features in restapi's compliance-roadmap batch (Legal Hold, non-owner access
+  auditing, retention policy, GDPR export, mailbox import, GDPR erasure - Group F eDiscovery is Phase 7,
+  not yet built). Client-side work (a third section on `apps/www/settings/privacy` for self-service
+  erasure requests, plus the new shared `apps/admin/data-requests` page hosting admin-mediated
+  export/import creation and erasure approve/deny review) is `web-client`'s own Phase 6 entry, same date.
