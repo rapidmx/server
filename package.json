@@ -51,6 +51,7 @@
     "nodemailer": "^10.0.1",
     "openapi3-ts": "^4.6.1",
     "prom-client": "^15.1.3",
+    "pst-extractor": "^1.12.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "redis": "^6.2.1",

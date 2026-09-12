@@ -4340,3 +4340,26 @@ both fixed here:
   `import` from a test process would attempt to actually start a server - the same reason
   `Server.mongo.test.ts`/`Server.sql.test.ts` already re-implement DI registration instead of importing
   either script.
+
+### 2026-09-12 (continued) — Phase 0 of consuming restapi's next batch: Legal Hold, access auditing,
+retention, GDPR export/import/erasure, eDiscovery Matter export+search (compliance roadmap Groups A-F)
+
+restapi moved 7 more feature commits past the batch already consumed (`d3a3aff` through `df3da4e`, plus
+a coverage-only commit) - refreshed the `yarn patch` the exact same way as every prior batch this
+session: `yarn build` in `restapi` → `yarn patch @rapidmx/restapi` → replace the temp dir's
+`dist/`+`package.json` → `yarn patch-commit -s` → `yarn install`.
+
+- **Same "patching doesn't pull in a patched package's new transitive dependencies" lesson repeated a
+  third time**: `pst-extractor` (new restapi prod dependency, added for PST-mailbox-import parsing) was
+  listed in the patched `node_modules/@rapidmx/restapi/package.json` but never actually installed -
+  `yarn install` doesn't re-resolve a patched package's own dependency list just because its patch
+  content changed. Added `pst-extractor@^1.12.0` directly to this repo's own `package.json` (matching
+  restapi's own declared range exactly) - `long`/`uuid-parse` (its own transitive deps) then resolved
+  automatically. Checked for an `iconv-lite` version conflict too (pst-extractor's own dependency,
+  already pulled in by several other packages at different declared ranges) - all land on the same
+  `0.7.3`, no conflict.
+- Full suite re-verified after the refresh: 146/146 passing, `yarn tsc --noEmit` clean.
+- This phase is infrastructure only - see the dated entries below for each of the 7 features this batch
+  unlocks (2 needed no consuming-side code at all - Legal Hold enforcement and non-owner-access
+  auditing - the rest are new async-request entities: retention policy, GDPR export, mailbox import,
+  GDPR erasure, and eDiscovery Matter export/search).
