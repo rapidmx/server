@@ -4039,3 +4039,31 @@ work here; only wire up what restapi's current published release already provide
   either owned elsewhere (escrow/ACME in `restapi`) or were explicitly deferred by JP mid-session
   (client-side spec implementation is a separate, much larger follow-on; see the approved plan at
   session time for the full phase breakdown if picking this back up).
+
+### 2026-09-11 (continued) — Add a message raw-MIME-content route for client-side E2E decrypt/verify
+
+Follow-on to the client-side crypto work landing the same day in `react-shared`/`web-client` (see
+those repos' own NOTES.md) - a real gap surfaced once `MessageDetailPane.tsx` actually needed to
+decrypt/verify a received message: `@rapidmx/restapi`'s own `GET /:id/content` deliberately only ever
+serves already-sanitized HTML (its own doc comment: raw MIME rendered via a direct browser navigation
+would be an XSS risk), which means an encrypted message's real body - never sanitized or even visible
+server-side at all, since `ScanPipeline` can't extract HTML from ciphertext - was completely
+unreachable client-side, and a signed message's detached signature isn't carried in sanitized HTML
+either way.
+
+- Added `BaseMessageRawContentRoute.ts` (this repo's own file, not restapi's) + thin Mongo/SQL
+  subclasses (`MessageRawContentRoute.ts`) mounted at `GET /mail/messages/:id/raw`, at the **same**
+  `mail/messages` base path restapi's own `MessageRoute` already occupies - the same
+  multiple-classes-per-base-path pattern `KeyVaultRoute`/`KeyLookupRoute`/`MailboxRoute` already use.
+  Streams `message.bodyBlobKey`'s raw bytes completely unmodified, labeled `content-type:
+  message/rfc822` (never `text/html`) specifically so a stray direct navigation to it can't render as
+  HTML - the only caller is expected to be `web-client`'s own client-side code, which runs
+  `react-shared`'s `crypto/smimeMessage.ts` against the result and sanitizes (via `dompurify`) before
+  ever touching the DOM with it.
+- Own independent `RepoUtils<M>`/`BlobStore`/`ACLUtils` injection (not reusing restapi's own
+  `MessageRoute` internals, which are private) - same shape as this repo's existing
+  `BaseMailComposeRoute.ts`. Unit-tested the same way that file's own `assembleRaw()` tests are:
+  mocked at the repo/collaborator boundary (`test/routes/BaseMessageRawContentRoute.test.ts`), not
+  against a real database - `init()`'s real DI path is exercised indirectly through the mounted route
+  in normal server operation, same documented convention as `BaseMailComposeRoute.test.ts`'s own top
+  comment.
