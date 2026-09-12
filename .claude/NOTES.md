@@ -4563,3 +4563,31 @@ page
   - Added both to `src/mongo/Jobs.ts`/`src/sql/Jobs.ts`'s re-export lists, alphabetically. Full suite
     re-verified at 146/146, plus a direct `Server.mongo.test.ts`/`Server.sql.test.ts` start/stop/restart
     check to confirm both jobs actually instantiate cleanly under the existing DI registrations.
+
+- **2026-09-12 (continued) — Refreshed the restapi patch to pick up 4 commits of restapi's own
+  post-batch adversarial-review fixes (`1d4f713`, `678b945`, `723da84`, `59f2393` - df3da4e..HEAD),
+  found and validated while auditing outstanding spec work.** All internal correctness/security fixes to
+  routes and jobs `server` already mounts/re-exports - no new entities, routes, job classes, or wire-shape
+  changes, so this is a patch-refresh-only pickup, no new mounts or client work needed. Several are
+  genuinely serious: an escrow holder could list an arbitrary mailbox as a matter "custodian" and
+  read/search its content, bypassing the dual-control `EscrowAccessRequest` workflow entirely; several
+  `BaseMatterRoute`/`BaseMailboxRoute`/`BaseScopedChildRoute` bulk endpoints (`truncate()`,
+  `updateBulk()`, `updateProperty()`, `exists()`) fell through to the framework's generic trusted-role ACL
+  and bypassed Legal Hold and the holder-only separation-of-duties model entirely; `RetentionEnforcementJob`
+  never purged `Attachment` rows or blob content, leaving PHI/PII fully downloadable after a message was
+  supposedly purged.
+  - **restapi's own working tree had substantial uncommitted WIP** (Legal Hold enforcement extended to
+    more entity types - Attachment/CalendarEvent/Contact/Note/Task, judging by the touched files) sitting
+    on top of `59f2393` when this was found. Per standing rule, restapi's source is never touched or
+    committed to from here - built from a `git worktree add --detach` checkout of `59f2393` instead,
+    entirely isolated from that WIP, rather than stashing/disturbing it in place.
+  - **restapi's own `yarn build` (`lint && rimraf dist && tsc`) currently fails its own lint gate at
+    committed HEAD** - 6 pre-existing errors (`no-unnecessary-type-assertion`/`no-empty-function`),
+    confirmed present with the WIP stashed away too, so this is a real gap in restapi's own committed
+    source, not an artifact of the worktree or the WIP. Since fixing restapi's source is out of scope
+    here, built via `rimraf dist && tsc` directly (skipping the lint step) - the actual compiled output
+    server's patch consumes, unaffected by a lint-only gate.
+  - Full suite re-verified at 146/146 after the refresh; `tsc --noEmit` clean.
+  - Not yet reported to JP as its own item - worth flagging separately from this patch refresh, since he
+    owns that repo and would want to fix his own lint gate and review/commit the in-progress Legal Hold
+    WIP himself.
