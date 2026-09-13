@@ -4639,3 +4639,21 @@ page
     anything the patch changed, so nothing broke, though it also means nothing in this repo would catch a
     future regression in that surface either - a pre-existing, already-accepted blind spot for every
     one-line-subclass route in this repo, not new here.
+
+- **2026-09-12 (continued) — At JP's explicit request, fixed the two restapi-owned findings from the
+  adversarial review above directly in `restapi` itself (not worked around from here), then refreshed the
+  patch again to pick them up.** restapi's own `.claude/NOTES.md` (same date) has the full writeup; summary
+  from this repo's side:
+  - `ScheduledSendJob.relayDueMessage()` now claims a message (version-checked clear of
+    `scheduledSendTime`) before calling `scanAndRelay()`, closing the critical send-after-cancel race -
+    restores `scheduledSendTime` best-effort on a relay failure so the job's own documented retry behavior
+    still holds.
+  - `DataExportJob.buildMboxBundle()` now caps its own row count via the same `maxContentRows` config
+    `buildJsonBundle()` already used - it previously had no cap at all.
+  - `MatterExportJob`'s per-custodian-only cap was investigated and left alone - its own doc comment
+    already documents this as deliberate (a Matter's custodian list is holder/admin-curated, not
+    attacker-controlled), not the gap it first looked like.
+  - restapi's own `yarn build` also had a broken lint gate (8 pre-existing errors) - fixed there too, so
+    `yarn build` now passes end to end.
+  - Rebuilt restapi from its own (now-clean) working tree and refreshed this repo's patch again. Full
+    suite re-verified at 146/146, `tsc --noEmit` clean.
