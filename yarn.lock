@@ -1543,16 +1543,16 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@rapidmx/activesync@npm:1.0.0-beta.0":
-  version: 1.0.0-beta.0
-  resolution: "@rapidmx/activesync@npm:1.0.0-beta.0"
+"@rapidmx/activesync@npm:1.0.0-beta.1":
+  version: 1.0.0-beta.1
+  resolution: "@rapidmx/activesync@npm:1.0.0-beta.1"
   dependencies:
     mailparser: "npm:^3.9.23"
   peerDependencies:
-    "@rapidmx/restapi": 0.3.x
+    "@rapidmx/restapi": 0.8.x
     "@rapidrest/core": 5.x
-    "@rapidrest/service-core": 1.x
-  checksum: 10c0/b42b81029aec2850a25a9951cca9c2332b05351522eb7c50eb0a5bf886aa31a28f88cd161f3fce699d54d7effe5a1b5a3d76096d1ca1707650b405828a30a4f5
+    "@rapidrest/service-core": 2.x
+  checksum: 10c0/bbe51d0cec95c10355f4fd3735a20311a6559fa51690f2a5946caefe0dde47cd8dbab375d506d06ca4efc0d38c8f7b272b2a965002e9c10f71e6a6cac7f223fc
   languageName: node
   linkType: hard
 
@@ -1567,17 +1567,17 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@rapidmx/mapi@npm:1.0.0-beta.0":
-  version: 1.0.0-beta.0
-  resolution: "@rapidmx/mapi@npm:1.0.0-beta.0"
+"@rapidmx/mapi@npm:1.0.0-beta.2":
+  version: 1.0.0-beta.2
+  resolution: "@rapidmx/mapi@npm:1.0.0-beta.2"
   dependencies:
     mailparser: "npm:^3.9.23"
     nodemailer: "npm:^10.0.1"
   peerDependencies:
-    "@rapidmx/restapi": ^0.3.0
+    "@rapidmx/restapi": ^0.8.0
     "@rapidrest/core": 5.x
-    "@rapidrest/service-core": 1.x
-  checksum: 10c0/6e20c9eae3bc2bfbd3302e6cc9199e7ac3993cc1c29dfd8320ee61ca115ae870ac4cc7e9c05b73d9e35d4240f540ee69948be56ab80abc0d5c57c30b503fe0ac
+    "@rapidrest/service-core": 2.x
+  checksum: 10c0/92fa48449c0ef7c6c863e53413abfb5dd7edeb8795631846cc18315f16bdab67621d090f9406bbe9f4b1cd2ec94615966a53d97640a9366682adc1a582e1f7c7
   languageName: node
   linkType: hard
 
@@ -9602,9 +9602,9 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "server@workspace:."
   dependencies:
-    "@rapidmx/activesync": "npm:1.0.0-beta.0"
+    "@rapidmx/activesync": "npm:1.0.0-beta.1"
     "@rapidmx/autodiscover": "npm:1.0.0-beta.0"
-    "@rapidmx/mapi": "npm:1.0.0-beta.0"
+    "@rapidmx/mapi": "npm:1.0.0-beta.2"
     "@rapidmx/react-shared": "npm:^0.3.0"
     "@rapidmx/restapi": "npm:^0.8.0"
     "@rapidmx/web-client": "npm:^0.3.1"

@@ -33,9 +33,9 @@
     "trailingComma": "es5"
   },
   "dependencies": {
-    "@rapidmx/activesync": "1.0.0-beta.0",
+    "@rapidmx/activesync": "1.0.0-beta.1",
     "@rapidmx/autodiscover": "1.0.0-beta.0",
-    "@rapidmx/mapi": "1.0.0-beta.0",
+    "@rapidmx/mapi": "1.0.0-beta.2",
     "@rapidmx/react-shared": "^0.3.0",
     "@rapidmx/restapi": "^0.8.0",
     "@rapidmx/web-client": "^0.3.1",
