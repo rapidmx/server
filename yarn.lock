@@ -1750,9 +1750,9 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@rapidrest/service-core@npm:^1.7.2":
-  version: 1.8.0
-  resolution: "@rapidrest/service-core@npm:1.8.0"
+"@rapidrest/service-core@npm:^2.0.0":
+  version: 2.0.0
+  resolution: "@rapidrest/service-core@npm:2.0.0"
   dependencies:
     axios: "npm:^1.20.0"
     dayjs: "npm:^1.11.23"
@@ -1782,7 +1782,7 @@ __metadata:
       optional: true
     uWebSockets.js:
       optional: true
-  checksum: 10c0/f1f717633b457abc729ed3541052c5f50fef362be66903c325931cd83a61ebf28216f51af24bea5e9e8da8b288821af84c5e2c7086a20f5e663e36ab7d0c2f29
+  checksum: 10c0/5509e35e6ec4bceca2cde984cf485249bcb19324cd781c543b8bf0ee40cd4428603aaf96c6886adb91e7c0bec5d8d8c254e4ca39ed3a3ba911f6bb676bfa3989
   languageName: node
   linkType: hard
 
@@ -9611,7 +9611,7 @@ __metadata:
     "@rapidrest/cli": "npm:^2.0.0"
     "@rapidrest/core": "npm:^5.2.2"
     "@rapidrest/react": "npm:2.0.0-beta.2"
-    "@rapidrest/service-core": "npm:^1.7.2"
+    "@rapidrest/service-core": "npm:^2.0.0"
     "@swc/core": "npm:^1.16.2"
     "@tailwindcss/vite": "npm:^4.3.3"
     "@testing-library/dom": "npm:^10.4.1"

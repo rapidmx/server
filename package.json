@@ -41,7 +41,7 @@
     "@rapidmx/web-client": "^0.3.1",
     "@rapidrest/core": "^5.2.2",
     "@rapidrest/react": "2.0.0-beta.2",
-    "@rapidrest/service-core": "^1.7.2",
+    "@rapidrest/service-core": "^2.0.0",
     "@types/node": "^26.5.0",
     "acme-client": "^5.4.0",
     "axios": "^1.20.0",
