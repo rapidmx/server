@@ -59,13 +59,13 @@ describe("BaseMailComposeRoute.assembleRaw() Tests (mocked collaborators)", () =
 
     function buildRoute(overrides: Partial<Record<string, any>> = {}) {
         const route = new (TestMailComposeRoute as any)();
-        (route as any)._objectFactory = { newInstance: vi.fn() };
-        (route as any).messageRepo = { findOne: vi.fn().mockResolvedValue(message), update: vi.fn().mockResolvedValue(message) };
-        (route as any).folderRepo = { findOne: vi.fn().mockResolvedValue(draftsFolder) };
-        (route as any).mailboxRepo = { findOne: vi.fn().mockResolvedValue(mailbox) };
-        (route as any).attachmentRepo = { count: vi.fn().mockResolvedValue(0) };
-        (route as any).aclUtils = { hasPermission: vi.fn().mockResolvedValue(true) };
-        (route as any).blobStore = { put: vi.fn().mockResolvedValue(undefined) };
+        (route)._objectFactory = { newInstance: vi.fn() };
+        (route).messageRepo = { findOne: vi.fn().mockResolvedValue(message), update: vi.fn().mockResolvedValue(message) };
+        (route).folderRepo = { findOne: vi.fn().mockResolvedValue(draftsFolder) };
+        (route).mailboxRepo = { findOne: vi.fn().mockResolvedValue(mailbox) };
+        (route).attachmentRepo = { count: vi.fn().mockResolvedValue(0) };
+        (route).aclUtils = { hasPermission: vi.fn().mockResolvedValue(true) };
+        (route).blobStore = { put: vi.fn().mockResolvedValue(undefined) };
         Object.assign(route, overrides);
         return route as TestMailComposeRoute;
     }

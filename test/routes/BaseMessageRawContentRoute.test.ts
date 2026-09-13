@@ -37,10 +37,10 @@ describe("BaseMessageRawContentRoute.raw() Tests (mocked collaborators)", () => 
 
     function buildRoute(overrides: Partial<Record<string, any>> = {}) {
         const route = new (TestMessageRawContentRoute as any)();
-        (route as any)._objectFactory = { newInstance: vi.fn() };
-        (route as any).messageRepo = { findOne: vi.fn().mockResolvedValue(message) };
-        (route as any).aclUtils = { hasPermission: vi.fn().mockResolvedValue(true) };
-        (route as any).blobStore = { get: vi.fn().mockResolvedValue(Buffer.from("raw mime source", "utf-8")) };
+        (route)._objectFactory = { newInstance: vi.fn() };
+        (route).messageRepo = { findOne: vi.fn().mockResolvedValue(message) };
+        (route).aclUtils = { hasPermission: vi.fn().mockResolvedValue(true) };
+        (route).blobStore = { get: vi.fn().mockResolvedValue(Buffer.from("raw mime source", "utf-8")) };
         Object.assign(route, overrides);
         return route as TestMessageRawContentRoute;
     }

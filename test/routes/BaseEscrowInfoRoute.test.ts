@@ -38,10 +38,10 @@ describe("BaseEscrowInfoRoute.escrowInfo() Tests (mocked collaborators)", () => 
 
     function buildRoute(overrides: Partial<Record<string, any>> = {}) {
         const route = new (TestEscrowInfoRoute as any)();
-        (route as any)._objectFactory = { newInstance: vi.fn() };
-        (route as any).mailboxRepo = { findOne: vi.fn().mockResolvedValue(mailbox) };
-        (route as any).escrowScopeRepo = { findOne: vi.fn().mockResolvedValue(scope) };
-        (route as any).aclUtils = { findACL: vi.fn().mockResolvedValue(undefined), getRecord: vi.fn() };
+        (route)._objectFactory = { newInstance: vi.fn() };
+        (route).mailboxRepo = { findOne: vi.fn().mockResolvedValue(mailbox) };
+        (route).escrowScopeRepo = { findOne: vi.fn().mockResolvedValue(scope) };
+        (route).aclUtils = { findACL: vi.fn().mockResolvedValue(undefined), getRecord: vi.fn() };
         Object.assign(route, overrides);
         return route as TestEscrowInfoRoute;
     }
