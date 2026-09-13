@@ -17,7 +17,17 @@ import { fileURLToPath } from "url";
 import { dirname } from "path";
 import { JWTUtils, EventUtils, Logger } from "@rapidrest/core";
 import { ObjectFactory, Server } from "@rapidrest/service-core";
-import { FsDkimKeyProvider, LocalFsBlobStore, NodeDnsResolver, PostfixSendmailTransport } from "@rapidmx/restapi";
+import {
+    FsDkimKeyProvider,
+    LocalFsBlobStore,
+    LocalX509CertificateAuthority,
+    ManualSigningCertificateEnrollment,
+    NodeDnsResolver,
+    OpenBaoPkiCertificateAuthority,
+    PostfixSendmailTransport,
+    Rfc8823AcmeSigningCertificateEnrollment,
+    S3BlobStore,
+} from "@rapidmx/restapi";
 import { MongoTextSearchProvider } from "@rapidmx/restapi/search";
 import { ClamAvScanProvider, RspamdSpamScanProvider } from "@rapidmx/restapi/scan";
 import {
@@ -25,6 +35,8 @@ import {
     enableDevAutoLoginIfApplicable,
     mountDevImpersonationRouteIfApplicable,
 } from "./dev/enableDevAutoLogin.js";
+import { DohDnssecDnsResolver } from "./dns/DohDnssecDnsResolver.js";
+import { selectConfigDrivenBackend } from "./lib/configDrivenBackend.js";
 
 import * as fs from "fs";
 import { readFile } from "fs/promises";
@@ -47,18 +59,41 @@ const objectFactory = new ObjectFactory(config, logger);
 // @rapidmx/restapi's routes/jobs pull these via string-token @Inject(...) — they only resolve once
 // something has explicitly registered a concrete implementation under that exact token (there is no
 // config-driven auto-wiring for these). See @rapidmx/restapi's own README ("Usage") and .claude/NOTES.md.
-objectFactory.register(LocalFsBlobStore, "BlobStore");
+// Mirrors server.mongo.ts's own registration block (this entry is the same Mongo-backed flavor, just the
+// generic `yarn dev` one - see that file's own comments for the full rationale on each config-driven pick).
+objectFactory.register(selectConfigDrivenBackend(config, "mail:blob:backend", "s3", LocalFsBlobStore, S3BlobStore), "BlobStore");
 objectFactory.register(MongoTextSearchProvider, "SearchProvider");
 objectFactory.register(RspamdSpamScanProvider, "SpamScanProvider");
 objectFactory.register(ClamAvScanProvider, "AvScanProvider");
 objectFactory.register(PostfixSendmailTransport, "MailTransport");
-objectFactory.register(NodeDnsResolver, "DnsResolver");
+const dnsResolverBackend: string = config.get("mail:dns:resolver") || "node";
+objectFactory.register(dnsResolverBackend === "doh-dnssec" ? DohDnssecDnsResolver : NodeDnsResolver, "DnsResolver");
 // Opts into automatic per-domain DKIM key generation (writing into the shared volume the Postfix/rspamd
 // container reads from - see docker-compose.mail.yml's `dkim_rspamd_keys` volume and `mail:dkim:*`
 // config) rather than the library's default manual model (`NullDkimKeyProvider`, an admin fills in
 // dkimSelector/dkimPublicKey by hand). See @rapidmx/restapi's dkim/DkimKeyProvider.ts doc comment for the
 // security tradeoff this represents before changing it back.
 objectFactory.register(FsDkimKeyProvider, "DkimKeyProvider");
+// EncryptionCertificateAuthority/SigningCertificateEnrollment: see server.mongo.ts's own comments for the
+// full rationale on each config-driven pick. Missing here previously - server.ts (the entry `yarn dev`
+// actually runs) was never updated when this PKI/RFC 8823 batch added these to server.mongo.ts/
+// server.sql.ts, so any route touching either token (e.g. KeyVaultRoute) failed to construct at all under
+// `yarn dev` with "No class found with name: EncryptionCertificateAuthority".
+const caBackend: string = config.get("mail:pki:backend") || "local";
+objectFactory.register(
+    caBackend === "openbao" ? OpenBaoPkiCertificateAuthority : LocalX509CertificateAuthority,
+    "EncryptionCertificateAuthority"
+);
+objectFactory.register(
+    selectConfigDrivenBackend(
+        config,
+        "mail:pki:signing_enrollment:backend",
+        "rfc8823",
+        ManualSigningCertificateEnrollment,
+        Rfc8823AcmeSigningCertificateEnrollment,
+    ),
+    "SigningCertificateEnrollment"
+);
 
 let server: any = undefined;
 

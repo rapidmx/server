@@ -4657,3 +4657,43 @@ page
     `yarn build` now passes end to end.
   - Rebuilt restapi from its own (now-clean) working tree and refreshed this repo's patch again. Full
     suite re-verified at 146/146, `tsc --noEmit` clean.
+
+- **2026-09-13 — Fixed `yarn dev` crashing at startup with "No class found with name:
+  EncryptionCertificateAuthority": `src/server.ts` (the third, generic entry point `rapidrest dev`
+  actually runs - distinct from `server.mongo.ts`/`server.sql.ts`) had silently drifted out of sync and
+  was missing four DI registrations the other two entries already have.** Root-caused by actually
+  reproducing the crash locally (`yarn dev` in the background, polling its log for a terminal state)
+  rather than reasoning from the error text alone - two dead ends worth recording so they aren't re-walked:
+  - First suspected the `@rapidrest/service-core` version bump (`^1.7.2` → `^2.0.0`, this file's own
+    2026-09-13 entry above) hadn't actually taken effect - ruled out directly: `node_modules/@rapidrest/
+    service-core/package.json` really did show `2.0.0`, and a real `Server.mongo.test.ts`/`Server.sql.
+    test.ts` run (full start/stop/restart, every route including `KeyVaultRoute`) passed clean. That
+    "clean" result was itself misleading, though: both test files build their **own** `Server` by hand
+    rather than importing `server.mongo.ts`/`server.sql.ts` - their own comment already admits
+    `EncryptionCertificateAuthority` is "not currently exercised by any mounted route/test" there, so
+    passing never actually proved the real entry files' own registration code path worked.
+  - `"Unable to register class undefined for X/undefined"` (logged for `ACLUtils`/`DnsResolver`/
+    `EncryptionCertificateAuthority` alike, right before the crash) turned out to be harmless, unrelated
+    noise, not a clue: `@rapidrest/core`'s `ObjectFactory.initialize()` calls `this.register(type)` with
+    a single argument for *every* `@Inject`-ed property, including string-token ones - `register(clazz,
+    fqn)`'s own guard just logs-and-returns when `fqn` is omitted this way. Confirmed by reading
+    `ObjectFactory.js` directly rather than continuing to guess from the log text.
+  - The real fix: `rapidrest dev` runs `src/server.ts`, not `server.mongo.ts`/`server.sql.ts` - a fact
+    only surfaced by actually running `yarn dev` and noticing the crash's own "Failed running 'src/
+    server.ts'" line. `server.ts` still had `server.mongo.ts`'s *original*, pre-PKI-batch registration
+    block verbatim: no config-driven `BlobStore`/`DnsResolver` backend selection, and no
+    `EncryptionCertificateAuthority`/`SigningCertificateEnrollment` registration at all - both added to
+    `server.mongo.ts`/`server.sql.ts` in an earlier phase this session but never ported to this third
+    entry. Fixed by mirroring `server.mongo.ts`'s current registration block exactly (same config keys,
+    same `selectConfigDrivenBackend()` calls, same imports).
+  - Verified by actually starting the real dev server again (not just re-running tests) and confirming
+    `KeyVaultRoute` and every other route mount cleanly through to `"Listening on 0.0.0.0:3001..."`. Full
+    suite still 146/146, `tsc --noEmit` clean.
+  - **Real, unaddressed gap this surfaced**: nothing in this repo's test suite actually imports and
+    exercises `server.ts`, `server.mongo.ts`, or `server.sql.ts` as entry points - `Server.mongo.test.ts`/
+    `Server.sql.test.ts` hand-build an equivalent `Server` instead, so a real entry file can silently drift
+    out of sync (as `server.ts` just did, for a full session's worth of PKI/S3/DoH work) with the test
+    suite staying green throughout. Worth a follow-up: either a real smoke test that imports each entry
+    file directly, or a shared registration-list helper all three entries call into instead of three
+    independently-maintained copies - flagged, not fixed here, since it's a bigger design decision than a
+    one-line crash fix warrants deciding unilaterally.
