@@ -162,15 +162,24 @@ conf.defaults({
                 datasource: "mongo",
             },
         },
+        // Defaults assume a host-run `yarn dev` process talking to docker-compose.mail.yml's standalone
+        // scanning stack, whose ports are mapped straight to the host (see that file) - the same
+        // localhost-reachable convention every other default in this file follows (datastores, etc). These
+        // are NOT the docker-network-internal service names ("rspamd"/"clamav") that only resolve when this
+        // app *also* runs inside the compose network - docker-compose.mongo.yml's `server:` service already
+        // overrides both via env vars for that case. Left as the bare service names here previously, which
+        // broke plain `yarn dev` with `getaddrinfo ENOTFOUND clamav`/`rspamd` the moment mail send tried to
+        // scan anything (ScanPipeline fails closed on a scan-engine outage - see ScanPipeline.ts - so this
+        // didn't just log a warning, it silently quarantined every outbound message instead of relaying it).
         scan: {
             spam: {
                 rspamd: {
-                    url: "http://rspamd:11333",
+                    url: "http://localhost:11333",
                 },
             },
             av: {
                 clamav: {
-                    host: "clamav",
+                    host: "127.0.0.1",
                     port: 3310,
                 },
             },
@@ -285,6 +294,34 @@ conf.defaults({
     cluster_url: "http://localhost",
     metrics: {
         authRequired: true,
+    },
+    // Read by `RateLimiter` (see `@rapidrest/service-core`), which backs every `@RateLimit()`-decorated
+    // endpoint in `@rapidmx/restapi` - the three mutating booking endpoints, the public key-discovery
+    // endpoint, AND `GET /mailbox/:id/keys/lookup`, which every logged-in user's compose flow calls once
+    // per new recipient. The framework's own built-in default (100 attempts/60s per identifier, 100
+    // attempts/300s per source IP - see `RateLimiter`'s class default) is tuned for brute-force-prone
+    // anonymous endpoints and is far too tight for that key-lookup route: an ordinary logged-in user
+    // moving around the app and composing to a handful of new contacts in one session can trip 429s on
+    // legitimate traffic, and because the per-IP counter is shared across every rate-limited endpoint
+    // (not just the one being called), that trips even faster for anyone behind a shared/NAT'd IP.
+    // Raised well past `@rapidmx/restapi`'s own test-suite headroom (1000/300, 5000/300 - see
+    // `test/config-defaults.ts`) a second time after that still proved too tight for real interactive
+    // use: the identifier layer is already scoped per logged-in user + endpoint (`@RateLimit()`'s default
+    // `perUser: true`), so there is little downside to making it very permissive - ~33 req/s sustained per
+    // user per endpoint is far beyond anything a human clicking around could produce, but a scripted flood
+    // sustained past that still exhausts the window and gets 429'd. The per-IP layer is raised
+    // proportionally, since it's the one most likely to trip first for anyone testing from a single
+    // machine (dev, or a shared/NAT'd office IP) - it still bounds a genuine multi-account flood from one
+    // source, just at a much higher ceiling.
+    rateLimit: {
+        enabled: true,
+        maxAttempts: 10_000,
+        windowSeconds: 300,
+        ip: {
+            enabled: true,
+            maxAttempts: 20_000,
+            windowSeconds: 300,
+        },
     },
     // Exact IP addresses of proxies/load balancers this server sits behind and trusts to set
     // X-Forwarded-For/X-Real-IP truthfully. Left empty by default (fail closed: forwarding headers are
