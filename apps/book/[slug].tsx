@@ -9,13 +9,13 @@ import {
     PublicBookingType,
     bookSlot,
     bookingManageUrl,
-    getBookingSlots,
     getPublicBookingType,
 } from "@rapidmx/react-shared/booking/bookingApi.js";
 import useBranding from "@rapidmx/react-shared/branding/useBranding.js";
 import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import Button from "@rapidmx/react-shared/components/buttons/Button.js";
 import { BrandingFooter, BrandingHeader } from "@rapidmx/web-client/shared/components/layout/BrandingChrome.js";
+import { SlotCursor, appendSlots, fetchSlotPage, initialSlotCursor } from "./_slotPaging.js";
 
 const INPUT_CLASS =
     "w-full text-sm py-2.5 px-3 border border-border rounded-sm bg-surface text-text focus:outline-none focus:border-primary";
@@ -56,6 +56,9 @@ export default function PublicBookingPage({ params }: { params: { slug: string }
 function BookingContent({ slug, logoSrc }: { slug: string; logoSrc: string }) {
     const [bookingType, setBookingType] = useState<PublicBookingType | null>(null);
     const [slots, setSlots] = useState<BookingSlot[]>([]);
+    const [nextSlots, setNextSlots] = useState<SlotCursor | null>(null);
+    const [loadingMore, setLoadingMore] = useState(false);
+    const [moreError, setMoreError] = useState<string | null>(null);
     const [loading, setLoading] = useState(true);
     const [loadError, setLoadError] = useState<string | null>(null);
     const [selectedSlot, setSelectedSlot] = useState<BookingSlot | null>(null);
@@ -70,14 +73,36 @@ function BookingContent({ slug, logoSrc }: { slug: string; logoSrc: string }) {
     useEffect(() => {
         setLoading(true);
         setLoadError(null);
-        Promise.all([getPublicBookingType(slug), getBookingSlots(slug)])
-            .then(([type, slotList]) => {
+        setMoreError(null);
+        // The booking type says how far ahead it can be booked; slots are then paged through that whole window
+        // (see _slotPaging.ts), not just the first response's 30 days / 500 slots.
+        getPublicBookingType(slug)
+            .then(async (type) => {
+                const page = type ? await fetchSlotPage(slug, initialSlotCursor(type.bookingWindowDays)) : { slots: [], next: null };
                 setBookingType(type);
-                setSlots(slotList);
+                setSlots(page.slots);
+                setNextSlots(page.next);
             })
             .catch((err) => setLoadError(err instanceof ApiRequestError ? err.message : "Could not load this booking page."))
             .finally(() => setLoading(false));
     }, [slug]);
+
+    async function handleLoadMore() {
+        if (!nextSlots) {
+            return;
+        }
+        setLoadingMore(true);
+        setMoreError(null);
+        try {
+            const page = await fetchSlotPage(slug, nextSlots);
+            setSlots((current) => appendSlots(current, page.slots));
+            setNextSlots(page.next);
+        } catch (err) {
+            setMoreError(err instanceof ApiRequestError ? err.message : "Could not load more times.");
+        } finally {
+            setLoadingMore(false);
+        }
+    }
 
     const grouped = useMemo(() => groupByLocalDate(slots), [slots]);
 
@@ -165,6 +190,19 @@ function BookingContent({ slug, logoSrc }: { slug: string; logoSrc: string }) {
                                             </div>
                                         </div>
                                     ))}
+                                    {moreError && <Alert>{moreError}</Alert>}
+                                    {nextSlots && (
+                                        <Button
+                                            type="button"
+                                            variant="secondary"
+                                            className="!w-auto self-start"
+                                            loading={loadingMore}
+                                            disabled={loadingMore}
+                                            onClick={handleLoadMore}
+                                        >
+                                            Show later times
+                                        </Button>
+                                    )}
                                 </div>
                             )
                         ) : (

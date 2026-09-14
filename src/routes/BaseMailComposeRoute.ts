@@ -11,24 +11,30 @@ import {
     ACLUtils,
     ApiErrorMessages,
     ApiErrors,
+    BaseEntity,
     DocDecorators,
     ObjectFactory,
     RepoUtils,
     RouteDecorators,
 } from "@rapidrest/service-core";
-import { Attachment, BlobStore, Folder, FolderType, Mailbox, Message, Recipient, RecipientType } from "@rapidmx/restapi";
+import { Attachment, BlobStore, Folder, FolderType, Mailbox, Matter, Message, Recipient, RecipientType } from "@rapidmx/restapi";
 import { DEFAULT_MAX_COMPOSE_ATTACHMENT_BYTES } from "../config.defaults.js";
 const { Config, Inject } = ObjectDecorators;
 const { Description, Returns, Summary } = DocDecorators;
 const { Auth, Param, Post, User: AuthUser } = RouteDecorators;
 
-/** The structured compose input a webmail client submits — see `assembleDraft()` in `@rapidmx/react-shared`'s `mailApi.ts`. */
+/**
+ * The structured compose input a webmail client submits — see `assembleDraft()` in `@rapidmx/react-shared`'s `mailApi.ts`.
+ * `to` and `html` may be empty: the client autosaves (and saves on Close and sign-out) through this route, so a draft
+ * typed before any recipient is added, or with an empty body, must still be stored. Sending needs recipients, which
+ * the client checks before calling send.
+ */
 export interface ComposeAssembleInput {
-    to: Recipient[];
+    to?: Recipient[];
     cc?: Recipient[];
     bcc?: Recipient[];
     subject?: string;
-    html: string;
+    html?: string;
 }
 
 /**
@@ -63,6 +69,23 @@ const COMPOSED_BODY_PREFIX = "bodies/";
 
 function toNodemailerAddress(recipient: Recipient): { name?: string; address: string } {
     return { name: recipient.displayName, address: recipient.address };
+}
+
+/**
+ * The mailbox display name to put in a composed `From` header, or `undefined` for a bare address: a name containing
+ * `@` looks like a different sender's address to the recipient (restapi refuses to send such a message, and now rejects
+ * such names, but existing mailboxes may still have one), and CR/LF has no place in a header.
+ */
+export function safeFromDisplayName(displayName: string | undefined): string | undefined {
+    const name: string = (displayName ?? "").trim();
+    return name && !/[@\r\n]/.test(name) ? name : undefined;
+}
+
+function isRecipientList(value: unknown): value is Recipient[] | undefined {
+    return (
+        value === undefined ||
+        (Array.isArray(value) && value.every((r) => r && typeof r === "object" && typeof (r as Recipient).address === "string"))
+    );
 }
 
 function invalidRawMime(reason: string): ApiError {
@@ -186,7 +209,8 @@ export function assertRawMimeHeadersMatch(
     const own = new Set(
         [mailbox.primarySmtpAddress, ...(mailbox.aliasAddresses ?? [])].filter(Boolean).map((a) => a.trim().toLowerCase()),
     );
-    const displayName: string = (mailbox.displayName ?? "").trim();
+    // Only a name the server itself would write (see `safeFromDisplayName()`); send refuses an address-like one anyway.
+    const displayName: string = safeFromDisplayName(mailbox.displayName) ?? "";
 
     if (headers.has("bcc")) {
         throw invalidRawMime("it must not contain a Bcc header.");
@@ -330,13 +354,15 @@ function toPreview(html: string): string {
  * The draft's `from` is always derived from its owning `Mailbox` (never taken from the client), so this
  * cannot be used to spoof a `From` address the caller's mailbox doesn't actually own.
  *
- * `messageClass`/`attachmentClass`/`mailboxClass` are supplied by the Mongo/SQL concrete subclasses.
+ * `messageClass`/`attachmentClass`/`mailboxClass`/`folderClass`/`matterClass` are supplied by the Mongo/SQL concrete
+ * subclasses.
  */
 export abstract class BaseMailComposeRoute<M extends Message, A extends Attachment, X extends Mailbox, F extends Folder> {
     protected abstract messageClass: any;
     protected abstract attachmentClass: any;
     protected abstract mailboxClass: any;
     protected abstract folderClass: any;
+    protected abstract matterClass: any;
 
     // Automatically injected by ObjectFactory on instantiation
     private _objectFactory?: ObjectFactory;
@@ -345,6 +371,7 @@ export abstract class BaseMailComposeRoute<M extends Message, A extends Attachme
     private attachmentRepo?: RepoUtils<A>;
     private mailboxRepo?: RepoUtils<X>;
     private folderRepo?: RepoUtils<F>;
+    private matterRepo?: RepoUtils<any>;
 
     @Inject("BlobStore")
     private blobStore?: BlobStore;
@@ -380,6 +407,12 @@ export abstract class BaseMailComposeRoute<M extends Message, A extends Attachme
                 args: [this.folderClass],
             });
         }
+        if (!this.matterRepo) {
+            this.matterRepo = await this._objectFactory!.newInstance(RepoUtils, {
+                name: this.matterClass.name,
+                args: [this.matterClass],
+            });
+        }
     }
 
     @Summary("Assemble compose draft into MIME")
@@ -401,9 +434,19 @@ export abstract class BaseMailComposeRoute<M extends Message, A extends Attachme
         }
         await this.init();
 
-        if (!body?.to?.length || !body.html) {
+        // No recipients or an empty body is a valid draft (see `ComposeAssembleInput`); only malformed input is refused.
+        if (
+            !body ||
+            typeof body !== "object" ||
+            !isRecipientList(body.to) ||
+            !isRecipientList(body.cc) ||
+            !isRecipientList(body.bcc) ||
+            (body.html !== undefined && typeof body.html !== "string") ||
+            (body.subject !== undefined && typeof body.subject !== "string")
+        ) {
             throw new ApiError(ApiErrors.INVALID_REQUEST, 400, ApiErrorMessages.INVALID_REQUEST);
         }
+        const to: Recipient[] = body.to ?? [];
 
         const message: M | undefined = await this.messageRepo!.findOne(id, { ignoreACL: true });
         if (!message) {
@@ -451,12 +494,13 @@ export abstract class BaseMailComposeRoute<M extends Message, A extends Attachme
             })),
         );
 
-        const html = sanitizeComposeHtml(rewriteInlineImageSources(body.html, attachmentRecords));
+        const html = sanitizeComposeHtml(rewriteInlineImageSources(body.html ?? "", attachmentRecords));
 
-        const from = { name: mailbox.displayName, address: mailbox.primarySmtpAddress };
+        const fromName: string | undefined = safeFromDisplayName(mailbox.displayName);
+        const from = fromName ? { name: fromName, address: mailbox.primarySmtpAddress } : mailbox.primarySmtpAddress;
         const raw: Buffer = await new MailComposer({
             from,
-            to: body.to.map(toNodemailerAddress),
+            to: to.map(toNodemailerAddress),
             cc: body.cc?.map(toNodemailerAddress),
             bcc: body.bcc?.map(toNodemailerAddress),
             subject: body.subject ?? "",
@@ -467,7 +511,7 @@ export abstract class BaseMailComposeRoute<M extends Message, A extends Attachme
             .build();
 
         const recipients: Recipient[] = [
-            ...body.to.map((r) => ({ ...r, type: RecipientType.TO })),
+            ...to.map((r) => ({ ...r, type: RecipientType.TO })),
             ...(body.cc ?? []).map((r) => ({ ...r, type: RecipientType.CC })),
             ...(body.bcc ?? []).map((r) => ({ ...r, type: RecipientType.BCC })),
         ];
@@ -475,7 +519,7 @@ export abstract class BaseMailComposeRoute<M extends Message, A extends Attachme
         return await this.storeBody(message, raw, user, {
             subject: body.subject ?? "",
             recipients,
-            from: { address: mailbox.primarySmtpAddress, displayName: mailbox.displayName, type: RecipientType.TO },
+            from: { address: mailbox.primarySmtpAddress, displayName: fromName, type: RecipientType.TO },
             bodyPreview: toPreview(html),
             hasAttachments: attachmentRecords.length > 0,
         });
@@ -485,19 +529,24 @@ export abstract class BaseMailComposeRoute<M extends Message, A extends Attachme
      * Stores `raw` as a new body blob and points the draft at it. Each assemble writes a new blob (the old key may be
      * read by a send in progress), so the one it replaces is deleted afterwards - only when this compose path created
      * it (`bodies/`; an EAS/MAPI send handler uses the same prefix for the same purpose) and no message row, deleted
-     * ones included, still references it. When the update fails (e.g. a concurrent edit's version conflict) the new
-     * blob is deleted instead and the draft keeps its old one.
+     * ones included, still references it, and the mailbox isn't under a legal hold. When the update fails (e.g. a
+     * concurrent edit's version conflict) the new blob is deleted instead and the draft keeps its old one.
      */
     private async storeBody(message: M, raw: Buffer, user: JWTUser | undefined, patch: Record<string, unknown>): Promise<M> {
         const previousKey: string | undefined = (message as any).bodyBlobKey;
         const bodyBlobKey = `${COMPOSED_BODY_PREFIX}${crypto.randomUUID()}`;
         await this.blobStore!.put(bodyBlobKey, raw, { contentType: "message/rfc822" });
 
+        // `update()` only enforces the optimistic lock (a 409 when `send()` or another save changed the draft since it
+        // was read) when `existing` is an entity instance. `findOne()` returns one today; a plain document (e.g. from a
+        // backend or cache path that doesn't instantiate) would turn this into an unconditional overwrite that could
+        // swap the body of a message already claimed for sending.
+        const existing: M = message instanceof BaseEntity ? message : new this.messageClass(message);
         let updated: M;
         try {
             updated = await this.messageRepo!.update(
                 { uid: message.uid, version: (message as any).version, ...patch, bodyBlobKey } as any,
-                message,
+                existing,
                 { user, ignoreACL: true },
             );
         } catch (err) {
@@ -511,7 +560,8 @@ export abstract class BaseMailComposeRoute<M extends Message, A extends Attachme
                     { bodyBlobKey: `eq(${previousKey})` },
                     { ignoreACL: true, includeDeleted: true },
                 );
-                if (references === 0) {
+                // A mailbox under legal hold keeps every body it had: the superseded draft content may be discoverable.
+                if (references === 0 && !(await this.hasActiveLegalHold(message.mailboxUid))) {
                     await this.blobStore!.delete(previousKey);
                 }
             } catch (err: any) {
@@ -520,6 +570,35 @@ export abstract class BaseMailComposeRoute<M extends Message, A extends Attachme
             }
         }
         return updated;
+    }
+
+    /**
+     * `true` when an open `Matter` names `mailboxUid` as a custodian, whatever its date range - the same check as
+     * restapi's `findActiveHoldsFor()` without a reference date, which the package doesn't export. Every `Matter` is
+     * read, keyset-paged on `uid` (a single unpaginated `find()` stops at the default page size and could miss a hold).
+     * A cursor that doesn't advance counts as held, so a misbehaving backend never lets a held blob be deleted.
+     */
+    protected async hasActiveLegalHold(mailboxUid: string): Promise<boolean> {
+        const limit = 500;
+        let after: string | undefined;
+        for (;;) {
+            const query: Record<string, unknown> = { sort: { uid: "ASC" }, limit };
+            if (after !== undefined) {
+                query.uid = `gt(${after})`;
+            }
+            const batch: Matter[] = await this.matterRepo!.find(query, { ignoreACL: true, limit, skipCache: true });
+            if (batch.some((matter) => !matter.closedAt && (matter.custodianMailboxUids ?? []).includes(mailboxUid))) {
+                return true;
+            }
+            if (batch.length < limit) {
+                return false;
+            }
+            const last: string = batch[batch.length - 1].uid;
+            if (after !== undefined && !(last > after)) {
+                return true;
+            }
+            after = last;
+        }
     }
 
     @Summary("Assemble an already-composed (signed/encrypted) draft")
@@ -604,7 +683,7 @@ export abstract class BaseMailComposeRoute<M extends Message, A extends Attachme
         return await this.storeBody(message, rawBytes, user, {
             subject: body.subject,
             recipients,
-            from: { address: mailbox.primarySmtpAddress, displayName: mailbox.displayName, type: RecipientType.TO },
+            from: { address: mailbox.primarySmtpAddress, displayName: safeFromDisplayName(mailbox.displayName), type: RecipientType.TO },
             // Never derived from the raw MIME itself - this server has no business parsing a
             // signed/encrypted body's content just to produce a list-view preview string, and for a
             // genuinely encrypted message it couldn't anyway. `ScanPipeline` (@rapidmx/restapi) is

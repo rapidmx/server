@@ -15,7 +15,7 @@ import {
     PublicBooking,
     cancelBooking,
     getBookingByToken,
-    getBookingSlots,
+    getPublicBookingType,
     rescheduleBooking,
 } from "@rapidmx/react-shared/booking/bookingApi.js";
 import useBranding from "@rapidmx/react-shared/branding/useBranding.js";
@@ -23,6 +23,7 @@ import Alert from "@rapidmx/react-shared/components/feedback/Alert.js";
 import Button from "@rapidmx/react-shared/components/buttons/Button.js";
 import { BrandingFooter, BrandingHeader } from "@rapidmx/web-client/shared/components/layout/BrandingChrome.js";
 import Modal from "@rapidmx/react-shared/components/overlays/Modal.js";
+import { SlotCursor, appendSlots, fetchSlotPage, initialSlotCursor } from "../_slotPaging.js";
 
 export default function ManageBookingPage({ params }: { params: { token: string } }) {
     const { branding, logoSrc } = useBranding();
@@ -45,6 +46,8 @@ function ManageBookingContent({ token, logoSrc }: { token: string; logoSrc: stri
     const [rescheduling, setRescheduling] = useState(false);
     const [slots, setSlots] = useState<BookingSlot[]>([]);
     const [slotsLoading, setSlotsLoading] = useState(false);
+    const [nextSlots, setNextSlots] = useState<SlotCursor | null>(null);
+    const [loadingMore, setLoadingMore] = useState(false);
     const [submittingReschedule, setSubmittingReschedule] = useState(false);
 
     function reload() {
@@ -76,12 +79,35 @@ function ManageBookingContent({ token, logoSrc }: { token: string; logoSrc: stri
         setRescheduling(true);
         setActionError(null);
         setSlotsLoading(true);
+        setSlots([]);
+        setNextSlots(null);
         try {
-            setSlots(await getBookingSlots(booking!.bookingTypeSlug));
+            // Paged through the booking type's whole bookingWindowDays (see _slotPaging.ts).
+            const type = await getPublicBookingType(booking!.bookingTypeSlug);
+            const page = await fetchSlotPage(booking!.bookingTypeSlug, initialSlotCursor(type?.bookingWindowDays));
+            setSlots(page.slots);
+            setNextSlots(page.next);
         } catch (err) {
             setActionError(err instanceof ApiRequestError ? err.message : "Could not load new times.");
         } finally {
             setSlotsLoading(false);
+        }
+    }
+
+    async function handleLoadMore() {
+        if (!nextSlots) {
+            return;
+        }
+        setLoadingMore(true);
+        setActionError(null);
+        try {
+            const page = await fetchSlotPage(booking!.bookingTypeSlug, nextSlots);
+            setSlots((current) => appendSlots(current, page.slots));
+            setNextSlots(page.next);
+        } catch (err) {
+            setActionError(err instanceof ApiRequestError ? err.message : "Could not load more times.");
+        } finally {
+            setLoadingMore(false);
         }
     }
 
@@ -167,6 +193,18 @@ function ManageBookingContent({ token, logoSrc }: { token: string; logoSrc: stri
                                                     </button>
                                                 ))}
                                             </div>
+                                        )}
+                                        {!slotsLoading && nextSlots && (
+                                            <Button
+                                                type="button"
+                                                variant="secondary"
+                                                className="!w-auto mt-2"
+                                                loading={loadingMore}
+                                                disabled={loadingMore || submittingReschedule}
+                                                onClick={handleLoadMore}
+                                            >
+                                                Show later times
+                                            </Button>
                                         )}
                                         <Button
                                             type="button"

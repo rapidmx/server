@@ -24,6 +24,8 @@ function booking(overrides: Record<string, unknown> = {}) {
     };
 }
 
+const publicBookingType = { slug: "intro-call", name: "30 Minute Intro Call", hostDisplayName: "Jane Host", bookingWindowDays: 30 };
+
 function mockPage(extra?: (url: string, init?: RequestInit) => Response | undefined) {
     return mockFetch((url, init) => {
         const custom = extra?.(url, init);
@@ -165,7 +167,8 @@ describe("ManageBookingPage", () => {
         const newSlot = { start: "2026-09-11T15:00:00.000Z", end: "2026-09-11T15:30:00.000Z" };
         const fetchMock = mockPage((url, init) => {
             if (url === "/api/mail/bookings/manage/tok123" && (init?.method ?? "GET") === "GET") return jsonResponse(200, booking());
-            if (url === "/api/mail/bookings/types/intro-call/slots") return jsonResponse(200, [newSlot]);
+            if (url === "/api/mail/bookings/types/intro-call") return jsonResponse(200, publicBookingType);
+            if (url.startsWith("/api/mail/bookings/types/intro-call/slots?")) return jsonResponse(200, [newSlot]);
             if (url === "/api/mail/bookings/manage/tok123/reschedule" && init?.method === "POST") {
                 return jsonResponse(200, booking({ startDate: newSlot.start, endDate: newSlot.end }));
             }
@@ -188,10 +191,41 @@ describe("ManageBookingPage", () => {
         expect(await screen.findByRole("button", { name: "Reschedule" })).toBeInTheDocument();
     });
 
+    it("offers later reschedule times across the booking type's whole window", async () => {
+        const first = { start: "2026-09-11T15:00:00.000Z", end: "2026-09-11T15:30:00.000Z" };
+        const later = { start: "2026-11-20T15:00:00.000Z", end: "2026-11-20T15:30:00.000Z" };
+        const requested: URLSearchParams[] = [];
+        mockPage((url) => {
+            if (url === "/api/mail/bookings/manage/tok123") return jsonResponse(200, booking());
+            if (url === "/api/mail/bookings/types/intro-call") return jsonResponse(200, { ...publicBookingType, bookingWindowDays: 90 });
+            if (url.startsWith("/api/mail/bookings/types/intro-call/slots?")) {
+                requested.push(new URL(url, "http://localhost").searchParams);
+                return jsonResponse(200, requested.length === 1 ? [first] : requested.length === 2 ? [] : [later]);
+            }
+            return undefined;
+        });
+        const user = userEvent.setup();
+        render(<ManageBookingPage params={{ token: "tok123" }} />);
+        await screen.findByRole("heading", { name: "30 Minute Intro Call" });
+
+        await user.click(screen.getByRole("button", { name: "Reschedule" }));
+        await user.click(await screen.findByRole("button", { name: "Show later times" }));
+
+        // The empty second window is skipped over rather than ending the list.
+        const label = (slot: { start: string }) =>
+            new Date(slot.start).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+        expect(await screen.findByRole("button", { name: label(later) })).toBeInTheDocument();
+        expect(screen.getByRole("button", { name: label(first) })).toBeInTheDocument();
+        expect(requested).toHaveLength(3);
+        expect(requested[2].get("from")).toBe(requested[1].get("to"));
+        expect(screen.queryByRole("button", { name: "Show later times" })).not.toBeInTheDocument();
+    });
+
     it("shows an empty state when there are no slots to reschedule into", async () => {
         mockPage((url) => {
             if (url === "/api/mail/bookings/manage/tok123") return jsonResponse(200, booking());
-            if (url === "/api/mail/bookings/types/intro-call/slots") return jsonResponse(200, []);
+            if (url === "/api/mail/bookings/types/intro-call") return jsonResponse(200, publicBookingType);
+            if (url.startsWith("/api/mail/bookings/types/intro-call/slots?")) return jsonResponse(200, []);
             return undefined;
         });
         const user = userEvent.setup();
@@ -206,7 +240,8 @@ describe("ManageBookingPage", () => {
     it("shows an error message when loading reschedule slots fails", async () => {
         mockPage((url) => {
             if (url === "/api/mail/bookings/manage/tok123") return jsonResponse(200, booking());
-            if (url === "/api/mail/bookings/types/intro-call/slots") return jsonResponse(500, { message: "boom" });
+            if (url === "/api/mail/bookings/types/intro-call") return jsonResponse(200, publicBookingType);
+            if (url.startsWith("/api/mail/bookings/types/intro-call/slots?")) return jsonResponse(500, { message: "boom" });
             return undefined;
         });
         const user = userEvent.setup();
@@ -221,7 +256,8 @@ describe("ManageBookingPage", () => {
     it("shows a generic error message when loading reschedule slots fails with a non-API error", async () => {
         mockPage((url) => {
             if (url === "/api/mail/bookings/manage/tok123") return jsonResponse(200, booking());
-            if (url === "/api/mail/bookings/types/intro-call/slots") throw new TypeError("network down");
+            if (url === "/api/mail/bookings/types/intro-call") return jsonResponse(200, publicBookingType);
+            if (url.startsWith("/api/mail/bookings/types/intro-call/slots?")) throw new TypeError("network down");
             return undefined;
         });
         const user = userEvent.setup();
@@ -236,7 +272,8 @@ describe("ManageBookingPage", () => {
     it("cancels out of the reschedule picker via Never mind", async () => {
         mockPage((url) => {
             if (url === "/api/mail/bookings/manage/tok123") return jsonResponse(200, booking());
-            if (url === "/api/mail/bookings/types/intro-call/slots") return jsonResponse(200, []);
+            if (url === "/api/mail/bookings/types/intro-call") return jsonResponse(200, publicBookingType);
+            if (url.startsWith("/api/mail/bookings/types/intro-call/slots?")) return jsonResponse(200, []);
             return undefined;
         });
         const user = userEvent.setup();
@@ -254,7 +291,8 @@ describe("ManageBookingPage", () => {
         const newSlot = { start: "2026-09-11T15:00:00.000Z", end: "2026-09-11T15:30:00.000Z" };
         mockPage((url, init) => {
             if (url === "/api/mail/bookings/manage/tok123" && (init?.method ?? "GET") === "GET") return jsonResponse(200, booking());
-            if (url === "/api/mail/bookings/types/intro-call/slots") return jsonResponse(200, [newSlot]);
+            if (url === "/api/mail/bookings/types/intro-call") return jsonResponse(200, publicBookingType);
+            if (url.startsWith("/api/mail/bookings/types/intro-call/slots?")) return jsonResponse(200, [newSlot]);
             if (url === "/api/mail/bookings/manage/tok123/reschedule" && init?.method === "POST") return jsonResponse(409, { message: "no longer available" });
             return undefined;
         });
@@ -273,7 +311,8 @@ describe("ManageBookingPage", () => {
         const newSlot = { start: "2026-09-11T15:00:00.000Z", end: "2026-09-11T15:30:00.000Z" };
         mockPage((url, init) => {
             if (url === "/api/mail/bookings/manage/tok123" && (init?.method ?? "GET") === "GET") return jsonResponse(200, booking());
-            if (url === "/api/mail/bookings/types/intro-call/slots") return jsonResponse(200, [newSlot]);
+            if (url === "/api/mail/bookings/types/intro-call") return jsonResponse(200, publicBookingType);
+            if (url.startsWith("/api/mail/bookings/types/intro-call/slots?")) return jsonResponse(200, [newSlot]);
             if (url === "/api/mail/bookings/manage/tok123/reschedule" && init?.method === "POST") throw new TypeError("network down");
             return undefined;
         });

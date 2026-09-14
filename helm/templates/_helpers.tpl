@@ -147,7 +147,16 @@ gateway.httpsListener on a Gateway it doesn't own - that listener must terminate
 {{- if eq (include "server.ownsGateway" .) "true" -}}
 https
 {{- else -}}
-{{- tpl (.Values.gateway.httpsListener | default "") . -}}
+{{- $listener := tpl (.Values.gateway.httpsListener | default "") . -}}
+{{- /*
+Fail rather than silently fall back to plain HTTP: an upgrade of a TLS deployment (e.g. onto a shared Gateway, or from a
+chart version that didn't need this value) would otherwise move the route to the http listener, drop the HTTPS redirect
+and switch every derived public URL (CORS, booking links, autodiscover, mail__auth_server_url) to http://.
+*/ -}}
+{{- if not $listener -}}
+{{- fail (printf "gateway.tls is true and %q can get a certificate, but the chart doesn't own Gateway %s/%s, so it doesn't know which of its listeners serves HTTPS. Set gateway.httpsListener to the name of that Gateway's HTTPS listener for this host (terminating TLS with the %s-tls-cert Secret), or set gateway.tls=false to serve plain HTTP." .Values.host (tpl .Values.gateway.namespace .) (tpl .Values.gateway.name .) .Values.host) -}}
+{{- end -}}
+{{- $listener -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}
@@ -201,12 +210,21 @@ storageClassName: {{ $class | quote }}
 Fails the render (with `required`, so `helm lint` still passes) when generated secrets can't be kept stable: without
 cluster access (`helm template`, a GitOps controller rendering the chart, `--dry-run`) `lookup` returns nothing, so every
 render would generate new cookie/session/escrow-audit secrets - logging everyone out on each sync and breaking the escrow
-audit chain. Detected by looking up the "default" Namespace, which always exists in a real cluster.
+audit chain. Detected by looking up the release namespace's "kube-root-ca.crt" ConfigMap (published into every namespace),
+which a namespace-scoped install can read; only when that finds nothing (e.g. `--create-namespace`, which renders before
+the namespace exists) is the cluster-scoped "default" Namespace tried. lookup fails the render on Forbidden, so the
+cluster-scoped probe must not come first.
 Usage: include "server.assertStableSecrets" (dict "missing" (list "cookies.secret" ...) "context" $)
 */}}
 {{- define "server.assertStableSecrets" -}}
-{{- if and .missing (not .context.Values.secrets.existingSecret) (not (lookup "v1" "Namespace" "" "default")) -}}
+{{- if and .missing (not .context.Values.secrets.existingSecret) -}}
+{{- $clusterAccess := lookup "v1" "ConfigMap" .context.Release.Namespace "kube-root-ca.crt" -}}
+{{- if not $clusterAccess -}}
+{{- $clusterAccess = lookup "v1" "Namespace" "" "default" -}}
+{{- end -}}
+{{- if not $clusterAccess -}}
 {{- required (printf "Rendering without cluster access (helm template, GitOps, --dry-run), so generated secrets would change on every render. Set %s explicitly, or secrets.existingSecret to a Secret you manage." (join ", " .missing)) "" -}}
+{{- end -}}
 {{- end -}}
 {{- end -}}
 

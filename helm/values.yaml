@@ -40,8 +40,9 @@ gateway:
   # Only for a Gateway this chart doesn't create (gateway.name other than api-gateway, gateway.namespace other than the
   # release namespace, or gateway.create false): the name of that Gateway's HTTPS listener for `host`. It must terminate
   # TLS with this release's "<host>-tls-cert" Secret (issued by cert-manager; a ReferenceGrant letting a Gateway in
-  # gateway.namespace use it is rendered). Left empty, the routes attach to the Gateway's "http" listener with no HTTPS
-  # redirect, and public URLs use http:// - an HTTPS listener without this release's certificate can't serve `host`.
+  # gateway.namespace use it is rendered). Required while gateway.tls is true and `host` can get a certificate (the render
+  # fails otherwise, rather than silently serving plain HTTP); set gateway.tls=false to attach to the "http" listener with
+  # no HTTPS redirect and http:// public URLs instead.
   httpsListener: ''
   # Same for authServer.host, with the auth-server subchart's "<authServer.host>-tls-cert" Secret.
   authHttpsListener: ''
@@ -58,9 +59,20 @@ redis:
   replica:
     persistence:
       enabled: false
+  # Only pods labelled "db-redis-client: true" (<fullnameOverride>-client) reach Redis: the server's pods carry that label
+  # (1_deployments/service.yaml). The bundled auth-server shares this Redis but its chart can't set pod labels, so it's
+  # admitted by its own `app` label below (the auth-server subchart's name, authServer.nameOverride - keep them in sync).
+  # Give any other workload that needs Redis the client label.
   networkPolicy:
     enabled: true
     allowExternal: false
+    extraIngress:
+      - ports:
+          - port: 6379
+        from:
+          - podSelector:
+              matchLabels:
+                app: auth-server
 # Exactly one of mongodb.create and postgresql.create may be true (the render fails otherwise).
 mongodb:
   create: true

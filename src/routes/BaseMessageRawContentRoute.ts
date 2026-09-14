@@ -3,8 +3,8 @@
 ///////////////////////////////////////////////////////////////////////////////
 import { ApiError, ObjectDecorators, type JWTUser } from "@rapidrest/core";
 import { ACLAction, ACLUtils, ApiErrorMessages, ApiErrors, DocDecorators, HttpResponse, ObjectFactory, RepoUtils, RouteDecorators } from "@rapidrest/service-core";
-import { BlobStore, Message } from "@rapidmx/restapi";
-const { Inject } = ObjectDecorators;
+import { AuditAction, BlobStore, isNonOwnerAccess, Mailbox, Message, recordAuditLog } from "@rapidmx/restapi";
+const { Config, Inject, Logger } = ObjectDecorators;
 const { Description, Summary } = DocDecorators;
 const { Auth, Get, Param, Response, User: AuthUser } = RouteDecorators;
 
@@ -27,14 +27,26 @@ const { Auth, Get, Param, Response, User: AuthUser } = RouteDecorators;
  * touches the DOM. Mounted at the same `mail/messages` base path as `@rapidmx/restapi`'s own
  * `MessageRoute`, alongside it — the same multi-class-per-base-path pattern `KeyVaultRoute`/
  * `KeyLookupRoute`/`MailboxRoute` already use (see server's own `.claude/NOTES.md`).
+ *
+ * A read by anyone but the mailbox's owner (an admin or a delegate) is audited as `MESSAGE_CONTENT_ACCESSED`, exactly like
+ * restapi's own `GET /:id/content`.
  */
 export abstract class BaseMessageRawContentRoute<M extends Message> {
     protected abstract messageClass: any;
+    protected abstract mailboxClass: any;
+    protected abstract auditLogClass: any;
 
     // Automatically injected by ObjectFactory on instantiation
     private _objectFactory?: ObjectFactory;
 
     private messageRepo?: RepoUtils<M>;
+    private mailboxRepo?: RepoUtils<Mailbox>;
+
+    @Config()
+    private config?: any;
+
+    @Logger
+    private logger?: any;
 
     @Inject("BlobStore")
     private blobStore?: BlobStore;
@@ -47,6 +59,12 @@ export abstract class BaseMessageRawContentRoute<M extends Message> {
             this.messageRepo = await this._objectFactory!.newInstance(RepoUtils, {
                 name: this.messageClass.name,
                 args: [this.messageClass],
+            });
+        }
+        if (!this.mailboxRepo) {
+            this.mailboxRepo = await this._objectFactory!.newInstance(RepoUtils, {
+                name: this.mailboxClass.name,
+                args: [this.mailboxClass],
             });
         }
     }
@@ -71,6 +89,24 @@ export abstract class BaseMessageRawContentRoute<M extends Message> {
         }
         if (!message.bodyBlobKey) {
             throw new ApiError(ApiErrors.NOT_FOUND, 404, ApiErrorMessages.NOT_FOUND);
+        }
+
+        // An unresolvable mailbox counts as non-owner access (restapi's content() does the same): the bytes are served
+        // either way, so the uncertain case is audited rather than skipped.
+        const mailbox: Mailbox | undefined = await this.mailboxRepo!.findOne(message.mailboxUid, { ignoreACL: true });
+        if (!mailbox || isNonOwnerAccess(mailbox, user)) {
+            await recordAuditLog(
+                this._objectFactory!,
+                this.auditLogClass,
+                { config: this.config, user, logger: this.logger },
+                {
+                    action: AuditAction.MESSAGE_CONTENT_ACCESSED,
+                    targetType: "Message",
+                    targetUid: message.uid,
+                    mailboxUid: message.mailboxUid,
+                    details: { subject: message.subject, raw: true },
+                },
+            );
         }
 
         const raw: Buffer = await this.blobStore.get(message.bodyBlobKey);

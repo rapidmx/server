@@ -5117,3 +5117,91 @@ for a public and a .local domain. `docker compose config -q` for mongo/sql.
 - `src/lib/sqlColumnTypes.ts` still looks `applySqlDriverColumnTypes` up at runtime. The patched restapi exports it
   from `@rapidmx/restapi/sql`, so it can become a plain import once the published restapi includes it.
 - Verified: tsc, lint and 286/286 tests against the refreshed patch.
+
+
+## 2026-09-14 — Review round 5 fixes: Redis NetworkPolicy, installer, secrets in NOTES, compose drafts, booking slot paging
+
+Every finding was re-checked against the code first. Nothing committed, no version bumps, `.yarn/patches` and the
+restapi/react-shared/web-client dependencies untouched. (`junit.xml` is rewritten by every vitest run.)
+
+1. **HIGH Redis unreachable** - the Bitnami Redis NetworkPolicy (`allowExternal: false` in values.yaml) only admits
+   `db-redis-client: "true"` pods. The server pod template now carries `<fullnameOverride>-client: "true"` for each
+   bundled redis/mongodb/postgresql. The auth-server subchart has no pod-label value, so `redis.networkPolicy.extraIngress`
+   admits `app: auth-server` pods in the release namespace on 6379 (tied to `authServer.nameOverride`; comment says so).
+   MongoDB and PostgreSQL subcharts default to `allowExternal: true` and values.yaml doesn't override it, so no trap
+   there (the client label is inert until someone flips it - auth-server would then need the same extraIngress).
+2. **HIGH installer** (`single_node_install.sh`, reviewed end to end) - fixed `"SKIP_K3S"` (missing `$`), the nginx wait
+   loop (tested a stale `$result`; now polls curl with a ready flag and `break`), duplicate `stream {}` blocks (block now
+   between `# BEGIN/END rapidmx single_node_install` markers, replaced on re-run; an unmarked existing `stream {` block is
+   left alone with a warning). Also found and fixed: `--uninstall` parsed but never ran; `getopt` lacked `tls:` and the
+   arm read `TLS=$2 shift 2` (finding 13); `addHelmRepo` grepped for "percona"; helm-via-snap installed kubectl; the curl
+   kubectl download was never installed; `helm install ngf` failed on re-run (now `upgrade --install`); the NGF wait loop
+   polled namespace `nginx`; pod-count waits never settle with Completed Job pods (cert-manager startupapicheck) - now
+   `kubectl wait --for=condition=Available deployment --all`; the Gateway NodePort was read from Service
+   `shared-gateway` (NGF provisions its own name - now by label `gateway.networking.k8s.io/gateway-name=shared-gateway`,
+   and the loop waits for the ports themselves); `cat << EOF >> /etc/nginx/nginx.conf` without sudo; `dnf list | grep`
+   word-splitting and the RHEL stream module package name (`nginx-mod-stream`); ClusterIssuer email `admin@$HOSTNAME`
+   (now `--email`/`ACME_EMAIL`, default `admin@$DOMAIN`) and a retry while the webhook comes up; chart reference
+   `oci://ghcr.io/rapidrest/charts/mail-server` - CI pushes Chart.yaml's name `server` to `ghcr.io/<owner>/charts`, so
+   `oci://ghcr.io/rapidmx/charts/server` (overridable via `CHART`; README fixed too). `gateway.tls` is now passed true only
+   when the Gateway got an HTTPS listener, so it always agrees with `gateway.httpsListener` (see finding 10's new render
+   check); `gateway.hsts` still follows `--tls`. shellcheck 0.11 (via npx) `-S warning` clean;
+   remaining notes are the file's existing backtick style.
+3. **HIGH kubeconfig / secrets** - no `K3S_KUBECONFIG_MODE`; `/etc/rancher/k3s/k3s.yaml` is copied to the invoking user's
+   (`$SUDO_USER` or current) `~/.kube/config`, 0600, chowned, dir 0700, existing different config backed up. An existing
+   k3s install gets `K3S_KUBECONFIG_MODE` removed from `k3s.service.env` and the file chmod 600; the old
+   `export KUBECONFIG=/etc/rancher/k3s/k3s.yaml` line is removed from `~/.bashrc`. Secrets go to helm with `-f` from a
+   `mktemp` 0600 file (written with the `printf` builtin, single-quoted YAML) deleted after helm and in the EXIT trap;
+   nothing echoed - the script prints the `kubectl get secret ... | base64 -d` commands instead.
+4. **HIGH NOTES.txt** - no longer looks up or prints the MongoDB/PostgreSQL root passwords; prints the kubectl + base64 -d
+   command (existingSecret/key aware), plus one for the ingest secret.
+5. **MEDIUM compose version check** - verified the claim is *not* true on the current `@rapidrest/service-core` 2.0.0:
+   `RepoUtils.findOne()` returns `instantiateObject()` (a model instance), so `update()`'s `instanceof BaseEntity` lock
+   already fired. Hardened anyway (restapi's own `asEntity()` notes Mongo `find()` returns plain docs, and it's cheap):
+   `storeBody()` passes `message instanceof BaseEntity ? message : new this.messageClass(message)`. No other server route
+   calls `RepoUtils.update()`.
+6. **MEDIUM From display name** - `safeFromDisplayName()`: the bare address when the name contains `@`, CR or LF (restapi's
+   send refuses address-like display names via `hasAddressLikeDisplayName`). Used for the composed From header, the
+   stored `from` recipient, and `assertRawMimeHeadersMatch()` (a raw From may then only carry no name).
+7. **MEDIUM booking slots** - restapi's slots route takes `from`/`to` (default window 30 days, capped by
+   `bookingWindowDays` in `generateCandidateSlots()`, response cut at 500). react-shared's `getBookingSlots(slug, from, to)`
+   already passes both. New `apps/book/_slotPaging.ts` (`_` files aren't routed by `scanAppDirPages`): 30-day chunks from
+   now to `now + bookingWindowDays`, moving past empty chunks automatically, continuing 1 ms after the last slot of a
+   500-slot response; both pages show a "Show later times" button while the window has more. The manage page now reads
+   `getPublicBookingType()` for `bookingWindowDays` when rescheduling starts. Default anonymous rate limit (100/60s per
+   endpoint identifier) covers a year-long empty window (~13 requests).
+8. **LOW legal hold** - restapi's `findActiveHoldsFor`/`LegalHoldUtils` are **not exported** from the package (nor
+   `findPagesByUid`), so `BaseMailComposeRoute.hasActiveLegalHold()` re-implements the no-reference-date check (keyset-paged
+   on uid, 500/page, open Matter naming the mailbox as custodian; a non-advancing cursor counts as held). The superseded
+   `bodies/` blob is kept while held; a failing lookup keeps it too. New abstract `matterClass` (MatterMongo/MatterSQL).
+   Follow-up for restapi: export LegalHoldUtils so this can go.
+9. **LOW raw content audit** - `recordAuditLog`/`isNonOwnerAccess`/`AuditAction` are exported, so `GET /mail/messages/:id/raw`
+   now records `MESSAGE_CONTENT_ACCESSED` (details `{ subject, raw: true }`) for a non-owner read or an unresolvable mailbox,
+   after the ACL/body checks, mirroring restapi's `content()`. New abstract `mailboxClass`/`auditLogClass`.
+10. **MEDIUM external Gateway TLS** - `server.httpsListener` fails the render when `gateway.tls` is true, `host` can get a
+    certificate, the chart doesn't own the Gateway and `gateway.httpsListener` is empty (message says to set it or
+    `gateway.tls=false`). values.yaml and README updated.
+11. **MEDIUM namespace-scoped RBAC** - `server.assertStableSecrets` probes the release namespace's `kube-root-ca.crt`
+    ConfigMap first, then the `default` Namespace only when that's empty (e.g. `--create-namespace` renders before the
+    namespace exists). Helm's `lookup` errors on Forbidden, so the cluster-scoped probe must not come first.
+12. **MEDIUM service.config secrets** - service-secrets.yaml treats `service.config.cookie_secret` / `session__secret` /
+    `mail__escrow__audit_hmac_key` as explicit values (after `cookies.secret` etc.): used for the Secret and excluded from
+    "generated" (so no assertStableSecrets failure). Previously the later envFrom Secret silently overrode them.
+13. **LOW installer `--tls`** - see 2.
+14. **HIGH compose drafts** - `assemble()` accepts no `to` and an empty/missing `html` (autosave/Close/sign-out drafts); still
+    400 for non-object bodies, non-array/addressless recipient lists, and non-string html/subject. **Not true:** restapi's
+    `send()` does *not* check for recipients (it relays with an empty envelope, or queues a scheduled send that will fail).
+    The web client's ComposeWindow checks "At least one recipient is required." before send. Reported to the coordinator
+    as a restapi gap; not overridden in the server's MessageRoute. `assembleRaw()` (the send-time E2E path) still requires
+    `to`.
+
+**Open item (not fixed):** plugin transitive dependencies float on Kubernetes - the plugins volume is an `emptyDir` and each
+pod runs `npm install` of the recorded plugin set without a lockfile, so two pods (or a restart) can resolve different
+transitive versions.
+
+Verified: `helm template` (mongo, postgresql, public host with TLS on/off, redis+authServer off, external Gateway
+with/without httpsListener, localhost on an external Gateway, service.config-seeded secrets, partial/none secrets failing)
+and `helm lint` for the same combinations; NOTES.txt rendered via a scratch copy as a template; `bash -n` + shellcheck on
+the installer plus a local run of its getopt, YAML quoting and nginx marker-replacement snippets; `npx tsc --noEmit -p
+tsconfig.json` and `-p tsconfig.client.json`, `yarn lint`, and `yarn vitest run` 312/312 (new tests: compose drafts/From/
+entity/legal hold, raw content audit, `_slotPaging`, both booking pages' paging).

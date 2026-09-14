@@ -9,7 +9,7 @@
 // concrete Mongo/SQL subclasses can't reach through a real request (DI always populates both dependencies
 // before a request reaches the route).
 import config from "../../src/config.mongo.js";
-import { ObjectFactory } from "@rapidrest/service-core";
+import { BaseEntity, ObjectFactory } from "@rapidrest/service-core";
 import { Logger } from "@rapidrest/core";
 import {
     assertRawMimeHeadersMatch,
@@ -17,6 +17,7 @@ import {
     decodeEncodedWords,
     parseTopLevelHeaders,
     rewriteInlineImageSources,
+    safeFromDisplayName,
     sanitizeComposeHtml,
 } from "../../src/routes/BaseMailComposeRoute.js";
 
@@ -25,11 +26,19 @@ function rawMessage(headers: string[]): string {
     return [...headers, "Subject: [...]", "MIME-Version: 1.0", "Content-Type: text/plain", "", "body"].join("\r\n");
 }
 
+/** Stands in for a model class: like the real ones, its constructor copies the given fields. */
+class TestMessage {
+    constructor(other?: object) {
+        Object.assign(this, other);
+    }
+}
+
 class TestMailComposeRoute extends BaseMailComposeRoute<any, any, any, any> {
-    protected messageClass: any = class {};
+    protected messageClass: any = TestMessage;
     protected attachmentClass: any = class {};
     protected mailboxClass: any = class {};
     protected folderClass: any = class {};
+    protected matterClass: any = class {};
 }
 
 describe("BaseMailComposeRoute Tests (dependency guard clause only)", () => {
@@ -210,7 +219,7 @@ describe("BaseMailComposeRoute replaced body blobs", () => {
     };
     const htmlInput = { to: [{ address: "bob@example.com" }], html: "<p>hi</p>" };
 
-    function buildRoute(bodyBlobKey: string | undefined, opts: { references?: number; updateError?: Error } = {}) {
+    function buildRoute(bodyBlobKey: string | undefined, opts: { references?: number; updateError?: Error; matters?: any[] } = {}) {
         const message = { uid: "m1", version: 3, folderUid: "f1", mailboxUid: "mb1", bodyBlobKey };
         const route = new (TestMailComposeRoute as any)();
         route._objectFactory = { newInstance: vi.fn() };
@@ -224,6 +233,7 @@ describe("BaseMailComposeRoute replaced body blobs", () => {
         route.attachmentRepo = { count: vi.fn().mockResolvedValue(0), find: vi.fn().mockResolvedValue([]) };
         route.aclUtils = { hasPermission: vi.fn().mockResolvedValue(true) };
         route.blobStore = { put: vi.fn().mockResolvedValue(undefined), delete: vi.fn().mockResolvedValue(undefined) };
+        route.matterRepo = { find: vi.fn().mockResolvedValue(opts.matters ?? []) };
         return route;
     }
 
@@ -269,6 +279,138 @@ describe("BaseMailComposeRoute replaced body blobs", () => {
         route.blobStore.delete.mockRejectedValue(new Error("store down"));
         await expect(route.assembleRaw("m1", rawInput, user)).resolves.toMatchObject({ uid: "m1" });
     });
+
+    it("keeps the replaced blob while an open Matter holds the mailbox", async () => {
+        const route = buildRoute("bodies/old", { matters: [{ uid: "mt1", custodianMailboxUids: ["other", "mb1"] }] });
+        await route.assemble("m1", htmlInput, user);
+        expect(route.matterRepo.find).toHaveBeenCalledWith(
+            { sort: { uid: "ASC" }, limit: 500 },
+            { ignoreACL: true, limit: 500, skipCache: true },
+        );
+        expect(route.blobStore.delete).not.toHaveBeenCalled();
+    });
+
+    it("deletes the replaced blob when the only Matters naming the mailbox are closed, or name other mailboxes", async () => {
+        const route = buildRoute("bodies/old", {
+            matters: [
+                { uid: "mt1", custodianMailboxUids: ["mb1"], closedAt: new Date() },
+                { uid: "mt2", custodianMailboxUids: ["other"] },
+            ],
+        });
+        await route.assemble("m1", htmlInput, user);
+        expect(route.blobStore.delete).toHaveBeenCalledWith("bodies/old");
+    });
+
+    it("finds a hold past the first page of Matters", async () => {
+        const route = buildRoute("bodies/old");
+        const firstPage = Array.from({ length: 500 }, (_v, i) => ({ uid: `a${String(i).padStart(3, "0")}`, custodianMailboxUids: [] }));
+        route.matterRepo.find
+            .mockResolvedValueOnce(firstPage)
+            .mockResolvedValueOnce([{ uid: "b000", custodianMailboxUids: ["mb1"] }]);
+        await route.assemble("m1", htmlInput, user);
+        expect(route.matterRepo.find.mock.calls[1][0]).toEqual({ sort: { uid: "ASC" }, limit: 500, uid: "gt(a499)" });
+        expect(route.blobStore.delete).not.toHaveBeenCalled();
+    });
+
+    it("keeps the replaced blob when the legal hold lookup fails", async () => {
+        const route = buildRoute("bodies/old");
+        route.matterRepo.find.mockRejectedValue(new Error("db down"));
+        await expect(route.assemble("m1", htmlInput, user)).resolves.toMatchObject({ uid: "m1" });
+        expect(route.blobStore.delete).not.toHaveBeenCalled();
+    });
+});
+
+describe("BaseMailComposeRoute.assemble() drafts and From", () => {
+    const user = { uid: "u1" } as any;
+
+    function buildRoute(opts: { displayName?: string; message?: any } = {}) {
+        const message = opts.message ?? { uid: "m1", version: 2, folderUid: "f1", mailboxUid: "mb1" };
+        const route = new (TestMailComposeRoute as any)();
+        route._objectFactory = { newInstance: vi.fn() };
+        route.messageRepo = { findOne: vi.fn().mockResolvedValue(message), update: vi.fn().mockResolvedValue(message) };
+        route.folderRepo = { findOne: vi.fn().mockResolvedValue({ uid: "f1", type: "drafts" }) };
+        route.mailboxRepo = {
+            findOne: vi.fn().mockResolvedValue({ uid: "mb1", displayName: opts.displayName, primarySmtpAddress: "alice@example.com" }),
+        };
+        route.attachmentRepo = { find: vi.fn().mockResolvedValue([]) };
+        route.aclUtils = { hasPermission: vi.fn().mockResolvedValue(true) };
+        route.blobStore = { put: vi.fn().mockResolvedValue(undefined) };
+        route.matterRepo = { find: vi.fn().mockResolvedValue([]) };
+        return route;
+    }
+
+    const storedMime = (route: any): string => route.blobStore.put.mock.calls[0][1].toString("utf-8");
+
+    it("stores a draft with no recipients and an empty body (autosave before anything is filled in)", async () => {
+        for (const input of [{}, { to: [], html: "" }, { subject: "Notes", cc: [{ address: "carol@example.com" }] }]) {
+            const route = buildRoute({ displayName: "Alice" });
+            await route.assemble("m1", input, user);
+            const patch = route.messageRepo.update.mock.calls[0][0];
+            expect(route.blobStore.put).toHaveBeenCalled();
+            expect(storedMime(route)).not.toMatch(/^To:/m);
+            expect(patch.recipients).toEqual((input as any).cc ? [{ address: "carol@example.com", type: "cc" }] : []);
+            expect(patch.bodyPreview).toBe("");
+        }
+    });
+
+    it("still rejects malformed input", async () => {
+        for (const input of [
+            undefined,
+            { to: "bob@example.com" },
+            { to: [{ name: "no address" }] },
+            { cc: {} },
+            { html: 42 },
+            { subject: ["x"] },
+        ]) {
+            const route = buildRoute();
+            await expect(route.assemble("m1", input, user)).rejects.toThrow(/invalid/i);
+            expect(route.blobStore.put).not.toHaveBeenCalled();
+        }
+    });
+
+    it("puts the mailbox's display name in From", async () => {
+        const route = buildRoute({ displayName: "Alice Smith" });
+        await route.assemble("m1", { to: [{ address: "bob@example.com" }], html: "<p>hi</p>" }, user);
+        expect(storedMime(route)).toMatch(/^From: Alice Smith <alice@example.com>\r?$/m);
+        expect(route.messageRepo.update.mock.calls[0][0].from).toEqual({ address: "alice@example.com", displayName: "Alice Smith", type: "to" });
+    });
+
+    it("uses the bare address in From when the display name contains @ or a line break", async () => {
+        for (const displayName of ["ceo@example.com", "Alice\r\nBcc: x@evil.com", "Alice\nSmith", "", undefined]) {
+            const route = buildRoute({ displayName });
+            await route.assemble("m1", { to: [{ address: "bob@example.com" }], html: "<p>hi</p>" }, user);
+            const mime = storedMime(route);
+            expect(mime).toMatch(/^From: alice@example.com\r?$/m);
+            expect(mime).not.toMatch(/evil|ceo@/);
+            expect(route.messageRepo.update.mock.calls[0][0].from.displayName).toBeUndefined();
+        }
+    });
+
+    it("passes the draft to update() as a model instance, so the optimistic lock applies to a plain document", async () => {
+        const route = buildRoute();
+        await route.assemble("m1", { html: "<p>hi</p>" }, user);
+        const [patch, existing] = route.messageRepo.update.mock.calls[0];
+        expect(existing).toBeInstanceOf(TestMessage);
+        expect(existing).toMatchObject({ uid: "m1", version: 2 });
+        expect(patch.version).toBe(2);
+    });
+
+    it("passes an entity instance through unchanged", async () => {
+        const entity = Object.assign(Object.create(BaseEntity.prototype), { uid: "m1", version: 5, folderUid: "f1", mailboxUid: "mb1" });
+        const route = buildRoute({ message: entity });
+        await route.assemble("m1", { html: "<p>hi</p>" }, user);
+        expect(route.messageRepo.update.mock.calls[0][1]).toBe(entity);
+    });
+});
+
+describe("safeFromDisplayName()", () => {
+    it("keeps an ordinary name, trimmed, and drops address-like, multi-line or empty ones", () => {
+        expect(safeFromDisplayName("  Alice Smith ")).toBe("Alice Smith");
+        expect(safeFromDisplayName("bob@example.com")).toBeUndefined();
+        expect(safeFromDisplayName("Bob\r\nX: y")).toBeUndefined();
+        expect(safeFromDisplayName("   ")).toBeUndefined();
+        expect(safeFromDisplayName(undefined)).toBeUndefined();
+    });
 });
 
 describe("assertRawMimeHeadersMatch()", () => {
@@ -298,6 +440,14 @@ describe("assertRawMimeHeadersMatch()", () => {
         ]) {
             expect(check([`From: ${from}`, `Sender: ${from}`, "To: bob@example.com"]), from).not.toThrow();
         }
+    });
+
+    it("only accepts a bare From address when the mailbox's display name is address-like", () => {
+        const odd = { ...mailbox, displayName: "ceo@example.com" };
+        expect(() => assertRawMimeHeadersMatch(rawMessage(["From: alice@example.com", "To: bob@example.com"]), odd, { to })).not.toThrow();
+        expect(() =>
+            assertRawMimeHeadersMatch(rawMessage(["From: \"ceo@example.com\" <alice@example.com>", "To: bob@example.com"]), odd, { to }),
+        ).toThrow(/From header/);
     });
 
     it("rejects any other display name on From or Sender", () => {

@@ -96,13 +96,14 @@ kept - which needs cluster access, so rendering the chart without it (`helm temp
 until you set `cookies.secret`, `sessions.secret` and `mail.escrow.auditHmacKey` explicitly or point
 `secrets.existingSecret` at a Secret you manage. Outbound mail is relayed to the `postfix-bridge` chart's `postfix`
 Service (`mail.relay.*`). Behind a Gateway this chart doesn't create, set `gateway.httpsListener` to the listener that
-terminates TLS for `host` with the `<host>-tls-cert` Secret, or the site is served over plain HTTP. `/api/metrics`
+terminates TLS for `host` with the `<host>-tls-cert` Secret (the render fails without it while `gateway.tls` is
+true; set `gateway.tls=false` to serve plain HTTP). `/api/metrics`
 requires a token with a trusted role, so scrape it with a bearer token rather than `prometheus.io/*` annotations.
 
 #### From GHCR
 
 ```bash
-helm install --create-namespace --namespace mail-server mail-server oci://ghcr.io/rapidmx/charts/mail-server --version 1.0.0-beta.2   --set global.authSecret="$(openssl rand -hex 32)" --set mail.ingestSecret="$(openssl rand -hex 32)"
+helm install --create-namespace --namespace mail-server mail-server oci://ghcr.io/rapidmx/charts/server --version 1.0.0-beta.2   --set global.authSecret="$(openssl rand -hex 32)" --set mail.ingestSecret="$(openssl rand -hex 32)"
 ```
 
 #### From Local

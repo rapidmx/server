@@ -48,6 +48,20 @@ spec:
         app: {{ include "rrst.name" . }}
         app.kubernetes.io/instance: {{ include "rrst.fullname" . }}-services
         environment: {{ $.Values.environment }}
+        {{- /*
+        The Bitnami subcharts' NetworkPolicies admit pods labelled "<fullname>-client" when networkPolicy.allowExternal is
+        false (redis's is, see values.yaml) - without the label the redis-probe init container waits forever on any
+        cluster that enforces NetworkPolicy.
+        */}}
+        {{- if $.Values.redis.create }}
+        {{ $.Values.redis.fullnameOverride | default "redis" }}-client: "true"
+        {{- end }}
+        {{- if $.Values.mongodb.create }}
+        {{ $.Values.mongodb.fullnameOverride | default "mongodb" }}-client: "true"
+        {{- end }}
+        {{- if $.Values.postgresql.create }}
+        {{ $.Values.postgresql.fullnameOverride | default "postgresql" }}-client: "true"
+        {{- end }}
       annotations:
         # No prometheus.io/scrape annotations: /api/metrics requires a token with a trusted role
         # (service.config.metrics__authRequired), which annotation-based discovery can't send - configure a scrape job

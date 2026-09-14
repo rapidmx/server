@@ -13,6 +13,8 @@ import { BaseMessageRawContentRoute } from "../../src/routes/BaseMessageRawConte
 
 class TestMessageRawContentRoute extends BaseMessageRawContentRoute<any> {
     protected messageClass: any = class {};
+    protected mailboxClass: any = class {};
+    protected auditLogClass: any = class {};
 }
 
 describe("BaseMessageRawContentRoute Tests (dependency guard clause only)", () => {
@@ -32,13 +34,22 @@ describe("BaseMessageRawContentRoute Tests (dependency guard clause only)", () =
 });
 
 describe("BaseMessageRawContentRoute.raw() Tests (mocked collaborators)", () => {
-    const message = { uid: "m1", folderUid: "f1", bodyBlobKey: "bodies/abc123" };
+    const message = { uid: "m1", folderUid: "f1", mailboxUid: "mb1", subject: "Hello", bodyBlobKey: "bodies/abc123" };
     const user = { uid: "u1" } as any;
 
     function buildRoute(overrides: Partial<Record<string, any>> = {}) {
         const route = new (TestMessageRawContentRoute as any)();
-        (route)._objectFactory = { newInstance: vi.fn() };
+        // restapi's recordAuditLog() caches the audit log repo per class, so each route gets its own class and repo.
+        (route).auditLogClass = class {
+            constructor(other: object) {
+                Object.assign(this, other);
+            }
+        };
+        (route).auditRepo = { create: vi.fn().mockResolvedValue(undefined) };
+        (route)._objectFactory = { newInstance: vi.fn().mockReturnValue((route).auditRepo) };
+        (route).config = config;
         (route).messageRepo = { findOne: vi.fn().mockResolvedValue(message) };
+        (route).mailboxRepo = { findOne: vi.fn().mockResolvedValue({ uid: "mb1", ownerUserUid: "u1" }) };
         (route).aclUtils = { hasPermission: vi.fn().mockResolvedValue(true) };
         (route).blobStore = { get: vi.fn().mockResolvedValue(Buffer.from("raw mime source", "utf-8")) };
         Object.assign(route, overrides);
@@ -73,5 +84,45 @@ describe("BaseMessageRawContentRoute.raw() Tests (mocked collaborators)", () => 
         expect((route as any).blobStore.get).toHaveBeenCalledWith("bodies/abc123");
         expect(res.setHeader).toHaveBeenCalledWith("content-type", "message/rfc822");
         expect(res.send).toHaveBeenCalledWith(Buffer.from("raw mime source", "utf-8"));
+    });
+
+    it("doesn't audit the mailbox owner reading their own message", async () => {
+        const route: any = buildRoute();
+        await route.raw("m1", fakeResponse() as any, user);
+        expect(route.auditRepo.create).not.toHaveBeenCalled();
+    });
+
+    it("audits a read by someone other than the mailbox owner as MESSAGE_CONTENT_ACCESSED", async () => {
+        const route: any = buildRoute({ mailboxRepo: { findOne: vi.fn().mockResolvedValue({ uid: "mb1", ownerUserUid: "someone-else" }) } });
+        const res = fakeResponse();
+        await route.raw("m1", res as any, user);
+
+        expect(route.mailboxRepo.findOne).toHaveBeenCalledWith("mb1", { ignoreACL: true });
+        expect(route.auditRepo.create).toHaveBeenCalledTimes(1);
+        const [entry, options] = route.auditRepo.create.mock.calls[0];
+        expect(entry).toBeInstanceOf(route.auditLogClass);
+        expect(entry).toMatchObject({
+            action: "message.content_accessed",
+            targetType: "Message",
+            targetUid: "m1",
+            mailboxUid: "mb1",
+            actorUserUid: "u1",
+            details: { subject: "Hello", raw: true },
+        });
+        expect(options).toEqual({ ignoreACL: true });
+        expect(res.send).toHaveBeenCalled();
+    });
+
+    it("audits the read when the owning mailbox can't be found", async () => {
+        const route: any = buildRoute({ mailboxRepo: { findOne: vi.fn().mockResolvedValue(undefined) } });
+        await route.raw("m1", fakeResponse() as any, user);
+        expect(route.auditRepo.create).toHaveBeenCalledTimes(1);
+    });
+
+    it("doesn't audit (or read the mailbox) when the read is refused", async () => {
+        const route: any = buildRoute({ aclUtils: { hasPermission: vi.fn().mockResolvedValue(false) } });
+        await expect(route.raw("m1", fakeResponse() as any, user)).rejects.toThrow(/no resource could be found/i);
+        expect(route.mailboxRepo.findOne).not.toHaveBeenCalled();
+        expect(route.auditRepo.create).not.toHaveBeenCalled();
     });
 });

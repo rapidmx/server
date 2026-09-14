@@ -5,29 +5,17 @@
 {{- if or (and .Values.mongodb.create .Values.mongodb.auth.enabled) (and .Values.postgresql.create .Values.postgresql.auth.enablePostgresUser) }}
 
 Databases:
+  {{- /* Passwords are never printed here (release notes end up in CI logs and `helm get notes`); only how to read them. */}}
   {{- if and .Values.mongodb.create .Values.mongodb.auth.enabled }}
-  {{- $mdbSecret := (lookup "v1" "Secret" .Release.Namespace .Values.mongodb.fullnameOverride) | default dict }}
-  {{- $mdbSecretData := (get $mdbSecret "data") | default dict }}
-  {{- $mdbPassword := (get $mdbSecretData "mongodb-root-password") | default "" }}
   MongoDB:
     Username: root
-    {{- if $mdbPassword }}
-    Password: {{ $mdbPassword | b64dec }}
-    {{- else }}
-    Password: stored in the "{{ .Values.mongodb.auth.existingSecret | default .Values.mongodb.fullnameOverride }}" Secret (key mongodb-root-password); run `helm get notes` again once it exists
-    {{- end }}
+    Password: kubectl -n {{ .Release.Namespace }} get secret {{ tpl (.Values.mongodb.auth.existingSecret | default .Values.mongodb.fullnameOverride) . }} -o jsonpath='{.data.mongodb-root-password}' | base64 -d
   {{- end }}
   {{- if and .Values.postgresql.create .Values.postgresql.auth.enablePostgresUser }}
-  {{- $pgSecret := (lookup "v1" "Secret" .Release.Namespace .Values.postgresql.fullnameOverride) | default dict }}
-  {{- $pgSecretData := (get $pgSecret "data") | default dict }}
-  {{- $pgPassword := (get $pgSecretData "postgres-password") | default "" }}
+  {{- $pgKey := ternary (tpl (.Values.postgresql.auth.secretKeys.adminPasswordKey | default "postgres-password") .) "postgres-password" (not (empty .Values.postgresql.auth.existingSecret)) }}
   PostgreSQL:
     Username: postgres
-    {{- if $pgPassword }}
-    Password: {{ $pgPassword | b64dec }}
-    {{- else }}
-    Password: stored in the "{{ .Values.postgresql.auth.existingSecret | default .Values.postgresql.fullnameOverride }}" Secret; run `helm get notes` again once it exists
-    {{- end }}
+    Password: kubectl -n {{ .Release.Namespace }} get secret {{ tpl (.Values.postgresql.auth.existingSecret | default .Values.postgresql.fullnameOverride) . }} -o jsonpath='{.data.{{ $pgKey }}}' | base64 -d
   {{- end }}
 {{- end }}
 
@@ -44,4 +32,5 @@ https://github.com/rapidmx/postfix-bridge alongside this release, with its `mail
 this release's own "{{ include "rrst.fullname" . }}-services" Service and its `mail.ingestSecret` set to
 the exact same value as this release's own `mail.ingestSecret` (stored in the
 "{{ include "rrst.fullname" . }}-mail-ingest-secret" Secret), or postfix-bridge's calls to /internal/mta will fail
-authorization. /internal/* is not routed through the Gateway; postfix-bridge must call the Service directly.
+authorization. /internal/* is not routed through the Gateway; postfix-bridge must call the Service directly. Read it with:
+  kubectl -n {{ .Release.Namespace }} get secret {{ include "rrst.fullname" . }}-mail-ingest-secret -o jsonpath='{.data.mail__transport__ingest__secret}' | base64 -d
