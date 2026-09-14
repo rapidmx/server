@@ -4,7 +4,7 @@
 import nconf from "nconf";
 import { Logger } from "@rapidrest/core";
 import { ObjectFactory, RateLimiter } from "@rapidrest/service-core";
-import { clientAddress, TieredRateLimiter, trustedProxyList } from "../../src/lib/TieredRateLimiter.js";
+import { clientAddress, rateLimitAddress, TieredRateLimiter, trustedProxyList } from "../../src/lib/TieredRateLimiter.js";
 import mongoConfig from "../../src/config.mongo.js";
 import sqlConfig from "../../src/config.sql.js";
 
@@ -99,6 +99,34 @@ describe("TieredRateLimiter", () => {
         expect(await attempts(rl, 10, "GET|/.well-known/key/bob", behindGateway("203.0.113.2"))).toBe(3);
     });
 
+    it("reduces IPv6 addresses to their /64 (or configured) network for counting, leaving IPv4 alone", () => {
+        expect(rateLimitAddress("203.0.113.9")).toBe("203.0.113.9");
+        expect(rateLimitAddress("2001:db8:1:2:aaaa:bbbb:cccc:dddd")).toBe("2001:db8:1:2:0:0:0:0/64");
+        expect(rateLimitAddress("2001:db8:1:2::1")).toBe("2001:db8:1:2:0:0:0:0/64");
+        expect(rateLimitAddress("2001:db8::")).toBe("2001:db8:0:0:0:0:0:0/64");
+        expect(rateLimitAddress("::1")).toBe("0:0:0:0:0:0:0:0/64");
+        expect(rateLimitAddress("64:ff9b::192.0.2.33", 96)).toBe("64:ff9b:0:0:0:0:0:0/96");
+        expect(rateLimitAddress("2001:db8:1:2ff::1", 56)).toBe("2001:db8:1:200:0:0:0:0/56");
+        expect(rateLimitAddress("2001:db8:1:2::1", 128)).toBe("2001:db8:1:2::1");
+    });
+
+    it("counts one IPv6 /64 as a single client", async () => {
+        const rl = await limiter({ ...limits, ipv6_prefix_length: 64 });
+        const rotating = (i: number) => anonymous(`2001:db8:1:2::${i + 1}`);
+        let allowed = 0;
+        for (let i = 0; i < 10; i++) {
+            try {
+                await rl.checkAndIncrement("GET|/.well-known/key/bob", { perUser: true } as any, rotating(i));
+                allowed++;
+            } catch (err: any) {
+                expect(err.status).toBe(429);
+            }
+        }
+        expect(allowed).toBe(3);
+        // Another /64 has its own budget.
+        expect(await attempts(rl, 10, "GET|/.well-known/key/bob", anonymous("2001:db8:1:3::1"))).toBe(3);
+    });
+
     it("gives signed-in requests the authenticated limits, with a per-IP counter apart from the anonymous one", async () => {
         const rl = await limiter(limits);
         expect(await attempts(rl, 60, "alice|GET|/mailbox/1/keys/lookup", signedIn("alice"))).toBe(50);
@@ -122,6 +150,7 @@ describe("TieredRateLimiter", () => {
             expect(rateLimit.authenticated.maxAttempts).toBeGreaterThanOrEqual(10_000);
             expect(rateLimit.authenticated.ip.maxAttempts).toBeGreaterThanOrEqual(20_000);
             expect(config.get("trusted_proxies")).toEqual([]);
+            expect(rateLimit.ipv6_prefix_length).toBe(64);
         }
     });
 });

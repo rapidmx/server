@@ -114,3 +114,45 @@ Generate list of domains with subdomain and/or path
 {{- $System := .Values.ingress }}
 {{- include "rrst.domains" (dict "Values" $.Values "system" $System) }}
 {{- end -}}
+{{/*
+"true" when the Gateway terminates TLS for .Values.host: gateway.tls is on and the host can get a real certificate
+(tls-certs.yaml only issues one for a host that isn't localhost or *.local). Empty otherwise.
+*/}}
+{{- define "server.tlsEnabled" -}}
+{{- if and .Values.gateway.tls (ne .Values.host "localhost") (not (contains ".local" .Values.host)) -}}
+true
+{{- end -}}
+{{- end -}}
+
+{{/* The public base URL of this deployment, e.g. https://mail.example.com. */}}
+{{- define "server.publicUrl" -}}
+{{- printf "%s://%s" (ternary "https" "http" (eq (include "server.tlsEnabled" .) "true")) .Values.host -}}
+{{- end -}}
+
+{{/*
+A secret value that must be supplied: fails the render when it's empty or still one of the publicly-known development
+defaults. Usage: include "server.requiredSecret" (dict "value" $value "name" "auth.secret" "defaults" (list "..."))
+*/}}
+{{- define "server.requiredSecret" -}}
+{{- $value := required (printf "%s is required: set it to a unique, secret value." .name) (.value | default "") -}}
+{{- if has $value (.defaults | default list) -}}
+{{- fail (printf "%s is still a publicly-known development default; set it to a unique, secret value." .name) -}}
+{{- end -}}
+{{- $value -}}
+{{- end -}}
+
+{{/*
+A base64-encoded secret that's generated once and kept: the explicit value when one is set, otherwise the value already
+stored in the release's Secret (so it survives upgrades), otherwise a new random one.
+Usage: include "server.persistedSecret" (dict "value" .Values.cookies.secret "stored" $storedB64 "context" $)
+*/}}
+{{- define "server.persistedSecret" -}}
+{{- $explicit := tpl (.value | default "") .context -}}
+{{- if $explicit -}}
+{{- $explicit | b64enc -}}
+{{- else if .stored -}}
+{{- .stored -}}
+{{- else -}}
+{{- randAlphaNum 48 | b64enc -}}
+{{- end -}}
+{{- end -}}

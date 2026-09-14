@@ -8,6 +8,54 @@ import { RateLimiter, type RateLimitConfig, type RateLimiterConfig } from "@rapi
 /** `rateLimit` config: the top-level limits apply to anonymous callers, `authenticated` to signed-in ones. */
 export interface TieredRateLimiterConfig extends RateLimiterConfig {
     authenticated?: RateLimitConfig;
+    /** IPv6 clients are counted per network of this prefix length (default 64); 128 counts each address. */
+    ipv6_prefix_length?: number;
+}
+
+/** The 16 bytes of an IPv6 address (`net.isIP(address) === 6`), or `undefined` if it can't be parsed. */
+function ipv6Bytes(address: string): number[] | undefined {
+    let text: string = address;
+    const tail: number[] = [];
+    const v4: RegExpMatchArray | null = text.match(/^(.*:)(\d+\.\d+\.\d+\.\d+)$/);
+    if (v4) {
+        const octets: number[] = v4[2].split(".").map(Number);
+        tail.push((octets[0] << 8) | octets[1], (octets[2] << 8) | octets[3]);
+        text = v4[1].endsWith("::") ? v4[1] : v4[1].slice(0, -1);
+    }
+    const [head, rest] = text.split("::");
+    const parse = (part: string | undefined): number[] => (part ? part.split(":").map((group) => parseInt(group, 16)) : []);
+    const left: number[] = parse(head);
+    const right: number[] = [...parse(rest), ...tail];
+    const groups: number[] = rest === undefined ? [...left, ...tail] : [...left, ...new Array(8 - left.length - right.length).fill(0), ...right];
+    if (groups.length !== 8 || groups.some((group) => !Number.isInteger(group) || group < 0 || group > 0xffff)) {
+        return undefined;
+    }
+    return groups.flatMap((group) => [group >> 8, group & 0xff]);
+}
+
+/**
+ * The address a rate-limit counter is kept for: IPv4 addresses as they are, IPv6 addresses reduced to their
+ * `/prefixLength` network (e.g. `2001:db8:0:1::/64`), since one host is typically assigned a whole /64 and could
+ * otherwise use a different address for every request.
+ */
+export function rateLimitAddress(address: string, prefixLength: number = 64): string {
+    if (net.isIP(address) !== 6) {
+        return address;
+    }
+    const prefix: number = Number.isInteger(prefixLength) ? Math.min(Math.max(prefixLength, 0), 128) : 64;
+    const bytes: number[] | undefined = ipv6Bytes(address);
+    if (!bytes || prefix === 128) {
+        return address;
+    }
+    const masked: number[] = bytes.map((byte, i) => {
+        const bits: number = Math.min(Math.max(prefix - i * 8, 0), 8);
+        return byte & ((0xff << (8 - bits)) & 0xff);
+    });
+    const groups: string[] = [];
+    for (let i = 0; i < 16; i += 2) {
+        groups.push(((masked[i] << 8) | masked[i + 1]).toString(16));
+    }
+    return `${groups.join(":")}/${prefix}`;
 }
 
 /** Strips the IPv4-mapped IPv6 prefix (`::ffff:10.0.0.1` -> `10.0.0.1`) and an IPv6 zone. */
@@ -97,14 +145,15 @@ export class TieredRateLimiter extends RateLimiter {
     }
 
     public async checkAndIncrement(identifier: string, config?: RateLimitConfig, req?: any): Promise<void> {
-        const { authenticated, ...anonymous }: TieredRateLimiterConfig = this.config as TieredRateLimiterConfig;
+        const { authenticated, ipv6_prefix_length: ipv6PrefixLength, ...anonymous }: TieredRateLimiterConfig = this.config as TieredRateLimiterConfig;
         if (!req || this.config.enabled === false) {
             return super.checkAndIncrement(identifier, config, req);
         }
         const signedIn: boolean = !!authenticated && !!req.user?.uid;
         const limits: RateLimitConfig = signedIn ? { ...anonymous, ...authenticated, ...config } : { ...anonymous, ...config };
         const ip = signedIn ? { ...anonymous.ip, ...authenticated!.ip, ...config?.ip } : { ...anonymous.ip, ...config?.ip };
-        const address: string | undefined = clientAddress(req, this.trusted());
+        const resolved: string | undefined = clientAddress(req, this.trusted());
+        const address: string | undefined = resolved && rateLimitAddress(resolved, ipv6PrefixLength ?? 64);
         const explicitId: boolean = !!(config as any)?.id;
         const key: string = !req.user?.uid && !explicitId && address ? `anonymous:${address}|${identifier}` : identifier;
         // Without a request the base class checks only the identifier counter.

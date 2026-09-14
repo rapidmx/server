@@ -12,7 +12,6 @@ process.env[`cors__origins`] = JSON.stringify(corsOrigins);
 import config from "../src/config.sql.js";
 import { Logger, sleep } from "@rapidrest/core";
 import { ObjectFactory, Server } from "@rapidrest/service-core";
-import { request } from "@rapidrest/service-core/test";
 import {
     FsDkimKeyProvider,
     LocalFsBlobStore,
@@ -26,6 +25,7 @@ import { PostgresFullTextSearchProvider } from "@rapidmx/restapi/search";
 import { ClamAvScanProvider, RspamdSpamScanProvider } from "@rapidmx/restapi/scan";
 import { TieredRateLimiter } from "../src/lib/TieredRateLimiter.js";
 import { setDraining } from "../src/plugins/readiness.js";
+import { freePort, localRequest } from "./helpers/serverTestUtils.js";
 import * as fs from "fs";
 import * as sqlite3 from "sqlite3";
 
@@ -70,9 +70,15 @@ describe("Server Tests", () => {
     // network calls against a real certificate authority.
     objectFactory.register(ManualSigningCertificateEnrollment, "SigningCertificateEnrollment");
     objectFactory.register(TieredRateLimiter, "RateLimiter");
-    const server: Server = new Server({ config, basePath: "./src/sql", logger, objectFactory });
+    let server: Server;
+    let port: number;
 
     beforeAll(async () => {
+        // A free port on 127.0.0.1 rather than the default 3000, which a running `yarn dev` server may already hold.
+        port = await freePort();
+        config.set("port", port);
+        config.set("listen_host", "127.0.0.1");
+        server = new Server({ config, basePath: "./src/sql", logger, objectFactory });
         config.set("datastores:acl", {
             type: "better-sqlite3",
             host: "localhost",
@@ -115,17 +121,17 @@ describe("Server Tests", () => {
     it("Can start server.", async () => {
         expect(server.isRunning()).toBe(true);
         // Cors Check
-        let result = await request(server).options("/").set("Origin", corsOrigins[0]);
+        let result = await localRequest(port, "OPTIONS", "/", { Origin: corsOrigins[0] });
         expect(result.headers["access-control-allow-origin"]).toEqual(corsOrigins[0]);
-        result = await request(server).options("/").set("Origin", "http://localhost:3005");
+        result = await localRequest(port, "OPTIONS", "/", { Origin: "http://localhost:3005" });
         expect(result.headers["access-control-allow-origin"]).not.toBeDefined();
     });
 
     it("Reports not ready while draining for a plugin restart.", async () => {
-        expect((await request(server).get("/api/status")).status).toBe(200);
+        expect((await localRequest(port, "GET", "/api/status")).status).toBe(200);
         setDraining(true);
         try {
-            expect((await request(server).get("/api/status")).status).toBe(503);
+            expect((await localRequest(port, "GET", "/api/status")).status).toBe(503);
         } finally {
             setDraining(false);
         }

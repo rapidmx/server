@@ -1,9 +1,19 @@
+# Local debugging only: `yarn debug` runs the TypeScript sources with dev auto-login (every request is signed in as
+# a dev user) and a Node inspector, which can run arbitrary code. Both ports are published on the host's loopback
+# only. The runtime image has no dev dependencies, so this builds the `builder` stage (which also has no msmtp, so
+# outbound mail can't be relayed from it).
 services:
     server:
+        image: rapidmx-server:debug
+        build:
+            context: .
+            target: builder
+            args:
+                NODE_ENV: development
         command: ["yarn", "debug"]
         ports:
-            - "3000:3000"
-            - "9229:9229"
+            - "127.0.0.1:3000:3000"
+            - "127.0.0.1:9229:9229"
         volumes:
             - ./apps:/app/apps
             - ./src:/app/src

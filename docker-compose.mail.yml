@@ -4,12 +4,13 @@ services:
     # separate `postfix-bridge` repo/compose stack, not here - see this repo's README for how the two are
     # meant to be run side by side.
     rspamd:
-        image: rspamd/rspamd:latest
+        # Pinned rather than `latest`, so a rebuild doesn't silently pick up a new major version.
+        image: rspamd/rspamd:4.1.5
         ports:
-            - "11333:11333"
+            - "127.0.0.1:11333:11333"
     # Anti-virus scanning (AvScanProvider) — see ClamAvScanProvider. clamd's signature database can take a
     # few minutes to load on first start; the provider fails closed (quarantines) until it's ready.
     clamav:
         image: clamav/clamav:stable
         ports:
-            - "3310:3310"
+            - "127.0.0.1:3310:3310"

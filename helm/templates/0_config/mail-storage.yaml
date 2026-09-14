@@ -12,15 +12,17 @@ metadata:
 spec:
   accessModes:
     - {{ .Values.mail.dkim.storage.accessMode }}
-  {{- if ne .Values.mail.dkim.storage.storageClassName "default" }}
+  {{- if ne (tpl .Values.mail.dkim.storage.storageClassName .) "default" }}
   storageClassName: {{ tpl .Values.mail.dkim.storage.storageClassName . | quote }}
   {{- end }}
   resources:
     requests:
       storage: {{ .Values.mail.dkim.storage.size }}
+{{- if eq .Values.mail.blob.backend "local" }}
 ---
-# LocalFsBlobStore's root - only ever mounted by the main service Deployment, so this is always safe as
-# ReadWriteOnce regardless of cluster topology (unlike dkim-keys above).
+# LocalFsBlobStore's root - only ever mounted by the main service Deployment. ReadWriteOnce limits the Deployment to
+# one replica (see values.yaml's service.replicas); use mail.blob.backend "s3", or a ReadWriteMany storage class, to
+# run more. Not created at all with the "s3" backend.
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -28,9 +30,28 @@ metadata:
 spec:
   accessModes:
     - {{ .Values.mail.blob.storage.accessMode }}
-  {{- if ne .Values.mail.blob.storage.storageClassName "default" }}
+  {{- if ne (tpl .Values.mail.blob.storage.storageClassName .) "default" }}
   storageClassName: {{ tpl .Values.mail.blob.storage.storageClassName . | quote }}
   {{- end }}
   resources:
     requests:
       storage: {{ .Values.mail.blob.storage.size }}
+{{- end }}
+---
+# The local encryption CA's key/certificate (mail:pki:local_ca:dir) and the signing-certificate enrollment stores
+# (mail:pki:manual_enrollment:store_path, mail:pki:rfc8823:store_dir, mail:pki:openbao:serial_map_path), all under
+# /var/lib/rapidmx/pki. Without it the CA key is regenerated whenever a pod is recreated. Same ReadWriteOnce caveat as
+# blob-data above.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "rrst.fullname" . }}-pki-data
+spec:
+  accessModes:
+    - {{ .Values.mail.pki.storage.accessMode }}
+  {{- if ne (tpl .Values.mail.pki.storage.storageClassName .) "default" }}
+  storageClassName: {{ tpl .Values.mail.pki.storage.storageClassName . | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.mail.pki.storage.size }}

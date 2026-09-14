@@ -8,15 +8,39 @@ metadata:
   # literal resource name.
   name: {{ include "rrst.fullname" . }}-service-config
 data:
-  cookie_secret: {{ tpl $.Values.cookies.secret . | quote }}
-  session__secret: {{ tpl $.Values.sessions.secret . | quote }}
+  # cookie_secret/session__secret live in the service-secrets Secret (service-secrets.yaml).
   NODE_ENV: "{{ $.Values.environment }}"
-  {{- $publicScheme := ternary "https" "http" $.Values.gateway.tls }}
+  {{- $publicScheme := ternary "https" "http" (eq (include "server.tlsEnabled" $) "true") }}
+  {{- $publicUrl := include "server.publicUrl" $ }}
+  {{- $config := $.Values.service.config | default dict }}
   {{- $corsHosts := list "http://localhost:3000" (printf "%s://%s" $publicScheme $.Values.host) }}
   cors__origins: {{ $corsHosts | toJson | quote }}
   # Which proxies' X-Forwarded-For is trusted for the client's address (per-IP rate limits) - see values.yaml's
   # service.trustedProxies.
   trusted_proxies: {{ $.Values.service.trustedProxies | default list | toJson | quote }}
+  # Whether the server creates/updates its database schema from its models on startup - see values.yaml's
+  # service.datastores.synchronize.
+  {{- $synchronize := ternary "true" "false" (ne (toString $.Values.service.datastores.synchronize) "false") }}
+  datastores__acl__synchronize: {{ $synchronize | quote }}
+  {{- if $.Values.postgresql.create }}
+  datastores__sql__synchronize: {{ $synchronize | quote }}
+  {{- else }}
+  datastores__mongo__synchronize: {{ $synchronize | quote }}
+  {{- end }}
+  # Where message bodies/attachments are stored - see values.yaml's mail.blob.backend.
+  mail__blob__backend: {{ $.Values.mail.blob.backend | quote }}
+  # Public URLs derived from `host`, unless set explicitly under service.config: links in booking emails, the base
+  # URL the autodiscover plugin advertises to mail clients, and the MX hostname (read-receipt Reporting-UA, domain DNS
+  # checks).
+  {{- if not (hasKey $config "mail__booking__public_url") }}
+  mail__booking__public_url: {{ printf "%s/book" $publicUrl | quote }}
+  {{- end }}
+  {{- if not (hasKey $config "mail__autodiscover__public_url") }}
+  mail__autodiscover__public_url: {{ $publicUrl | quote }}
+  {{- end }}
+  {{- if not (hasKey $config "mail__dns__mx_hostname") }}
+  mail__dns__mx_hostname: {{ $.Values.mail.mxHostname | default $.Values.host | quote }}
+  {{- end }}
   # Browser-facing: apps/www's/apps/admin's unauthenticated-redirect and this service's own SSR both
   # resolve auth-server through this URL, so it must be reachable from the visitor's browser, not just
   # from inside the cluster - hence the authServer subdomain host, not a Service DNS name. Only rendered

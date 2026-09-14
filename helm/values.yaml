@@ -1,14 +1,25 @@
 host: localhost
-environment: dev
+# NODE_ENV. With anything but dev/development/test the server refuses to start while a secret is empty or still a
+# publicly-known development default, and no Node inspector is started. Only use dev for a throwaway local cluster.
+environment: production
+global:
+  # The JWT secret shared by this server (auth.secret) and the bundled auth-server (authServer.auth.secret), which
+  # must be identical - both default to this. Required unless you set both of those explicitly:
+  #   helm install ... --set global.authSecret="$(openssl rand -hex 32)"
+  # Always rendered from the value you supply (a previously stored one never wins), so pass it again on every
+  # upgrade (e.g. keep it in your values file or use --reuse-values).
+  authSecret: ''
 auth:
   audience: mail-server-api
   issuer: mail-server-api
   expiresIn: 1 hour
-  secret: MyPasswordIsSecure
+  secret: '{{ .Values.global.authSecret }}'
+# Cookie and session signing secrets. Leave empty to have one generated on install and kept (in the
+# <release>-service-secrets Secret) across upgrades; an explicit value always wins.
 cookies:
-  secret: '{{ randAlphaNum 32 }}'
+  secret: ''
 sessions:
-  secret: '{{ randAlphaNum 32 }}'
+  secret: ''
 common:
   storageClass: default
   logs:
@@ -53,20 +64,62 @@ service:
     registry: ghcr.io
     repository: rapidmx/server
     tag: 1.0.0-beta.2
-  # 2, not 1: a single pod is a single point of failure against the memory-exhaustion risk documented
-  # below - readBody() runs before ANY middleware (including auth, per @rapidrest/service-core's own
-  # Router.js comment: "Body must be read before any middleware runs"), so an *unauthenticated* caller
-  # opening a handful of concurrent connections against any POST/PUT/PATCH endpoint (not just mailbox
-  # import) can still approach the memory limit below - there is no per-IP/global concurrency cap
-  # anywhere in this stack to prevent that. This is a framework-level design characteristic of
-  # @rapidrest/service-core itself (reads the body before auth, no connection-limit hook) and a
-  # restapi job-level gap (DataExportJob's mbox-format export and MatterExportJob's multi-custodian
-  # aggregation have no row/size cap at all in some paths) - both genuinely out of this repo's scope to
-  # fix in place. Running 2 replicas doesn't close the vulnerability, but it means one pod OOM-killing
-  # no longer takes the *entire* mail server down for every mailbox while a real fix (auth-before-body-
-  # read in service-core, and/or gateway-level rate limiting, and/or restapi capping every export job's
-  # aggregation) gets designed and prioritized separately - flagged to JP rather than guessed at here.
-  replicas: 2
+  # 1 by default, because the server's volumes default to ReadWriteOnce (mail.blob.storage, mail.dkim.storage,
+  # mail.pki.storage), which only one pod can mount; the chart refuses to render more replicas while any of them is
+  # ReadWriteOnce, and uses the Recreate update strategy (brief downtime on upgrades and plugin changes).
+  #
+  # More than one replica is still recommended for production: a single pod is a single point of failure against the
+  # memory-exhaustion risk documented below - readBody() runs before ANY middleware (including auth), so an
+  # unauthenticated caller opening a handful of concurrent connections against any POST/PUT/PATCH endpoint can approach
+  # the memory limit, with no per-IP/global concurrency cap anywhere in this stack (a @rapidrest/service-core design
+  # characteristic, plus restapi export jobs without size caps in some paths). To run 2+, set mail.blob.backend to
+  # "s3" (or mail.blob.storage.accessMode to ReadWriteMany) and mail.dkim.storage/mail.pki.storage accessMode to
+  # ReadWriteMany, with a storage class that supports it.
+  replicas: 1
+  # Pod shutdown: Kubernetes runs the preStop sleep (so the pod leaves the Service/Gateway before it stops accepting
+  # requests), then sends SIGTERM; the server reports not ready for shutdown.drain_delay_ms (5s) and stops within
+  # shutdown.timeout_ms (25s). Keep the sum below terminationGracePeriodSeconds.
+  terminationGracePeriodSeconds: 60
+  preStopSleepSeconds: 10
+  podSecurityContext:
+    runAsNonRoot: true
+    # The image's `node` user. Numeric, so Kubernetes can verify runAsNonRoot.
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+    # Only chown volumes whose root doesn't already match, instead of every file of the message store on each mount.
+    fsGroupChangePolicy: OnRootMismatch
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+        - ALL
+  # Startup installs the deployment's plugins with npm (up to system.plugins.npm_timeout_ms, 10 minutes), so give it
+  # up to 15 minutes before liveness applies.
+  startupProbe:
+    httpGet:
+      path: /api/status
+      port: 3000
+    periodSeconds: 10
+    failureThreshold: 90
+  # Restarts a hung server. Deliberately slow to give up (11 minutes): /api/status also fails while a copy drains and
+  # reinstalls plugins during a plugin restart, which runs npm again inside the same container.
+  livenessProbe:
+    httpGet:
+      path: /api/status
+      port: 3000
+    periodSeconds: 30
+    timeoutSeconds: 5
+    failureThreshold: 22
+  datastores:
+    # Whether the server creates and updates its database schema (collections/indexes, or SQL tables/columns) from its
+    # models every time it starts (datastores.*.synchronize). There are no migrations, so a fresh install needs this,
+    # and it's how an upgrade adds new tables/columns. Risk: on SQL, TypeORM may drop and recreate a column whose type
+    # changed between releases, losing that column's data. Back up the database before every upgrade; set to false only
+    # if you manage schema changes yourself.
+    synchronize: true
   # Proxies whose X-Forwarded-For header is trusted for the client's address (config `trusted_proxies`; exact
   # addresses or CIDR ranges). Every request reaches the server through the nginx Gateway, so with an empty list every
   # client shares the Gateway pod's address and one caller can use up the anonymous per-IP rate limits (booking, key
@@ -112,9 +165,9 @@ service:
       name: rapidmx_server
       host: ''
   config:
-    logs: true
-    metrics: true
-    releaseNotes: true
+    # Not `metrics: true`: an env var named `metrics` replaces the whole `metrics` config object, which turned off
+    # authentication for /api/metrics. Prometheus scrapes then need a token with a trusted role.
+    metrics__authRequired: true
     mail__dkim__key_dir: /var/lib/rspamd/dkim
     mail__dkim__selector: mail
     mail__scan__spam__rspamd__url: http://rspamd:11333
@@ -129,14 +182,15 @@ service:
 authServer:
   create: true
   host: auth.localhost
-  environment: dev
+  environment: production
   gateway:
     create: false
   auth:
     audience: mail-server-api
     issuer: mail-server-api
     expiresIn: 1 hour
-    secret: MyPasswordIsSecure
+    # Must equal auth.secret. Evaluated inside the auth-server subchart, where only `global` is shared with this chart.
+    secret: '{{ required "global.authSecret is required (or set both auth.secret and authServer.auth.secret to the same unique value)" .Values.global.authSecret }}'
   mongodb:
     create: false
     fullnameOverride: mongodb
@@ -176,15 +230,18 @@ authServer:
         name: rapidmx_auth
         host: ''
     config:
-      logs: true
-      metrics: true
-      releaseNotes: true
+      # See service.config.metrics__authRequired above.
+      metrics__authRequired: true
 mail:
   # Must match the separate `postfix-bridge` chart's own `mail.ingestSecret` exactly - the two are
   # separate Helm releases, so nothing keeps them in sync automatically. Postfix itself, its public MX
   # hostname/TLS certificate (mail.hostname), and the domains it accepts outbound submissions for
   # (mail.domains) all moved to that chart's own values - see its README/values.yaml.
-  ingestSecret: ChangeMeIngestSecret
+  # Required: the render fails while it's empty (or the old ChangeMeIngestSecret placeholder).
+  ingestSecret: ''
+  # This deployment's public MX hostname (the Reporting-UA of outgoing read receipts, and what domain DNS checks
+  # expect MX records to point at) - normally postfix-bridge's own mail.hostname. Defaults to `host`.
+  mxHostname: ''
   dkim:
     selector: mail
     autogenerate: true
@@ -193,15 +250,26 @@ mail:
       accessMode: ReadWriteOnce
       size: 1Gi
   blob:
+    # Where message sources, attachments and contact photos are stored (mail:blob:backend): "local" - the blob-data
+    # volume below - or "s3", configured through service.config (mail__blob__s3__bucket, mail__blob__s3__region, ...),
+    # which needs no volume and allows several replicas.
+    backend: local
     storage:
       storageClassName: '{{ .Values.common.storageClass }}'
       accessMode: ReadWriteOnce
       size: 20Gi
+  # Local encryption CA key/certificate and signing-certificate enrollment state (/var/lib/rapidmx/pki).
+  pki:
+    storage:
+      storageClassName: '{{ .Values.common.storageClass }}'
+      accessMode: ReadWriteOnce
+      size: 1Gi
   rspamd:
     image:
       registry: docker.io
       repository: rspamd/rspamd
-      tag: latest
+      # Pinned, so a pod reschedule doesn't silently pull a new major version.
+      tag: 4.1.5
     resources:
       requests:
         cpu: 100m

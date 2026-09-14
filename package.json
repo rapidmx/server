@@ -47,6 +47,7 @@
     "nconf": "^0.13.0",
     "nodemailer": "^10.0.1",
     "openapi3-ts": "^4.6.1",
+    "pg": "^8.23.0",
     "prom-client": "^15.1.3",
     "pst-extractor": "^1.12.0",
     "react": "^19.2.8",

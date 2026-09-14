@@ -468,9 +468,27 @@ run_step "Installing mail-server"
 addHelmRepo bitnami https://charts.bitnami.com/bitnami
 helm repo up
 
+# The chart requires the JWT secret (shared with auth-server) and the postfix-bridge ingest secret. Reuse the ones from
+# an existing install, so re-running this script doesn't rotate them; otherwise generate new ones.
+function existingSecret() {
+  for name in "$NAMESPACE-$1" "$NAMESPACE-server-$1"; do
+    value=`kubectl -n $NAMESPACE get secret $name -o jsonpath="{.data.$2}" 2>/dev/null | base64 -d 2>/dev/null`
+    if [[ -n "$value" ]]; then
+      echo "$value"
+      return
+    fi
+  done
+}
+AUTH_SECRET=${AUTH_SECRET:-`existingSecret jwt-auth auth__secret`}
+AUTH_SECRET=${AUTH_SECRET:-`openssl rand -hex 32`}
+MAIL_INGEST_SECRET=${MAIL_INGEST_SECRET:-`existingSecret mail-ingest-secret mail__transport__ingest__secret`}
+MAIL_INGEST_SECRET=${MAIL_INGEST_SECRET:-`openssl rand -hex 32`}
+
 helm upgrade --install --create-namespace --namespace $NAMESPACE $NAMESPACE oci://ghcr.io/rapidrest/charts/mail-server \
   --version $VERSION --set host=$DOMAIN --set gateway.tls=$TLS --set gateway.hsts=$TLS \
-  --set gateway.name=shared-gateway --set gateway.namespace=nginx-gateway
+  --set gateway.name=shared-gateway --set gateway.namespace=nginx-gateway \
+  --set global.authSecret="$AUTH_SECRET" --set mail.ingestSecret="$MAIL_INGEST_SECRET"
+echo "postfix-bridge must be installed with mail.ingestSecret=$MAIL_INGEST_SECRET"
 
 # Stop background loop
 running=false

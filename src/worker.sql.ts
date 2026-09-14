@@ -10,7 +10,7 @@ register(import.meta.url.endsWith(".ts") ? "./lib/reactDedupeHooks.ts" : "./lib/
 import config from "./config.sql.js";
 import { fileURLToPath } from "url";
 import { dirname } from "path";
-import { JWTUtils, EventUtils, Logger } from "@rapidrest/core";
+import { Logger } from "@rapidrest/core";
 import { ObjectFactory, Server } from "@rapidrest/service-core";
 import {
     FsDkimKeyProvider,
@@ -35,9 +35,10 @@ import { selectConfigDrivenBackend } from "./lib/configDrivenBackend.js";
 
 import * as fs from "fs";
 import { readFile } from "fs/promises";
-import * as os from "os";
 import * as path from "path";
-import { assertProductionSecretsAreSet } from "./config.defaults.js";
+import { assertProductionSecretsAreSet, DEVELOPMENT_ENVIRONMENTS } from "./config.defaults.js";
+import { configMs, drainAndStop } from "./lib/gracefulShutdown.js";
+import { startTelemetryToken } from "./lib/telemetryToken.js";
 import { PluginSQL } from "@rapidmx/restapi/sql";
 import { PluginHost } from "./plugins/PluginHost.js";
 import { notifyListening, restartWorker } from "./plugins/supervisor.js";
@@ -48,7 +49,8 @@ const _dirname = dirname(_filename);
 
 const environment: string = process.env.NODE_ENV || "production";
 
-assertProductionSecretsAreSet(config, environment);
+// The raw NODE_ENV: only an explicit dev/development/test allows the checked-in development secrets.
+assertProductionSecretsAreSet(config, process.env.NODE_ENV);
 
 const logLevel: string = config.get("logger:level") || (environment === "production" ? "info" : "debug");
 const logger = Logger(logLevel, config.get("logger:file"));
@@ -120,6 +122,7 @@ objectFactory.register(
 
 let server: any = undefined;
 let pluginHost: PluginHost | undefined = undefined;
+let telemetry: { stop: () => void } | undefined = undefined;
 
 const start = async function (config: any, logger: any) {
     // Load the release notes file
@@ -132,21 +135,9 @@ const start = async function (config: any, logger: any) {
         logger.debug(err);
     }
 
-    // Initialize EventUtils to be able to send out telemetry events. Build a standalone copy of the
-    // auth config rather than mutating the object `config.get()` returns: nconf does not clone nested
-    // values, so `config.get("auth")` returns the exact live object shared by every other consumer of
-    // this config (e.g. `TokenUtils`) — deleting `expiresIn` off of it in place previously stripped
-    // expiry from every access token the server issues, not just this one telemetry token.
-    const configuredAuth: any = config.get("auth");
-    const auth: any = { ...configuredAuth, options: { ...configuredAuth.options } };
-    delete auth.options.expiresIn;
-    const token: string = await JWTUtils.createToken(auth,
-        {
-            uid: `${config.get("service_name")}-${os.hostname()}`,
-            roles: config.get("trusted_roles"),
-            scopes: [],
-        });
-    await EventUtils.init(config, logger, token);
+    // Initialize EventUtils to be able to send out telemetry events, with a short-lived token that carries no trusted
+    // roles and is renewed while the server runs - see lib/telemetryToken.ts.
+    telemetry = await startTelemetryToken(config, logger);
 
     // DEV-ONLY (see enableDevAutoLogin.ts) — both a no-op outside of `yarn dev`.
     await enableDevAutoLoginIfApplicable(objectFactory, logger);
@@ -179,19 +170,32 @@ const stopServer = (): Promise<void> =>
         }
     })());
 
-const shutdown = async () => {
-    logger.info("Shutting down...");
+let shuttingDown: boolean = false;
+const shutdown = async (signal: string) => {
+    if (shuttingDown) {
+        return;
+    }
+    shuttingDown = true;
+    logger.info(`Shutting down (${signal})...`);
+    telemetry?.stop();
     // Gives back the plugin restart lock even if this copy was part-way through a plugin restart, which then stops.
     await pluginHost?.stop({ shutdown: true }).catch(() => undefined);
-    await stopServer();
-    process.exit(0);
+    // SIGTERM is a container/pod stop: report not ready and let in-flight requests finish before stopping. An
+    // interactive Ctrl+C (SIGINT), a vanished supervisor, or a development reload (tsx --watch) stops right away.
+    const drain: boolean = signal === "SIGTERM" && !DEVELOPMENT_ENVIRONMENTS.includes(process.env.NODE_ENV ?? "");
+    const result = await drainAndStop(stopServer, {
+        drainDelayMs: drain ? configMs(config.get("shutdown:drain_delay_ms"), 5_000) : 0,
+        timeoutMs: configMs(config.get("shutdown:timeout_ms"), 25_000),
+        logger,
+    });
+    process.exit(result === "stopped" ? 0 : 1);
 };
 
 // The plugin set changed: stop cleanly and ask the supervisor (server.sql.ts) for a fresh process.
 // Exits even if stopping fails or hangs, so the process is never left running without its plugin watcher.
 const restartForPlugins = () => restartWorker(stopServer, { logger });
 
-process.on("SIGINT", shutdown);
-process.on("SIGTERM", shutdown);
+process.on("SIGINT", () => void shutdown("SIGINT"));
+process.on("SIGTERM", () => void shutdown("SIGTERM"));
 // The supervisor went away - don't linger as an orphan.
-process.on("disconnect", shutdown);
+process.on("disconnect", () => void shutdown("disconnect"));

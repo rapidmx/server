@@ -4,7 +4,8 @@
 import config from "../../src/config.mongo.js";
 import { ObjectFactory } from "@rapidrest/service-core";
 import { Logger } from "@rapidrest/core";
-import { BaseGiphySearchRoute } from "../../src/routes/BaseGiphySearchRoute.js";
+import { BaseGiphySearchRoute, clampLimit } from "../../src/routes/BaseGiphySearchRoute.js";
+import { DEFAULT_GIPHY_API_KEY } from "../../src/config.defaults.js";
 
 function giphyApiResponse(gifs: { id: string; title: string }[]) {
     return {
@@ -45,7 +46,9 @@ describe("BaseGiphySearchRoute Tests", () => {
 
         const result = await route.search("cats");
 
-        expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining("https://api.giphy.com/v1/gifs/search?"));
+        expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining("https://api.giphy.com/v1/gifs/search?"), {
+            signal: expect.any(AbortSignal),
+        });
         expect(fetchMock.mock.calls[0][0]).toContain("api_key=test-key");
         expect(fetchMock.mock.calls[0][0]).toContain("q=cats");
         expect(result).toEqual([
@@ -84,6 +87,31 @@ describe("BaseGiphySearchRoute Tests", () => {
         await route.search("cats", "9999");
 
         expect(fetchMock.mock.calls[0][0]).toContain("limit=50");
+    });
+
+    it("treats the checked-in placeholder API key as unset.", async () => {
+        const route = objectFactory.newInstance<BaseGiphySearchRoute>(BaseGiphySearchRoute, { initialize: false });
+        (route as any).apiKey = DEFAULT_GIPHY_API_KEY;
+        const fetchMock = vi.fn();
+        vi.stubGlobal("fetch", fetchMock);
+
+        await expect(route.search("cats")).rejects.toThrow(/not configured/i);
+        expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it("clamps limit to 1..50 and falls back to the default for a non-number.", () => {
+        expect(clampLimit(undefined)).toBe(24);
+        expect(clampLimit("abc")).toBe(24);
+        expect(clampLimit("")).toBe(24);
+        expect(clampLimit("0")).toBe(1);
+        expect(clampLimit("-5")).toBe(1);
+        expect(clampLimit("10")).toBe(10);
+        expect(clampLimit("9999")).toBe(50);
+    });
+
+    it("declares a per-user rate limit on search.", () => {
+        const route = Reflect.getMetadata("rrst:route", BaseGiphySearchRoute.prototype, "search");
+        expect(route.rateLimit).toMatchObject({ perUser: true, maxAttempts: 30, windowSeconds: 60 });
     });
 
     it("uses the default limit when none is given.", async () => {

@@ -7,11 +7,14 @@ metadata:
   name: {{ include "rrst.fullname" . }}-jwt-auth
 type: Opaque
 data:
-  {{- $secret := (lookup "v1" "Secret" .Release.Namespace (printf "%s-jwt-auth" (include "rrst.fullname" .))) | default dict }}
-  {{- $secretData := (get $secret "data") | default dict }}
-  {{- $jwtSecret := (get $secretData "auth__password") | default (tpl .Values.auth.secret . | b64enc | quote) }}
+  {{- /*
+  Always the value supplied now (auth.secret, by default taken from global.authSecret): it has to equal auth-server's
+  signing secret, so there's nothing to generate, and a value stored by an earlier release must never win over an
+  explicit new one (that made rotating the secret silently do nothing).
+  */}}
+  {{- $jwtSecret := include "server.requiredSecret" (dict "value" (tpl .Values.auth.secret .) "name" "auth.secret (or global.authSecret)" "defaults" (list "MyPasswordIsSecure")) }}
   auth__options__audience: {{ tpl .Values.auth.audience . | b64enc | quote }}
   auth__options__issuer: {{ tpl .Values.auth.issuer . | b64enc | quote }}
   auth__options__expiresIn: {{ tpl .Values.auth.expiresIn . | b64enc | quote }}
-  auth__password: {{ $jwtSecret }}
-  auth__secret: {{ $jwtSecret }}
+  auth__password: {{ $jwtSecret | b64enc | quote }}
+  auth__secret: {{ $jwtSecret | b64enc | quote }}

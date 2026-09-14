@@ -4,9 +4,10 @@
 ///////////////////////////////////////////////////////////////////////////////
 import { ApiError, ObjectDecorators } from "@rapidrest/core";
 import { ApiErrors, RouteDecorators } from "@rapidrest/service-core";
+import { DEFAULT_GIPHY_API_KEY } from "../config.defaults.js";
 
 const { Config } = ObjectDecorators;
-const { Auth, Get, Query } = RouteDecorators;
+const { Auth, Get, Query, RateLimit } = RouteDecorators;
 
 /** The subset of a Giphy API result this app actually uses — never the raw Giphy payload, which
  * carries far more than a search grid needs (rendition variants, analytics IDs, etc.). */
@@ -40,6 +41,14 @@ interface GiphyApiResponse {
 const GIPHY_API_BASE = "https://api.giphy.com/v1/gifs";
 const DEFAULT_LIMIT = 24;
 const MAX_LIMIT = 50;
+/** How long a Giphy request may take before the search fails, so a slow upstream can't hold requests open. */
+const FETCH_TIMEOUT_MS = 5_000;
+
+/** `limit` as a whole number between 1 and `MAX_LIMIT`, or `DEFAULT_LIMIT` when missing or not a number. */
+export function clampLimit(limitParam?: string): number {
+    const parsed: number = limitParam === undefined ? NaN : parseInt(limitParam, 10);
+    return Number.isFinite(parsed) ? Math.min(Math.max(parsed, 1), MAX_LIMIT) : DEFAULT_LIMIT;
+}
 
 function toGiphyGif(gif: GiphyApiGif): GiphyGif {
     return {
@@ -71,13 +80,16 @@ export class BaseGiphySearchRoute {
     private apiKey?: string;
 
     @Auth(["jwt"])
+    // Every search spends this deployment's shared Giphy quota, so each user gets a modest budget of their own.
+    @RateLimit({ perUser: true, maxAttempts: 30, windowSeconds: 60 })
     @Get("/search")
     public async search(@Query("q") query?: string, @Query("limit") limitParam?: string): Promise<GiphyGif[]> {
-        if (!this.apiKey) {
+        // The checked-in placeholder key counts as unset.
+        if (!this.apiKey || this.apiKey === DEFAULT_GIPHY_API_KEY) {
             throw new ApiError(ApiErrors.INTERNAL_ERROR, 500, "GIF search is not configured on this server.");
         }
 
-        const limit = Math.min(limitParam ? parseInt(limitParam, 10) : DEFAULT_LIMIT, MAX_LIMIT);
+        const limit: number = clampLimit(limitParam);
         const trimmed = query?.trim();
         const params = new URLSearchParams({ api_key: this.apiKey, limit: String(limit), rating: "pg-13" });
         if (trimmed) {
@@ -86,7 +98,9 @@ export class BaseGiphySearchRoute {
 
         let response: Response;
         try {
-            response = await fetch(`${GIPHY_API_BASE}/${trimmed ? "search" : "trending"}?${params.toString()}`);
+            response = await fetch(`${GIPHY_API_BASE}/${trimmed ? "search" : "trending"}?${params.toString()}`, {
+                signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+            });
         } catch {
             throw new ApiError(ApiErrors.INTERNAL_ERROR, 502, "Could not reach Giphy.");
         }

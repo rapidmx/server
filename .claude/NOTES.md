@@ -4889,3 +4889,131 @@ Verification: tsc clean, `yarn lint` clean; plugin/lib/dev suites pass (new test
 Server.mongo/sql tests fail here with `ECONNREFUSED :6379` (no Redis running in this environment) and the seven
 `test/apps/book/*` files fail to collect ("Vitest failed to find the current suite") - neither involves anything changed
 in this round.
+
+## 2026-09-14 — Review round 3 fixes: deployment defaults, secrets, raw MIME spoofing, shutdown, Helm hardening
+
+Fixed from a third verified review plus a cross-repo contract review (A-F below). Nothing committed, no version bumps,
+`.yarn/patches` untouched (restapi is changing concurrently). Every finding was confirmed in code first.
+
+**Behaviour changes to know about**
+- **Helm now requires secrets.** `global.authSecret` (feeds both `auth.secret` and `authServer.auth.secret`, which must
+  match) and `mail.ingestSecret` are required; the render fails when empty or still `MyPasswordIsSecure` /
+  `ChangeMeIngestSecret` (`server.requiredSecret` helper). `single_node_install.sh` reuses the in-cluster secrets or
+  generates new ones with `openssl rand`. README install commands updated.
+- **Helm `environment` (and `authServer.environment`) default `production`** (was `dev`). Not verified against the
+  auth-server image: if auth-server needs more secrets in production, a default install will crash-loop there.
+- **Helm `service.replicas` default 1** (was 2) - see finding 5.
+- **Server secret guard**: `assertProductionSecretsAreSet(config, process.env.NODE_ENV)` now enforces real secrets unless
+  NODE_ENV is exactly `dev`/`development`/`test` (was: only when exactly `production`; an unset NODE_ENV was already
+  mapped to production by the workers, but e.g. `staging` passed). Empty secrets are rejected too. `rapidrest dev` sets
+  `development`, vitest sets `test`, compose sets `dev`.
+- **JWT `allowQueryParam: false`** (both configs). Grepped server, web-client, react-shared, activesync, mapi,
+  autodiscover, restapi, electron-client (excluding node_modules/dist): no `auth_token=` (service-core's `queryKey`) or
+  other token-in-URL usage, no EventSource/WebSocket client. Plugin repos' own test configs still set `true` (their tests).
+- **Mongo datastore defaults** no longer carry `url: mongodb://localhost:9999/acls` / `port: 9999` (finding B).
+- **`mail.booking.public_url` default `""`** (booking emails omit the manage link until set; Helm derives it).
+- **Telemetry token** now has roles `["telemetry"]` and a 1 h expiry, renewed at half-life (finding 12). If a telemetry
+  service authorizes event posting by trusted role, it needs to accept `telemetry`.
+- **Runtime image has production dependencies only**; `pg` added to `dependencies` (it was only present via dev deps -
+  the SQL image would otherwise lose its driver). yarn.lock edited by hand (one line in the workspace entry) and checked
+  with `yarn install --mode=update-lockfile` (lockfile unchanged afterwards, link step skipped - node_modules untouched).
+
+**Per finding**
+1. Secrets/defaults: chart defaults above; `helm/templates/0_config/jwt-auth.yaml`, `mail-ingest-secret.yaml`,
+   `_helpers.tpl`. docker-compose: README documents them as local evaluation, so kept `NODE_ENV=dev` and bound every
+   published port to `127.0.0.1` (mongo/sql/mail/openbao/override/debug). `src/config.defaults.ts`.
+2. jwt-auth lookup preferring the stored secret: removed - JWT secret is always the supplied value (nothing is
+   generated). Generated values (cookie/session) use lookup only when no explicit value (`server.persistedSecret`).
+   **The auth-server subchart's own jwt-auth.yaml still prefers its stored secret** (same bug, other repo): rotating
+   `global.authSecret` on an existing install won't reach auth-server until its Secret is deleted. Follow-up there.
+3. `/internal` publicly routed: HTTPRoute gets a `PathPrefix /internal` rule with no backendRefs/filters (Gateway API:
+   404). NetworkPolicy **skipped**: `/internal/mta` shares port 3000 with the public API, so an L4 policy can't separate
+   them (and a restrictive default would need the gateway's and postfix-bridge's pod labels, which vary). Protection is
+   the Gateway rule + the now-required ingest secret. NOTES.txt tells postfix-bridge to call the Service directly.
+4. assemble-raw spoofing: `assertRawMimeHeadersMatch()` (BaseMailComposeRoute.ts) parses only the top-level header block
+   (unfolds, rejects malformed lines): exactly one From address in mailbox primary/aliases (case-insensitive), Sender (if
+   any) likewise, no Bcc, no Resent-*, To/Cc address sets equal the request's to/cc. Reply-To is not restricted
+   (legitimate to point elsewhere). Size cap: raw message > `mail:compose:max_attachment_bytes` -> 413, checked before
+   storing. Matches web-client ComposeWindow's generated headers (`"Name" <primary>`, To/Cc address lists, no Bcc).
+   Addresses parsed with nodemailer's addressparser.
+5. replicas 2 + RWO PVCs: default 1; `service.yaml` fails the render when replicas > 1 while any mounted volume
+   (blob if `mail.blob.backend: local`, dkim, pki) isn't ReadWriteMany; Deployment uses `strategy: Recreate` whenever an
+   RWO volume is mounted (a rolling update would hang on Multi-Attach). New `mail.blob.backend` value (rendered as
+   `mail__blob__backend`; blob PVC only created for `local`). Note: plugin rolling restarts with 1 replica now mean a
+   short outage per plugin change.
+6. PKI dir: Dockerfile creates `/var/lib/rapidmx/pki` owned by node; Helm `pki-data` PVC (`mail.pki.storage`, RWO) mounted
+   there; compose `pki_data` volume.
+7. synchronize (decision for JP, default NOT flipped): Helm `service.datastores.synchronize` (default true) renders
+   `datastores__acl__synchronize` + `datastores__mongo__synchronize`/`datastores__sql__synchronize`; env already worked.
+   Risk documented in values.yaml, config.sql/mongo.ts and a new README "Upgrading" section (TypeORM may drop/recreate a
+   column whose type changed - back up before upgrading). Real fix is migrations.
+8. TLS: `tls` moved from the HTTPRoute (invalid field) to the Gateway `https` listener with certificateRefs for `host`
+   and `authServer.host`; route attaches to `https`; separate `-https-redirect` HTTPRoute (301) on `http`. Only when
+   `server.tlsEnabled` (gateway.tls and host not localhost/*.local - the same condition tls-certs.yaml issues a
+   certificate under); otherwise plain http as before. cors/public URLs use that same condition. **The auth-server
+   subchart's HTTPRoute still has the invalid `tls:` field and attaches to `http` only** - follow-up in that chart
+   (strict schema validation may reject it).
+9. allowQueryParam: false (see above).
+10. Shutdown: `src/lib/gracefulShutdown.ts` `drainAndStop()` - setDraining(true), wait `shutdown.drain_delay_ms`
+   (5 s, SIGTERM only and not in dev envs, so tsx reloads/Ctrl+C stay instant), then stop with `shutdown.timeout_ms`
+   (25 s); exit 1 on timeout/failure. All three workers, idempotent. service-core's `app.close()` only closes the listen
+   socket and then disconnects the DBs, so requests still running after the drain can still fail - a service-core gap.
+   Helm: `terminationGracePeriodSeconds: 60`, preStop `sleep 10`, startupProbe (15 min, npm install at start),
+   livenessProbe (/api/status, 30 s x 22 - long because a plugin restart drains and reinstalls inside the container),
+   pod securityContext (runAsNonRoot, uid/gid/fsGroup 1000, fsGroupChangePolicy OnRootMismatch, seccomp RuntimeDefault),
+   container securityContext (no privilege escalation, drop ALL) also on the busybox init containers. rspamd pinned to
+   `4.1.5` (latest 4.1.x on Docker Hub as of today) in values and docker-compose.mail.yml.
+11. cookie/session secrets: new `service-secrets` Secret (`0_config/service-secrets.yaml`), empty value -> generated once
+   and read back via lookup, explicit wins; removed from the ConfigMap. Deployment has `checksum/config` and
+   `checksum/secrets` annotations (secrets checksum covers jwt-auth, ingest, service-secrets). `helm template` renders a new
+   random value each time (no cluster to look up) - expected. The auth-server subchart still templates its own
+   cookie/session `randAlphaNum` into its ConfigMap (other repo).
+12. Telemetry token: `src/lib/telemetryToken.ts`; config `telemetry_services.token_roles` / `token_ttl_seconds`.
+   EventUtils has no token setter and `init()` drops listeners, so renewal assigns the private static `token`.
+13. IPv6 /64: `rateLimitAddress()` in TieredRateLimiter.ts; config `rateLimit.ipv6_prefix_length` (64). Counter keys for
+   IPv6 are now e.g. `ip:2001:db8:1:2:0:0:0:0/64`.
+14. Dockerfile: `prod-deps` stage (`yarn workspaces focus --production`), no nodemon, no `EXPOSE 9229`, HEALTHCHECK
+   `/api/status`; .dockerignore adds `.env`, `.env.*`, `data`, `plugins`. docker-compose.debug.yml builds the `builder`
+   stage (dev deps; no msmtp) as `rapidmx-server:debug`, ports on 127.0.0.1. mongo/sql compose no longer publish 9229.
+   **Skipped: `yarn debug` inspector on 0.0.0.0** - `rapidrest dev --inspect` hardcodes `--inspect=0.0.0.0:9229` in
+   @rapidrest/cli (dev.js), and NODE_OPTIONS would make every node process (CLI, tsx, supervisor, worker) fight over
+   9229. Inside the debug container 0.0.0.0 is needed anyway for the port publish, which is now loopback-only. Follow-up:
+   a `--inspect-host` flag in @rapidrest/cli.
+15. Giphy: placeholder key treated as unset, `clampLimit()` (NaN -> 24, 1..50), 5 s `AbortSignal.timeout`,
+   `@RateLimit({ perUser: true, maxAttempts: 30, windowSeconds: 60 })` (overrides the very high authenticated tier).
+16. Server tests: `test/helpers/serverTestUtils.ts` - `freePort()` (uWS can't report the bound port for port 0, so the OS
+   picks one first), `listen_host` 127.0.0.1, requests via `http.request` to 127.0.0.1; MongoMemoryServer without a fixed
+   port, datastore URLs from `mongod.getUri()`.
+
+**Cross-repo contract findings**
+- A. `service.config.metrics: true` became env `metrics=true`, replacing `@Config("metrics", {authRequired: true})` with
+  `true` -> `/api/metrics` public. Now `metrics__authRequired: true`; unused `logs`/`releaseNotes` removed (nothing reads
+  them). Same fix in `authServer.service.config`. The `prometheus.io/scrape` annotation stays, but scraping needs a token
+  with a trusted role now.
+- B. Mongo defaults `url: mongodb://localhost:9999/acls` / `port: 9999` beat the Helm-rendered host/database -> removed;
+  `rapidrest dev` and the tests set `datastores__*__url`. SQL config had no such default (checked).
+- C. Helm renders `mail__booking__public_url` = `<publicUrl>/book`; config default `""` (restapi omits the link).
+- D. Guard message and config comments now use the real env names (`auth__secret`, `cookie_secret`,
+  `mail__transport__ingest__secret`, `mail__blob__s3__*`, `mail__pki__openbao__token`): nconf `.env({separator: "__"})`,
+  no prefix, no case conversion.
+- E. Helm renders `mail__autodiscover__public_url` = public URL (the plugin only accepts https, so it stays off for
+  localhost/http installs); compose sets it from `PUBLIC_URL`.
+- F. Helm renders `mail__dns__mx_hostname` = `mail.mxHostname` or `host`; compose `MX_HOSTNAME` (default localhost).
+- All three derived keys are skipped when the same key is set under `service.config` (no duplicate ConfigMap keys).
+
+Also fixed on the way: mail-storage PVCs compared the untemplated `storageClassName` against "default", so every PVC got
+`storageClassName: "default"`; NOTES.txt looked up a non-existent `jwt-auth` Secret and printed the ingest secret.
+
+**Verification**: `npx tsc --noEmit -p .` clean; `yarn lint` clean; full `yarn vitest run`: 27 files / 265 tests passed
+(Server.mongo/sql now pass here on free ports next to the running `yarn dev`), but the run exited 1 on 4 unhandled
+`EPERM: operation not permitted, watch` errors attributed to Server.mongo.test.ts - @rapidrest/react's ReactRoute
+`fs.watch`es `dist/public/.vite/manifest.json` in dev mode, and the concurrently running `yarn dev` (vite build --watch)
+rewrites it; re-running Server.mongo.test.ts alone passed with no unhandled errors. `helm lint ./helm` passes (it
+tolerates the `required` failures); `helm template` fails without the secrets, fails with the old defaults, fails for
+replicas 2 with RWO storage, and renders for: secrets set; replicas 2 + s3 + RWX; explicit auth.secret +
+authServer.auth.secret; postgresql + s3 + environment dev; a TLS host (Gateway https listener + redirect route checked);
+synchronize=false; a service.config override of mail__booking__public_url (no duplicate key). `docker compose config -q`
+for mongo(+debug)/sql/openbao. `docker build` succeeded; the image booted on an isolated docker network (no published
+ports) with Mongo + Redis and real secrets -> `/api/status` 200, `require('pg')` works, no vite/vitest/tsx/nodemon/rapidrest
+in node_modules/.bin, `/var/lib/rapidmx/pki` owned by node, runs as uid 1000; with default secrets it refuses to start.
+Verification image/containers removed afterwards.

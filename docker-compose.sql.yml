@@ -12,9 +12,11 @@ services:
         build:
             context: .
         command: ["node", "dist/src/server.sql.js"]
+        # Bound to the host's loopback only: this stack is for local evaluation (NODE_ENV=dev, publicly-known default
+        # secrets unless overridden - see README), so it must not be reachable from the network. Put a reverse proxy in
+        # front, or change the binding, only after setting real secrets and NODE_ENV=production.
         ports:
-            - "3000:3000"
-            - "9229:9229"
+            - "127.0.0.1:3000:3000"
         environment:
             - datastores__acl__url=postgres://postgres:postgres@postgres:5432/${SERVER_SQL_DB_NAME:-rapidmx_server}
             - datastores__cache__type=redis
@@ -36,6 +38,12 @@ services:
             # not just from inside the compose network (hence localhost:3001, not http://auth-server:3000).
             # Override with the real public auth-server URL in any deployment that isn't single-host/dev.
             - mail__auth_server_url=${AUTH_SERVER_PUBLIC_URL:-http://localhost:3001}
+            # Links in booking emails, and the base URL the autodiscover plugin advertises (it only accepts https://,
+            # so autodiscover stays off until PUBLIC_URL is a real https URL).
+            - mail__booking__public_url=${PUBLIC_URL:-http://localhost:3000}/book
+            - mail__autodiscover__public_url=${PUBLIC_URL:-http://localhost:3000}
+            # This deployment's public MX hostname (Reporting-UA of outgoing read receipts, DNS setup checks).
+            - mail__dns__mx_hostname=${MX_HOSTNAME:-localhost}
             - NODE_ENV=${NODE_ENV:-dev}
             # The next three vars, and the dkim_rspamd_keys volume/rspamd/clamav links/depends_on below,
             # wire this service up to docker-compose.mail.yml's scanning stack (included above) - see that
@@ -67,6 +75,9 @@ services:
             # for anything beyond local single-host evaluation, point both stacks at the same underlying
             # storage (e.g. a shared bind mount, or a Docker volume driver backed by shared storage).
             - dkim_rspamd_keys:/var/lib/rspamd/dkim
+            # The local encryption CA's key/certificate and the signing-certificate enrollment stores
+            # (mail:pki:local_ca:dir etc.) - lost on container recreation without a volume.
+            - pki_data:/var/lib/rapidmx/pki
         links:
             - redis
             - postgres
@@ -81,7 +92,7 @@ services:
         image: ghcr.io/rapidrest/auth-server:${AUTH_SERVER_IMAGE_TAG:-latest}
         command: ["node", "dist/src/server.sql.js"]
         ports:
-            - "3001:3000"
+            - "127.0.0.1:3001:3000"
         environment:
             - datastores__acl__url=postgres://postgres:postgres@postgres:5432/${AUTH_SERVER_SQL_DB_NAME:-rapidmx_auth}
             - datastores__cache__type=redis
@@ -129,3 +140,4 @@ volumes:
     blob_data:
     postgres_data:
     dkim_rspamd_keys:
+    pki_data:

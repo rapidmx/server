@@ -41,6 +41,10 @@ conf.defaults({
         origins: ["http://localhost:3000"],
     },
     datastores: {
+        // `synchronize: true` creates and alters tables from the entities on startup - there are no migrations, so a fresh
+        // install needs it, but TypeORM may drop and recreate a column whose type changed between releases (losing its
+        // data). Back up before upgrading, or set `datastores__acl__synchronize`/`datastores__sql__synchronize` to false and
+        // manage schema changes yourself (the Helm chart's `service.datastores.synchronize`).
         acl: {
             type: "postgres",
             host: "localhost",
@@ -160,7 +164,9 @@ conf.defaults({
     auth: {
         // The authentication strategy used to verify incoming JWTs.
         strategy: "auth.JWTStrategy",
-        allowQueryParam: true,
+        // Tokens are only accepted from the Authorization header or the `jwt` cookie. A token in a URL query string ends up
+        // in access logs, browser history and Referer headers; no client (web-client, react-shared, the plugins) sends one.
+        allowQueryParam: false,
         // The password used to verify authentication tokens. Must match auth-server's own `auth:secret`.
         secret: DEFAULT_AUTH_SECRET,
         // Lets `apps/www`/`apps/admin`'s SSR pages read `req.user` from the `jwt` cookie auth-server sets,
@@ -221,8 +227,8 @@ conf.defaults({
                 // Both empty by default, falling back to the standard AWS credential chain (IAM role) -
                 // the same posture SesMailTransport already uses. Set both (never just one -
                 // S3BlobStore throws if only one is set) to use a static access key pair instead. Never
-                // commit real values here - set via RAPIDMX_MAIL__BLOB__S3__ACCESS_KEY_ID/
-                // RAPIDMX_MAIL__BLOB__S3__SECRET_ACCESS_KEY env vars.
+                // commit real values here - set via the mail__blob__s3__access_key_id/
+                // mail__blob__s3__secret_access_key env vars.
                 access_key_id: "",
                 secret_access_key: "",
             },
@@ -232,7 +238,9 @@ conf.defaults({
             // `${public_url}/manage/${token}` — must land on `apps/book/manage/[token].tsx`, so this needs
             // the same externally-reachable base URL as `cluster_url` below, with `/book` appended (the
             // mount point of `BookRoute`). Keep the two in sync in a real deployment.
-            public_url: "http://localhost/book",
+            // Empty by default: booking emails then leave out the manage link rather than pointing at a host that isn't this
+            // deployment. The Helm chart sets it from its `host` value; set `mail__booking__public_url` otherwise.
+            public_url: "",
         },
         compose: {
             // Caps the combined size of a draft's attachments `BaseMailComposeRoute.assemble()` will load into
@@ -326,7 +334,7 @@ conf.defaults({
                 address: "http://127.0.0.1:8200",
                 mount: "pki",
                 role: "rapidmx",
-                // Never commit a real token here - set via the RAPIDMX_MAIL__PKI__OPENBAO__TOKEN env var
+                // Never commit a real token here - set via the mail__pki__openbao__token env var
                 // (nconf's `__`-separated env-var convention, see conf.env({ separator: "__" }) above).
                 token: "",
                 timeout_ms: 5_000,
@@ -369,6 +377,19 @@ conf.defaults({
         api_key: DEFAULT_GIPHY_API_KEY,
     },
     cluster_url: "http://localhost",
+    // How the server stops on SIGTERM (a container stop, a Kubernetes pod deletion): it first reports itself not ready
+    // (GET /api/status answers 503) for `drain_delay_ms` so load balancers stop sending it new requests, then stops,
+    // giving up and exiting after `timeout_ms`. Keep drain + timeout below the pod's terminationGracePeriodSeconds.
+    shutdown: {
+        drain_delay_ms: 5_000,
+        timeout_ms: 25_000,
+    },
+    // The token this server sends telemetry events with (EventUtils, only used when `telemetry_services:url` is set).
+    // It carries only these roles - never `trusted_roles` - and expires after `token_ttl_seconds`, renewed at half that.
+    telemetry_services: {
+        token_roles: ["telemetry"],
+        token_ttl_seconds: 3_600,
+    },
     metrics: {
         authRequired: true,
     },
@@ -388,6 +409,9 @@ conf.defaults({
     // exhausts the anonymous budget (or the other way round), and still bounds a multi-account flood from one source.
     rateLimit: {
         enabled: true,
+        // IPv6 clients are counted per network of this prefix length rather than per address - a single host is usually
+        // handed a whole /64 and could otherwise rotate addresses to get a fresh budget per request. 128 counts each address.
+        ipv6_prefix_length: 64,
         maxAttempts: 100,
         windowSeconds: 60,
         ip: {

@@ -21,15 +21,28 @@ function fakeConfig(overrides: Partial<Record<FakeConfigKey, string>>): SecretsC
     return { get: (key: string) => values[key] };
 }
 
+const realSecrets = {
+    cookie_secret: "unique-cookie-secret",
+    "auth:secret": "unique-auth-secret",
+    "mail:transport:ingest:secret": "unique-ingest-secret",
+};
+
 describe("assertProductionSecretsAreSet", () => {
-    it("is a no-op outside production, even with every default secret still in effect", () => {
-        expect(() => assertProductionSecretsAreSet(fakeConfig({}), "development")).not.toThrow();
-        expect(() => assertProductionSecretsAreSet(fakeConfig({}), undefined)).not.toThrow();
+    it("is a no-op in an explicit development environment, even with every default secret still in effect", () => {
+        for (const env of ["dev", "development", "test"]) {
+            expect(() => assertProductionSecretsAreSet(fakeConfig({}), env)).not.toThrow();
+        }
     });
 
-    it("throws in production when all three secrets still hold their default values", () => {
+    it("enforces real secrets when NODE_ENV is unset or anything other than dev/development/test", () => {
+        for (const env of [undefined, "production", "staging", "prod", "Development"]) {
+            expect(() => assertProductionSecretsAreSet(fakeConfig({}), env)).toThrow(/Refusing to start/);
+        }
+    });
+
+    it("throws naming every secret still at its default, by the env var name nconf actually reads", () => {
         expect(() => assertProductionSecretsAreSet(fakeConfig({}), "production")).toThrow(
-            /COOKIE_SECRET, AUTH__SECRET, MAIL__TRANSPORT__INGEST__SECRET/,
+            /cookie_secret, auth__secret, mail__transport__ingest__secret/,
         );
     });
 
@@ -38,17 +51,17 @@ describe("assertProductionSecretsAreSet", () => {
             "auth:secret": "a-real-unique-secret",
             "mail:transport:ingest:secret": "a-real-ingest-secret",
         });
-        expect(() => assertProductionSecretsAreSet(config, "production")).toThrow(
-            /^Refusing to start in production.*COOKIE_SECRET/,
+        expect(() => assertProductionSecretsAreSet(config, "production")).toThrow(/: cookie_secret\. /);
+    });
+
+    it("rejects an empty or blank secret too", () => {
+        expect(() => assertProductionSecretsAreSet(fakeConfig({ ...realSecrets, "auth:secret": "  " }), "production")).toThrow(
+            /auth__secret/,
         );
     });
 
-    it("does not throw in production once all three secrets have been overridden", () => {
-        const config = fakeConfig({
-            cookie_secret: "unique-cookie-secret",
-            "auth:secret": "unique-auth-secret",
-            "mail:transport:ingest:secret": "unique-ingest-secret",
-        });
-        expect(() => assertProductionSecretsAreSet(config, "production")).not.toThrow();
+    it("does not throw once all three secrets have been overridden", () => {
+        expect(() => assertProductionSecretsAreSet(fakeConfig(realSecrets), "production")).not.toThrow();
+        expect(() => assertProductionSecretsAreSet(fakeConfig(realSecrets), undefined)).not.toThrow();
     });
 });

@@ -32,12 +32,11 @@ Databases:
 {{- end }}
 
 JWT Auth:
-  {{- $jwtSecret := (lookup "v1" "Secret" .Release.Namespace "jwt-auth") | default dict }}
-  {{- $jwtSecretData := (get $jwtSecret "data") | default dict }}
   Audience: {{ tpl .Values.auth.audience . }}
   Issuer: {{ tpl .Values.auth.issuer . }}
   ExpiresIn: {{ tpl .Values.auth.expiresIn . }}
-  Password: {{ (get $jwtSecretData "auth__password") | b64dec }}
+  Secret: the value you supplied as global.authSecret (or auth.secret), stored in the
+  "{{ include "rrst.fullname" . }}-jwt-auth" Secret. Supply it again on every upgrade.
 
 {{- if or (and .Values.mongodb.create .Values.mongodb.auth.enabled) (and .Values.postgresql.create .Values.postgresql.auth.enablePostgresUser) }}
 
@@ -49,5 +48,6 @@ pods will crash-loop on datastore auth failures.
 Real inbound/outbound mail (Postfix, DKIM signing, postfix-bridge) is a separate chart - install
 https://github.com/rapidmx/postfix-bridge alongside this release, with its `mail.ingestBaseUrl` pointed at
 this release's own "{{ include "rrst.fullname" . }}-services" Service and its `mail.ingestSecret` set to
-the exact same value as this release's own `mail.ingestSecret` ({{ tpl .Values.mail.ingestSecret . }}), or
-postfix-bridge's calls to /internal/mta will fail authorization.
+the exact same value as this release's own `mail.ingestSecret` (stored in the
+"{{ include "rrst.fullname" . }}-mail-ingest-secret" Secret), or postfix-bridge's calls to /internal/mta will fail
+authorization. /internal/* is not routed through the Gateway; postfix-bridge must call the Service directly.

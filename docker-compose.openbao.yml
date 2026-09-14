@@ -13,7 +13,7 @@ services:
     openbao:
         image: openbao/openbao:latest
         ports:
-            - "8200:8200"
+            - "127.0.0.1:8200:8200"
         environment:
             BAO_DEV_ROOT_TOKEN_ID: "dev-only-root-token"
         cap_add:

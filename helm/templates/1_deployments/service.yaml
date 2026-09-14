@@ -1,3 +1,21 @@
+{{- /*
+Every ReadWriteOnce volume the server mounts can only be attached to one node, so more than one replica needs
+ReadWriteMany storage (or, for message storage, the "s3" blob backend). Fail the render with an explanation rather
+than leaving extra pods stuck in ContainerCreating on a Multi-Attach error.
+*/}}
+{{- $rwoVolumes := list }}
+{{- if and (eq $.Values.mail.blob.backend "local") (ne $.Values.mail.blob.storage.accessMode "ReadWriteMany") }}
+{{- $rwoVolumes = append $rwoVolumes "mail.blob.storage" }}
+{{- end }}
+{{- if ne $.Values.mail.dkim.storage.accessMode "ReadWriteMany" }}
+{{- $rwoVolumes = append $rwoVolumes "mail.dkim.storage" }}
+{{- end }}
+{{- if ne $.Values.mail.pki.storage.accessMode "ReadWriteMany" }}
+{{- $rwoVolumes = append $rwoVolumes "mail.pki.storage" }}
+{{- end }}
+{{- if and (gt (int $.Values.service.replicas) 1) $rwoVolumes }}
+{{- fail (printf "service.replicas is %d, but %s use ReadWriteOnce storage, which only one pod can mount. Set their accessMode to ReadWriteMany (with a storage class that supports it) - and mail.blob.backend to \"s3\" instead, if you prefer - or set service.replicas to 1." (int $.Values.service.replicas) (join ", " $rwoVolumes)) }}
+{{- end }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -9,6 +27,12 @@ metadata:
     environment: {{ $.Values.environment }}
 spec:
   replicas: {{ $.Values.service.replicas }}
+  {{- if $rwoVolumes }}
+  # A ReadWriteOnce volume can't be attached to the new pod while the old one still holds it (on another node), so a
+  # rolling update would hang; stop the old pod first.
+  strategy:
+    type: Recreate
+  {{- end }}
   selector:
     matchLabels:
       app: {{ include "rrst.name" . }}
@@ -21,10 +45,20 @@ spec:
       annotations:
         prometheus.io/scrape: "true"
         prometheus.io/port: "3000"
+        # Roll the pods when their configuration or secrets change - they're only read at startup.
+        checksum/config: {{ include (print $.Template.BasePath "/0_config/service-config.yaml") . | sha256sum }}
+        checksum/secrets: {{ print (include (print $.Template.BasePath "/0_config/jwt-auth.yaml") .) (include (print $.Template.BasePath "/0_config/mail-ingest-secret.yaml") .) (include (print $.Template.BasePath "/0_config/service-secrets.yaml") .) | sha256sum }}
     spec:
       {{- if $.Values.service.imagePullSecret }}
       imagePullSecrets:
         - name: {{ $.Values.service.imagePullSecret }}
+      {{- end }}
+      # preStop sleep + the server's own drain (config shutdown.drain_delay_ms) + its stop timeout (shutdown.timeout_ms)
+      # must fit in this.
+      terminationGracePeriodSeconds: {{ $.Values.service.terminationGracePeriodSeconds }}
+      {{- with $.Values.service.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
       {{- end }}
       containers:
         - name: {{ include "rrst.name" . }}
@@ -49,6 +83,10 @@ spec:
           {{- else }}
           args: [{{ $entrypoint | quote }}]
           {{- end }}
+          {{- with $.Values.service.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           envFrom:
             - configMapRef:
                 name: {{ include "rrst.fullname" . }}-service-config
@@ -62,6 +100,8 @@ spec:
                 name: {{ include "rrst.fullname" . }}-service-db-info
             - secretRef:
                 name: {{ include "rrst.fullname" . }}-mail-ingest-secret
+            - secretRef:
+                name: {{ include "rrst.fullname" . }}-service-secrets
           ports:
             - containerPort: 3000
           # Plugin changes restart the server process inside the container, one pod at a time (see
@@ -73,6 +113,22 @@ spec:
               port: 3000
             periodSeconds: 5
             failureThreshold: 2
+          {{- with $.Values.service.startupProbe }}
+          startupProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $.Values.service.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- if $.Values.service.preStopSleepSeconds }}
+          # Keeps serving while the endpoint is removed from the Service and the Gateway, before SIGTERM starts the
+          # server's own drain and stop.
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", {{ $.Values.service.preStopSleepSeconds | toString | quote }}]
+          {{- end }}
           resources:
             {{- toYaml $.Values.service.resources | nindent 12 }}
           volumeMounts:
@@ -84,10 +140,15 @@ spec:
             # tradeoff.
             - name: dkim-keys
               mountPath: /var/lib/rspamd/dkim
+            {{- if eq $.Values.mail.blob.backend "local" }}
             # LocalFsBlobStore's root (mail:blob:local:root, ./data/blobs relative to /app) - raw MIME
             # sources, attachments, contact photos.
             - name: blob-data
               mountPath: /app/data
+            {{- end }}
+            # The local encryption CA and signing-certificate enrollment state (mail:pki:*).
+            - name: pki-data
+              mountPath: /var/lib/rapidmx/pki
             # Where the plugin host npm-installs plugins at startup. Per pod and disposable: each pod reinstalls
             # the plugin set recorded in the database when it starts.
             - name: plugins
@@ -98,14 +159,23 @@ spec:
         - name: dkim-keys
           persistentVolumeClaim:
             claimName: {{ include "rrst.fullname" . }}-dkim-keys
+        {{- if eq $.Values.mail.blob.backend "local" }}
         - name: blob-data
           persistentVolumeClaim:
             claimName: {{ include "rrst.fullname" . }}-blob-data
+        {{- end }}
+        - name: pki-data
+          persistentVolumeClaim:
+            claimName: {{ include "rrst.fullname" . }}-pki-data
       initContainers:
         {{- if $.Values.redis.create }}
         {{- $redisHost := tpl $.Values.redis.url . | replace "redis://" "" }}
         - name: redis-probe
           image: busybox
+          {{- with $.Values.service.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           env:
             - name: REDIS_HOST
               value: {{ $redisHost }}
@@ -117,6 +187,10 @@ spec:
         {{- if $.Values.mongodb.create }}
         - name: mongo-probe
           image: busybox
+          {{- with $.Values.service.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           env:
             - name: MONGO_HOST
               value: {{ $.Values.mongodb.fullnameOverride }}
@@ -125,6 +199,10 @@ spec:
         {{- if $.Values.postgresql.create }}
         - name: postgres-probe
           image: busybox
+          {{- with $.Values.service.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           env:
             - name: POSTGRES_HOST
               value: {{ $.Values.postgresql.fullnameOverride }}

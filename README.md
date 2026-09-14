@@ -50,8 +50,11 @@ docker compose -f docker-compose.mongo.yml up -d --build
 
 `auth-server`'s image (`ghcr.io/rapidrest/auth-server`) is pulled from GHCR, not built locally.
 
-For anything beyond local evaluation, override these in a `.env` file next to the compose files (every one
-of them defaults to an insecure, publicly-known placeholder value otherwise — see `src/config.defaults.ts`):
+These compose files are for local evaluation: they run with `NODE_ENV=dev` and publish every port on the host's
+loopback address (`127.0.0.1`) only. For anything beyond that, set `NODE_ENV=production` and override these in a
+`.env` file next to the compose files (every secret defaults to an insecure, publicly-known placeholder value
+otherwise — see `src/config.defaults.ts`; the server refuses to start with those unless `NODE_ENV` is `dev`,
+`development` or `test`):
 
 | Variable | Purpose |
 | --- | --- |
@@ -60,6 +63,8 @@ of them defaults to an insecure, publicly-known placeholder value otherwise — 
 | `AUTH_SERVER_PUBLIC_URL` | Browser-facing base URL of `auth-server` (defaults to `http://localhost:3001`, dev/single-host only) |
 | `COOKIE_SECRET` | Shared cookie-signing secret |
 | `MAIL_INGEST_SECRET` | Bearer secret authenticating `postfix-bridge`'s calls to this app's `/internal/mta` routes — must match that repo's own `MTA_INGEST_SECRET` exactly |
+| `PUBLIC_URL` | This deployment's public base URL (defaults to `http://localhost:3000`) — booking email links and the autodiscover plugin (which requires `https://`) |
+| `MX_HOSTNAME` | Public MX hostname (defaults to `localhost`) — outgoing read receipts and domain DNS checks |
 | `SENDMAIL_RELAY_HOST` / `_PORT` / `_TLS` | Where `PostfixSendmailTransport` relays outbound mail — defaults to `host.docker.internal:25` (TLS off), i.e. wherever the separate `postfix-bridge` stack publishes its own Postfix on the host's `localhost:25`; override for anything beyond local, single-host evaluation |
 
 The `dkim_rspamd_keys`/`mongo_data`/`postgres_data`/`blob_data` named volumes persist DKIM keys, database
@@ -83,10 +88,14 @@ mail transport (Postfix + DKIM signing + postfix-bridge) is a separate chart now
 [`postfix-bridge`](https://github.com/rapidmx/postfix-bridge) alongside this one; see its own README and this chart's
 `helm get notes` output for how the two are wired together (`mail.ingestSecret` must match on both sides).
 
+The chart needs two secrets you supply, and refuses to render without them: `global.authSecret` (the JWT secret, shared
+with the bundled auth-server) and `mail.ingestSecret` (must match the `postfix-bridge` chart's). Pass the same values
+again on every upgrade. Cookie and session secrets are generated on install and kept.
+
 #### From GHCR
 
 ```bash
-helm install --create-namespace --namespace mail-server mail-server oci://ghcr.io/rapidmx/charts/mail-server --version 1.0.0-beta.2
+helm install --create-namespace --namespace mail-server mail-server oci://ghcr.io/rapidmx/charts/mail-server --version 1.0.0-beta.2   --set global.authSecret="$(openssl rand -hex 32)" --set mail.ingestSecret="$(openssl rand -hex 32)"
 ```
 
 #### From Local
@@ -94,8 +103,20 @@ helm install --create-namespace --namespace mail-server mail-server oci://ghcr.i
 ```bash
 helm repo add bitnami https://charts.bitnami.com/bitnami
 helm dep up ./helm
-helm install --create-namespace --namespace mail-server mail-server ./helm
+helm install --create-namespace --namespace mail-server mail-server ./helm   --set global.authSecret="$(openssl rand -hex 32)" --set mail.ingestSecret="$(openssl rand -hex 32)"
 ```
+
+The chart runs one replica by default, because its message, DKIM and PKI volumes are `ReadWriteOnce`. To run more,
+use `mail.blob.backend: s3` (or `ReadWriteMany` storage) and `ReadWriteMany` for `mail.dkim.storage` and
+`mail.pki.storage`.
+
+#### Upgrading
+
+The server has no database migrations: on startup it creates and updates its schema from its models
+(`datastores.*.synchronize`, the chart's `service.datastores.synchronize`, on by default). That's how an upgrade adds new
+collections, tables and columns, but on PostgreSQL TypeORM may drop and recreate a column whose type changed between
+releases, losing that column's data. **Back up the database before upgrading.** If you manage schema changes yourself,
+set `datastores__acl__synchronize` and `datastores__sql__synchronize` (or `datastores__mongo__synchronize`) to `false`.
 
 #### Single Node Cluster
 

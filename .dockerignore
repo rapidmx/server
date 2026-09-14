@@ -10,3 +10,8 @@ junit.xml
 k6-tests
 node_modules
 passwords
+# Local secrets and state - never baked into an image.
+.env
+.env.*
+data
+plugins

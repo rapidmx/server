@@ -4,6 +4,7 @@
 import * as crypto from "crypto";
 import sanitizeHtml from "sanitize-html";
 import MailComposer from "nodemailer/lib/mail-composer/index.js";
+import addressparser from "nodemailer/lib/addressparser/index.js";
 import { ApiError, ObjectDecorators, type JWTUser } from "@rapidrest/core";
 import {
     ACLAction,
@@ -50,7 +51,8 @@ export interface ComposeAssembleRawInput {
      * recompute) the real one. */
     subject: string;
     /** The complete RFC 5322 message source, already finalized (signed/encrypted, if applicable)
-     * client-side — stored byte-for-byte as this draft's `bodyBlobKey`, never parsed or rewritten.
+     * client-side — stored byte-for-byte as this draft's `bodyBlobKey`, never rewritten. Only its top-level
+     * headers are read, to check From/Sender/To/Cc against the mailbox and recipients (`assertRawMimeHeadersMatch()`).
      * File attachments are not yet supported on this path (a signed/encrypted message can only
      * contain a text body) — see this route's own `assembleRaw()` doc comment. */
     rawMime: string;
@@ -58,6 +60,96 @@ export interface ComposeAssembleRawInput {
 
 function toNodemailerAddress(recipient: Recipient): { name?: string; address: string } {
     return { name: recipient.displayName, address: recipient.address };
+}
+
+function invalidRawMime(reason: string): ApiError {
+    return new ApiError(ApiErrors.INVALID_REQUEST, 400, `The raw message is invalid: ${reason}`);
+}
+
+/**
+ * The top-level header fields of an RFC 5322 message, lower-cased name -> every value in order (unfolded). Only the
+ * header block is read; the body - which may be signed or encrypted - is never touched.
+ */
+export function parseTopLevelHeaders(rawMime: string): Map<string, string[]> {
+    const end: RegExpExecArray | null = /\r?\n\r?\n/.exec(rawMime);
+    const block: string = end ? rawMime.slice(0, end.index) : rawMime;
+    const headers = new Map<string, string[]>();
+    let last: { name: string; index: number } | undefined;
+    for (const line of block.split(/\r?\n/)) {
+        if (/^[ \t]/.test(line)) {
+            if (!last) {
+                throw invalidRawMime("it starts with a folded header line.");
+            }
+            const values: string[] = headers.get(last.name)!;
+            values[last.index] += ` ${line.trim()}`;
+            continue;
+        }
+        const match: RegExpMatchArray | null = line.match(/^([!-9;-~]+):(.*)$/);
+        if (!match) {
+            throw invalidRawMime("it has a malformed header line.");
+        }
+        const name: string = match[1].toLowerCase();
+        const values: string[] = headers.get(name) ?? [];
+        values.push(match[2].trim());
+        headers.set(name, values);
+        last = { name, index: values.length - 1 };
+    }
+    return headers;
+}
+
+function headerAddresses(values: string[] | undefined): string[] {
+    return (values ?? []).flatMap((value) => addressparser(value, { flatten: true }).map((a) => (a.address ?? "").trim().toLowerCase()));
+}
+
+function sameAddressSet(a: string[], b: string[]): boolean {
+    const left = new Set(a);
+    const right = new Set(b);
+    return left.size === right.size && [...left].every((address) => right.has(address));
+}
+
+/**
+ * Checks a client-composed (signed/encrypted) message's own top-level headers against what the server knows, since the
+ * stored bytes are relayed unchanged: `From` must be exactly one of the sending mailbox's own addresses (primary or
+ * alias), a `Sender` must be one too, `To`/`Cc` must list exactly the recipients the draft is sent to, and no `Bcc` or
+ * `Resent-*` header may be present (Bcc recipients are submitted separately and must never appear in the message).
+ *
+ * @throws `ApiError` 400 describing the first mismatch.
+ */
+export function assertRawMimeHeadersMatch(
+    rawMime: string,
+    mailbox: Pick<Mailbox, "primarySmtpAddress" | "aliasAddresses">,
+    body: Pick<ComposeAssembleRawInput, "to" | "cc">,
+): void {
+    const headers: Map<string, string[]> = parseTopLevelHeaders(rawMime);
+    const own = new Set(
+        [mailbox.primarySmtpAddress, ...(mailbox.aliasAddresses ?? [])].filter(Boolean).map((a) => a.trim().toLowerCase()),
+    );
+
+    if (headers.has("bcc")) {
+        throw invalidRawMime("it must not contain a Bcc header.");
+    }
+    if ([...headers.keys()].some((name) => name.startsWith("resent-"))) {
+        throw invalidRawMime("it must not contain Resent-* headers.");
+    }
+    const fromValues: string[] = headers.get("from") ?? [];
+    const from: string[] = headerAddresses(fromValues);
+    if (fromValues.length !== 1 || from.length !== 1 || !own.has(from[0])) {
+        throw invalidRawMime("its From header must be a single address belonging to this mailbox.");
+    }
+    const senderValues: string[] | undefined = headers.get("sender");
+    if (senderValues) {
+        const sender: string[] = headerAddresses(senderValues);
+        if (senderValues.length !== 1 || sender.length !== 1 || !own.has(sender[0])) {
+            throw invalidRawMime("its Sender header must be a single address belonging to this mailbox.");
+        }
+    }
+    const lower = (recipients?: Recipient[]): string[] => (recipients ?? []).map((r) => r.address.trim().toLowerCase());
+    if (!sameAddressSet(headerAddresses(headers.get("to")), lower(body.to))) {
+        throw invalidRawMime("its To header doesn't match the draft's To recipients.");
+    }
+    if (!sameAddressSet(headerAddresses(headers.get("cc")), lower(body.cc))) {
+        throw invalidRawMime("its Cc header doesn't match the draft's Cc recipients.");
+    }
 }
 
 /**
@@ -342,7 +434,8 @@ export abstract class BaseMailComposeRoute<M extends Message, A extends Attachme
     @Description(
         "Stores client-supplied raw RFC 5322 MIME source as the draft's bodyBlobKey, completely unmodified - " +
             "does NOT sanitize, compose, or otherwise touch the bytes, since a signed message's signature " +
-            "would be invalidated by any downstream reformatting. Does NOT send it. Call " +
+            "would be invalidated by any downstream reformatting. Its top-level From/Sender must be this mailbox's " +
+            "own addresses, To/Cc must match the recipients, and Bcc/Resent-* headers are rejected. Does NOT send it. Call " +
             "POST /messages/:id/send afterward to relay it, same as assemble().",
     )
     @Returns([Object])
@@ -393,8 +486,25 @@ export abstract class BaseMailComposeRoute<M extends Message, A extends Attachme
             );
         }
 
+        // The message is relayed as-is, so its size is capped like an assembled draft's attachments are.
+        const maxMessageBytes =
+            (this.config?.get("mail:compose:max_attachment_bytes") as number | undefined) ??
+            DEFAULT_MAX_COMPOSE_ATTACHMENT_BYTES;
+        const rawBytes: Buffer = Buffer.from(body.rawMime, "utf-8");
+        if (rawBytes.length > maxMessageBytes) {
+            throw new ApiError(
+                ApiErrors.PAYLOAD_TOO_LARGE,
+                413,
+                `This message is ${rawBytes.length} bytes, exceeding the ${maxMessageBytes}-byte limit.`,
+            );
+        }
+
+        // The bytes are never rewritten (that would break a signature), so the headers recipients see must already say
+        // what the server would have written itself.
+        assertRawMimeHeadersMatch(body.rawMime, mailbox, body);
+
         const bodyBlobKey = `bodies/${crypto.randomUUID()}`;
-        await this.blobStore.put(bodyBlobKey, Buffer.from(body.rawMime, "utf-8"), { contentType: "message/rfc822" });
+        await this.blobStore.put(bodyBlobKey, rawBytes, { contentType: "message/rfc822" });
 
         const recipients: Recipient[] = [
             ...body.to.map((r) => ({ ...r, type: RecipientType.TO })),

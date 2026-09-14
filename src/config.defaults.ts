@@ -64,36 +64,44 @@ export interface SecretsConfig {
 }
 
 /**
- * Refuses to let the server start in production with any of the checked-in development default
- * secrets (`cookie_secret`, `auth:secret`, `mail:transport:ingest:secret`) still in effect — they're
- * visible to anyone who reads this public repo, so leaving one unset in production would let an attacker
- * forge JWTs outright, or hit the internal MTA hand-off route directly.
+ * `NODE_ENV` values under which the checked-in development secrets are allowed. Anything else - including an unset,
+ * misspelled or unexpected `NODE_ENV` (e.g. `staging`) - is treated as a real deployment.
+ */
+export const DEVELOPMENT_ENVIRONMENTS: readonly string[] = ["dev", "development", "test"];
+
+/**
+ * Refuses to let the server start with any of the checked-in development default secrets (`cookie_secret`,
+ * `auth:secret`, `mail:transport:ingest:secret`) still in effect, or with one of them empty, unless `NODE_ENV` is
+ * explicitly a development environment (`dev`, `development` or `test`). The defaults are visible to anyone who reads
+ * this public repo, so leaving one in place would let an attacker forge JWTs outright, or call the internal MTA
+ * hand-off route directly.
  *
  * @param config The loaded runtime configuration to check.
- * @param environment The deployment environment (`process.env.NODE_ENV`, defaulting to `"production"`
- * when unset — see the server entry points). A no-op unless this is exactly `"production"`.
- * @throws If any of the guarded secrets still hold its known default value in production.
+ * @param environment The raw `NODE_ENV`. Only `dev`, `development` and `test` skip the check.
+ * @throws If any of the guarded secrets is empty or still holds its known default value outside development.
  */
 export function assertProductionSecretsAreSet(config: SecretsConfig, environment: string | undefined): void {
-    if (environment !== "production") {
+    if (environment !== undefined && DEVELOPMENT_ENVIRONMENTS.includes(environment)) {
         return;
     }
 
+    // Env var names as nconf reads them here: `.env({ separator: "__" })` with no prefix and no case conversion.
     const insecureDefaults: Array<{ envVar: string; value: unknown; expected: string }> = [
-        { envVar: "COOKIE_SECRET", value: config.get("cookie_secret"), expected: DEFAULT_COOKIE_SECRET },
-        { envVar: "AUTH__SECRET", value: config.get("auth:secret"), expected: DEFAULT_AUTH_SECRET },
+        { envVar: "cookie_secret", value: config.get("cookie_secret"), expected: DEFAULT_COOKIE_SECRET },
+        { envVar: "auth__secret", value: config.get("auth:secret"), expected: DEFAULT_AUTH_SECRET },
         {
-            envVar: "MAIL__TRANSPORT__INGEST__SECRET",
+            envVar: "mail__transport__ingest__secret",
             value: config.get("mail:transport:ingest:secret"),
             expected: DEFAULT_MAIL_INGEST_SECRET,
         },
-    ].filter((entry) => entry.value === entry.expected);
+    ].filter((entry) => entry.value === entry.expected || String(entry.value ?? "").trim() === "");
 
     if (insecureDefaults.length > 0) {
         const names: string = insecureDefaults.map((entry) => entry.envVar).join(", ");
         throw new Error(
-            `Refusing to start in production with the default development secret(s) still in effect: ${names}. ` +
-                "Set the corresponding environment variable(s) to a unique, secret value before deploying.",
+            `Refusing to start (NODE_ENV=${environment ?? "unset"}) with empty or default development secret(s): ${names}. ` +
+                "Set the corresponding environment variable(s) to a unique, secret value before deploying, or set " +
+                `NODE_ENV to one of ${DEVELOPMENT_ENVIRONMENTS.join("/")} for local development.`,
         );
     }
 }
