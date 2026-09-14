@@ -6,5 +6,7 @@ import { RouteDecorators } from "@rapidrest/service-core";
 
 const { ApiRoute } = RouteDecorators;
 
-@ApiRoute("mail/branding")
+// Deployment-wide settings live under system/. mail/branding stays mounted too: logo, icon and stylesheet URLs
+// uploaded before the move were saved with that path (see mail:branding:public_url).
+@ApiRoute(["system/branding", "mail/branding"])
 export class BrandingRoute extends BrandingRouteSQL {}

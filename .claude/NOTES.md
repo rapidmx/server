@@ -4697,3 +4697,39 @@ page
     file directly, or a shared registration-list helper all three entries call into instead of three
     independently-maintained copies - flagged, not fixed here, since it's a bigger design decision than a
     one-line crash fix warrants deciding unilaterally.
+
+## 2026-09-13 — Plugin system; ActiveSync, MAPI and Autodiscover converted to plugins; settings APIs under system/
+
+- **Shape.** Plugins are npm packages with a `rapidmx.plugin` manifest (restapi `src/plugins/`). Their `./mongo`/`./sql`
+  exports are the entry points and export *only* ready classes (decorated routes, `@DataStore` models, concrete jobs) -
+  `PluginClassLoader` registers every export, so an abstract `BackgroundService` there would be started.
+- **Process model.** `server{,.mongo,.sql}.ts` are now tiny supervisors (`src/plugins/supervisor.ts`) that fork
+  `worker{,.mongo,.sql}.ts` (the old entry bodies). A plugin change needs a fresh process (models/jobs are only set up in
+  `Server.start()`, and ESM imports are cached), so the worker exits with an IPC restart message and the supervisor forks
+  a new one. Two fast failed starts in a row → next worker runs with `RAPIDMX_PLUGINS_SAFE_MODE=1` (no plugins).
+  `--inspect` flags move to port+1 for the worker. Unsupervised (e.g. `node dist/src/worker.mongo.js`) a restart just exits.
+- **Startup (`PluginHost.prepare`).** Short-lived connection to the datastore reads `Plugin` rows and seeds
+  `system:plugins:defaults` (by name, never re-adding a `removed` row) → `PluginInstaller` npm-installs enabled plugins
+  into `system:plugins:dir` (default `<cwd>/plugins`, must be under the app so peers resolve to the server's copies) with
+  `--omit=peer --legacy-peer-deps --ignore-scripts`, checks version, lockfile integrity vs the row, manifest apiVersion,
+  and that `@rapidrest/core`/`service-core`/`@rapidmx/restapi` resolve to the server's realpath → saved settings are
+  `config.set` into nconf (env/argv still win) → `PluginRegistry.setLoaded`. Any failure is reported, never fatal.
+- **Rolling restarts (`PluginWatcher`).** Compares `computePluginStateHash(rows)` to the hash it booted with, on the
+  `plugins` Redis channel (datastores:events) and a 60s poll. Takes `plugins:restart-lock` (SET NX PX 5min) before
+  restarting; the *next* process deletes it after starting. Heartbeats `plugins:status[instance]` every 30s for the admin
+  console. Helm gained a `/api/status` readinessProbe and an emptyDir at `/app/plugins`.
+- **Gotchas found.** Mongo repositories' `find()` returns a cursor, not an array (`findAllPlugins` handles both) - only
+  caught by actually running `yarn dev`. `@Route` metadata lives on the *prototype* and concatenates with a parent's, so
+  a subclass of a decorated plugin route mounts at both paths (test harnesses do this; harmless there).
+- **Local development.** `system__plugins__sources='{"@rapidmx/activesync":"<path>.tgz",...}'` installs `npm pack`
+  tarballs (not directories - a directory plugin would resolve its own dev copies of the peers). Verified end to end
+  against throwaway mongo/redis containers: defaults seeded, all three plugins mounted, disabling MAPI via
+  `PUT /api/system/plugins/:id` restarted the worker in ~4s and `/mapi/emsmdb` went 404, re-enabling brought it back.
+  The admin Plugins page isn't visible in `yarn dev` until web-client/react-shared are published (same as before).
+- **Paths/config.** Plugins API is `system/plugins`; branding, retention-policy and encryption-policy moved from `mail/` to
+  `system/` (branding also stays mounted at `mail/branding` because uploaded asset URLs saved in the DB use it;
+  `mail:branding:public_url` default is now `/api/system`). Plugin config keys are `system:plugins:*`.
+- **Not done / to flag.** Packages aren't published: until activesync/mapi/autodiscover (with manifests) and restapi (with
+  the plugin contract) are released, the defaults can't be fetched from npm and seeding logs a warning per plugin.
+  Removing a plugin keeps its data. A plugin runs with full server privileges; protections are trusted-role-only API,
+  the config-only `allowed_packages` list, `--ignore-scripts` and integrity pinning.

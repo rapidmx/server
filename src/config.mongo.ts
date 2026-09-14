@@ -107,11 +107,11 @@ conf.defaults({
         },
         // `BaseBrandingRoute` builds a self-hosted logo/stylesheet's public URL as `${public_url}` +
         // a literal `/branding/logo`/`/branding/stylesheet`, which assumes the route is mounted at bare
-        // `/branding` — but this repo mounts it under `@ApiRoute("mail/branding")` (real path
-        // `/api/mail/branding/...`). `/api/mail` is the prefix that makes the concatenation land on the
-        // real mounted URL.
+        // `/branding` — but this repo mounts it under `@ApiRoute("system/branding")` (real path
+        // `/api/system/branding/...`). `/api/system` is the prefix that makes the concatenation land on the
+        // real mounted URL. (URLs saved before the move still work: `mail/branding` stays mounted too.)
         branding: {
-            public_url: "/api/mail",
+            public_url: "/api/system",
         },
         // BlobStore backend selection (see server.mongo.ts) plus that backend's own config.
         // `backend: "local"` (default) needs only `local.root` below; `backend: "s3"` needs `s3.*`
@@ -284,6 +284,33 @@ conf.defaults({
     },
     giphy: {
         api_key: DEFAULT_GIPHY_API_KEY,
+    },
+    // Deployment-wide settings.
+    system: {
+        // Plugins (see src/plugins/PluginHost.ts). Administrators add, upgrade, configure and remove plugins in the admin
+        // console; every server copy installs the enabled ones with npm at startup and restarts itself (one copy at a
+        // time) when they change.
+        plugins: {
+            // Installed and enabled the first time a server starts against a database that has never had them. A
+            // default an administrator later removes stays removed; a default added in a later release is still added
+            // to an existing deployment.
+            defaults: [
+                { name: "@rapidmx/activesync", version: "latest" },
+                { name: "@rapidmx/mapi", version: "latest" },
+                { name: "@rapidmx/autodiscover", version: "latest" },
+            ],
+            // The npm registry plugins are downloaded from, and an optional auth token for a private one.
+            registry: "https://registry.npmjs.org",
+            registry_token: "",
+            // Which packages an administrator may add. Only this config can widen it - a plugin runs with the server's
+            // full privileges.
+            allowed_packages: ["@rapidmx/*"],
+            // Where plugins are installed. Must be inside the server's directory so plugins share its packages.
+            dir: join(process.cwd(), "plugins"),
+            // Package name -> local .tgz (from `npm pack`) installed instead of the registry version, for developing a
+            // plugin against this server. Tarballs rather than directories, so the plugin uses this server's packages.
+            sources: {},
+        },
     },
     class_loader: {
         ignore: [

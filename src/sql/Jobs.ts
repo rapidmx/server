@@ -10,7 +10,6 @@ export {
     CalendarReminderJobSQL,
     DataExportJobSQL,
     DomainVerificationJobSQL,
-    EasDeviceStateCleanupJobSQL,
     ErasureExecutionJobSQL,
     ExternalShareExpirationJobSQL,
     MailboxImportJobSQL,

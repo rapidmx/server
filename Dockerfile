@@ -52,7 +52,9 @@ ENV HOME=/home/node
 # /var/lib/rspamd/dkim (FsDkimKeyProvider's mail:dkim:key_dir) exist in the image at all, so a fresh
 # docker-compose/Helm volume mounted at either path would otherwise be created root-owned on first use.
 # Without this, the `node` user (below) can't write into any of them at runtime.
-RUN mkdir -p /app/data /var/lib/rspamd/dkim && chown node:node /app /app/data /var/lib/rspamd/dkim
+# /app/plugins is where the plugin host (src/plugins/PluginHost.ts) npm-installs this deployment's plugins at startup -
+# it must sit under /app so a plugin resolves the server's own copies of its shared peer packages.
+RUN mkdir -p /app/data /app/plugins /var/lib/rspamd/dkim && chown node:node /app /app/data /app/plugins /var/lib/rspamd/dkim
 
 USER node
 

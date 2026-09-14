@@ -24,6 +24,8 @@ rrst-test
 # LocalFsBlobStore's on-disk output when running against local yarn dev/testing (message/attachment blob
 # content) - runtime state, not source.
 /data
+# Where the plugin host npm-installs plugins at startup (see src/plugins/PluginInstaller.ts) - runtime state.
+/plugins
 # Written by DefaultAccounts (`auth:password_file`, default "passwords") with plaintext credentials for
 # any freshly-created default account (e.g. the initial admin) - must never be committed.
 /passwords

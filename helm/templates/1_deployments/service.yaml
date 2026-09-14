@@ -64,6 +64,15 @@ spec:
                 name: {{ include "rrst.fullname" . }}-mail-ingest-secret
           ports:
             - containerPort: 3000
+          # Plugin changes restart the server process inside the container, one pod at a time (see
+          # src/plugins/PluginWatcher.ts). A pod mid-restart fails this probe and leaves the Service until it's
+          # serving again, so the other replica takes its traffic.
+          readinessProbe:
+            httpGet:
+              path: /api/status
+              port: 3000
+            periodSeconds: 5
+            failureThreshold: 2
           resources:
             {{- toYaml $.Values.service.resources | nindent 12 }}
           volumeMounts:
@@ -79,7 +88,13 @@ spec:
             # sources, attachments, contact photos.
             - name: blob-data
               mountPath: /app/data
+            # Where the plugin host npm-installs plugins at startup. Per pod and disposable: each pod reinstalls
+            # the plugin set recorded in the database when it starts.
+            - name: plugins
+              mountPath: /app/plugins
       volumes:
+        - name: plugins
+          emptyDir: {}
         - name: dkim-keys
           persistentVolumeClaim:
             claimName: {{ include "rrst.fullname" . }}-dkim-keys

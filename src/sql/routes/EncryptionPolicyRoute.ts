@@ -6,5 +6,5 @@ import { RouteDecorators } from "@rapidrest/service-core";
 
 const { ApiRoute } = RouteDecorators;
 
-@ApiRoute("mail/encryption-policy")
+@ApiRoute("system/encryption-policy")
 export class EncryptionPolicyRoute extends EncryptionPolicyRouteSQL {}

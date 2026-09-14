@@ -10,7 +10,6 @@ export {
     CalendarReminderJobMongo,
     DataExportJobMongo,
     DomainVerificationJobMongo,
-    EasDeviceStateCleanupJobMongo,
     ErasureExecutionJobMongo,
     ExternalShareExpirationJobMongo,
     MailboxImportJobMongo,

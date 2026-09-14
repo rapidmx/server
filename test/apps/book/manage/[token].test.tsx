@@ -28,7 +28,7 @@ function mockPage(extra?: (url: string, init?: RequestInit) => Response | undefi
     return mockFetch((url, init) => {
         const custom = extra?.(url, init);
         if (custom) return custom;
-        if (url === "/api/mail/branding") return jsonResponse(200, { companyName: "", title: "" });
+        if (url === "/api/system/branding") return jsonResponse(200, { companyName: "", title: "" });
         throw new Error(`unexpected ${init?.method ?? "GET"} ${url}`);
     });
 }

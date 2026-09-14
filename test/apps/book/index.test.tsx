@@ -15,7 +15,7 @@ afterEach(() => {
 describe("NoBookingSlugPage", () => {
     it("shows an alert that no booking link was specified", async () => {
         mockFetch((url) => {
-            if (url === "/api/mail/branding") return jsonResponse(200, { companyName: "", title: "" });
+            if (url === "/api/system/branding") return jsonResponse(200, { companyName: "", title: "" });
             throw new Error(`unexpected ${url}`);
         });
         render(<NoBookingSlugPage />);

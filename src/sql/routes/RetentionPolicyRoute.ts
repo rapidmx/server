@@ -9,5 +9,5 @@ const { ApiRoute } = RouteDecorators;
 // GET is any-authenticated-user readable; PUT is @RequiresTrustedRole()-only (enforced by the base
 // route itself, not this file). Enforcement of the configured policy lives entirely in
 // RetentionEnforcementJob, not this route - see Jobs.ts.
-@ApiRoute("mail/retention-policy")
+@ApiRoute("system/retention-policy")
 export class RetentionPolicyRoute extends RetentionPolicyRouteSQL {}
