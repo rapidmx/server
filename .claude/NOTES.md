@@ -4745,3 +4745,12 @@ page
 - `yarn dev` (`rapidrest dev`) starts its own MongoDB/Redis memory servers and sets `datastores__*` env - don't start
   docker containers for a manual check. The dev database this session's check hit already had a `domain.local` domain,
   so `required` was correctly false there; the empty-database case is covered by restapi's route suites.
+
+## 2026-09-13 — Plugin dependencies at load time
+
+- `PluginHost.prepare` runs restapi's `pruneUnmetRequirements` over what installed (cascading: a plugin whose requirement
+  failed is skipped, and so is anything requiring it, each reported as an error in status) and `orderByDependencies` so
+  required plugins are imported/registered first. Seeding defaults is unchanged; a default with unmet requirements
+  seeds and is skipped at load.
+- restapi patch refreshed with the new `dist`. The published restapi 0.8.0 lacks `semver` in its dependencies; it
+  resolves here because the server depends on `semver` directly - the next restapi release lists it properly.

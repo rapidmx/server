@@ -149,6 +149,39 @@ describe("PluginHost", () => {
         await host.stop();
     });
 
+    it("loads required plugins first, and skips plugins whose requirements didn't load, cascading", async () => {
+        const requiring = (name: string, requires: Record<string, string>, version = "1.0.0") => ({
+            ...installed(name),
+            version,
+            manifest: { ...MANIFEST, displayName: name, requires },
+        });
+        const rows = ["autodiscover", "mapi", "activesync", "needs-mapi2", "needs-needs-mapi2", "needs-broken"].map((name) => row(name));
+        const installer: any = {
+            install: vi.fn(async () => ({
+                installed: [
+                    requiring("autodiscover", { activesync: "^1.0.0", mapi: "^1.0.0" }),
+                    requiring("mapi", { activesync: "^1.0.0" }),
+                    installed("activesync"),
+                    requiring("needs-mapi2", { mapi: "^2.0.0" }),
+                    requiring("needs-needs-mapi2", { "needs-mapi2": "*" }),
+                    requiring("needs-broken", { broken: "*" }),
+                ],
+                errors: [{ name: "broken", message: "boom" }],
+            })),
+        };
+        const host = await PluginHost.prepare({ config: configWith({}), logger, datastore: "mongo", pluginClass: class {}, appRoot: process.cwd(), store: new MemoryStore(rows), installer });
+
+        expect((host.classLoader as any).plugins.map((plugin: any) => plugin.name)).toEqual(["activesync", "mapi", "autodiscover"]);
+        expect(PluginRegistry.list().map((plugin) => plugin.name)).toEqual(["activesync", "mapi", "autodiscover"]);
+        expect((host as any).errors).toEqual([
+            { name: "broken", message: "boom" },
+            { name: "needs-mapi2", message: "It requires mapi ^2.0.0, but 1.0.0 is loaded." },
+            { name: "needs-broken", message: "It requires broken *, which isn't loaded." },
+            { name: "needs-needs-mapi2", message: "It requires needs-mapi2 *, which isn't loaded." },
+        ]);
+        expect(logger.error).toHaveBeenCalledWith("Plugin needs-needs-mapi2 was not loaded: It requires needs-mapi2 *, which isn't loaded.");
+    });
+
     it("reads a default plugin from its namespace's own registry, and everything else from the default registry", async () => {
         const requested: string[] = [];
         const store: any = {

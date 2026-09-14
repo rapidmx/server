@@ -12,7 +12,9 @@ import {
     findPluginNamespace,
     normalizePluginNamespaces,
     NpmRegistryClient,
+    orderByDependencies,
     PluginRegistry,
+    pruneUnmetRequirements,
     type Plugin,
     type PluginNamespace,
 } from "@rapidmx/restapi";
@@ -43,7 +45,8 @@ export interface PluginHostOptions {
  * Prepares a server process's plugins before the server starts, and keeps them in step while it runs:
  *
  * 1. Reads the plugin table (seeding `system:plugins:defaults` on first sight).
- * 2. Installs the enabled plugins with npm (`PluginInstaller`).
+ * 2. Installs the enabled plugins with npm (`PluginInstaller`), skips any whose required plugins aren't loaded, and
+ * orders the rest so each plugin loads after the plugins it requires.
  * 3. Merges each plugin's saved settings into config, so its `@Config` values see them.
  * 4. Hands the server a `PluginClassLoader` that adds the plugins' routes, models and jobs to its own.
  * 5. Once the server is up, runs a `PluginWatcher` that restarts the process when the plugin set changes.
@@ -113,22 +116,26 @@ export class PluginHost {
         const result: PluginInstallResult = await installer.install(
             enabled.map((row) => ({ name: row.name, packageVersion: row.packageVersion, integrity: row.integrity })),
         );
-        errors.push(...result.errors);
-        for (const error of result.errors) {
+        // A plugin whose required plugins didn't all install, in range, is skipped too - and so is anything requiring it.
+        // What's left loads in dependency order, so a plugin's requirements are registered before it.
+        const { kept, dropped } = pruneUnmetRequirements(result.installed);
+        const installed: PluginInstallResult["installed"] = orderByDependencies(kept);
+        errors.push(...result.errors, ...dropped);
+        for (const error of [...result.errors, ...dropped]) {
             logger.error(`Plugin ${error.name} was not loaded: ${error.message}`);
         }
 
         // Saved settings go into config before any plugin class is instantiated. Settings of plugins that failed to
         // install are left out, since nothing will read them.
-        const installedNames: Set<string> = new Set(result.installed.map((plugin) => plugin.name));
+        const installedNames: Set<string> = new Set(installed.map((plugin) => plugin.name));
         for (const row of enabled.filter((plugin) => installedNames.has(plugin.name))) {
             for (const [key, value] of Object.entries(row.settings ?? {})) {
                 config.set(key, value);
             }
         }
-        PluginRegistry.setLoaded(result.installed.map((plugin) => ({ name: plugin.name, version: plugin.version })));
+        PluginRegistry.setLoaded(installed.map((plugin) => ({ name: plugin.name, version: plugin.version })));
 
-        return new PluginHost(options, computePluginStateHash(safeMode ? [] : rows), errors, safeMode, result.installed);
+        return new PluginHost(options, computePluginStateHash(safeMode ? [] : rows), errors, safeMode, installed);
     }
 
     /** Starts watching for plugin changes once the server is running. `restart` stops this process so its supervisor
