@@ -40,7 +40,8 @@ import * as path from "path";
 import { assertProductionSecretsAreSet } from "./config.defaults.js";
 import { PluginSQL } from "@rapidmx/restapi/sql";
 import { PluginHost } from "./plugins/PluginHost.js";
-import { exitForRestart } from "./plugins/supervisor.js";
+import { notifyListening, restartWorker } from "./plugins/supervisor.js";
+import { TieredRateLimiter } from "./lib/TieredRateLimiter.js";
 
 const _filename = fileURLToPath(import.meta.url);
 const _dirname = dirname(_filename);
@@ -54,6 +55,9 @@ const logger = Logger(logLevel, config.get("logger:file"));
 console.log("Log Level=" + logLevel);
 
 const objectFactory = new ObjectFactory(config, logger);
+
+// Separate anonymous and signed-in rate limits (config `rateLimit` and `rateLimit.authenticated`) - see TieredRateLimiter.ts.
+objectFactory.register(TieredRateLimiter, "RateLimiter");
 
 // @rapidmx/restapi's routes/jobs pull these via string-token @Inject(...) — they only resolve once
 // something has explicitly registered a concrete implementation under that exact token (there is no
@@ -153,6 +157,7 @@ const start = async function (config: any, logger: any) {
     pluginHost = await PluginHost.prepare({ config, logger, datastore: "sql", pluginClass: PluginSQL, appRoot: process.cwd() });
     server = new Server({ config, basePath: config.get("base_path"), logger, objectFactory, classLoader: pluginHost.classLoader });
     await server.start();
+    notifyListening();
     await pluginHost.start(objectFactory, restartForPlugins);
 
     // DEV-ONLY (see enableDevAutoLogin.ts) — a no-op outside of `yarn dev`.
@@ -178,11 +183,8 @@ const shutdown = async () => {
 };
 
 // The plugin set changed: stop cleanly and ask the supervisor (server.sql.ts) for a fresh process.
-const restartForPlugins = async () => {
-    logger.info("Restarting to apply plugin changes...");
-    await stopServer();
-    exitForRestart();
-};
+// Exits even if stopping fails or hangs, so the process is never left running without its plugin watcher.
+const restartForPlugins = () => restartWorker(stopServer, { logger });
 
 process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);

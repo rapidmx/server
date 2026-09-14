@@ -5,7 +5,43 @@ import fs from "fs";
 import path from "path";
 import { pathToFileURL } from "url";
 import * as uuid from "uuid";
-import { RESTART_MESSAGE, superviseWorker, workerExecArgv } from "../../src/plugins/supervisor.js";
+import { LISTENING_MESSAGE, RESTART_MESSAGE, restartWorker, superviseWorker, workerExecArgv } from "../../src/plugins/supervisor.js";
+
+describe("restartWorker", () => {
+    afterEach(() => {
+        vi.useRealTimers();
+    });
+
+    it("stops the server, then exits for a restart", async () => {
+        const order: string[] = [];
+        await restartWorker(async () => void order.push("stop"), { exit: () => order.push("exit") });
+        expect(order).toEqual(["stop", "exit"]);
+    });
+
+    it("still exits, once, when stopping fails", async () => {
+        const exit = vi.fn();
+        const logger = { info: vi.fn(), error: vi.fn() };
+        await restartWorker(async () => Promise.reject(new Error("close failed")), { exit, logger });
+        expect(exit).toHaveBeenCalledTimes(1);
+        expect(logger.error).toHaveBeenCalledWith(expect.stringMatching(/didn't stop cleanly.*close failed/));
+    });
+
+    it("exits anyway when stopping takes too long", async () => {
+        vi.useFakeTimers();
+        const exit = vi.fn();
+        const logger = { info: vi.fn(), error: vi.fn() };
+        let finish: () => void = () => undefined;
+        const restarting = restartWorker(() => new Promise<void>((resolve) => (finish = resolve)), { exit, logger, timeoutMs: 5_000 });
+        await vi.advanceTimersByTimeAsync(4_999);
+        expect(exit).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(1);
+        expect(exit).toHaveBeenCalledTimes(1);
+        expect(logger.error).toHaveBeenCalledWith(expect.stringMatching(/longer than 5s/));
+        finish();
+        await restarting;
+        expect(exit).toHaveBeenCalledTimes(1);
+    });
+});
 
 describe("workerExecArgv", () => {
     it("keeps loader flags and moves inspector flags to the next port", () => {
@@ -68,6 +104,28 @@ ${behavior}
         expect(starts()).toEqual(["normal", "normal", "safe"]);
         expect(code).toBe(0);
         expect(logger.error).toHaveBeenCalledWith(expect.stringMatching(/without plugins/));
+    }, 30_000);
+
+    it("measures a failed start from when the worker reports it is listening, not from when it started", async () => {
+        // Each normal start takes longer than fastFailureMs (as installing plugins can) before it listens, then fails.
+        const code = await run(
+            worker(
+                `if (process.env.RAPIDMX_PLUGINS_SAFE_MODE === "1") { process.exit(0); }
+setTimeout(() => process.send(${JSON.stringify(LISTENING_MESSAGE)}, () => process.exit(1)), 1500);`,
+            ),
+            { fastFailureMs: 1000, maxFastFailures: 2 },
+        );
+        expect(starts()).toEqual(["normal", "normal", "safe"]);
+        expect(code).toBe(0);
+    }, 30_000);
+
+    it("does not count a failure long after listening as a failed start", async () => {
+        const code = await run(
+            worker(`process.send(${JSON.stringify(LISTENING_MESSAGE)}); setTimeout(() => process.exit(5), 1500);`),
+            { fastFailureMs: 1000 },
+        );
+        expect(starts()).toEqual(["normal"]);
+        expect(code).toBe(5);
     }, 30_000);
 
     it("exits with the worker's code when safe mode fails too", async () => {

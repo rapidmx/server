@@ -8,6 +8,9 @@ import { fileURLToPath } from "url";
 /** The message a worker sends before exiting when it wants to be started again (its plugin set changed). */
 export const RESTART_MESSAGE = { type: "rapidmx:restart" };
 
+/** The message a worker sends once its server is listening. A failed exit soon after this counts as a failed start. */
+export const LISTENING_MESSAGE = { type: "rapidmx:listening" };
+
 /** Set on the environment of the process the supervisor starts. */
 export const WORKER_ENV = "RAPIDMX_WORKER";
 
@@ -29,7 +32,8 @@ export function workerExecArgv(execArgv: string[]): string[] {
 }
 
 export interface SupervisorOptions {
-    /** How soon after starting a failed exit counts as a failed start. */
+    /** How soon after the worker reports it is listening (or after it was started, if it never did) a failed exit
+     * counts as a failed start. */
     fastFailureMs?: number;
     /** Failed starts in a row before the next start is in safe mode (no plugins). */
     maxFastFailures?: number;
@@ -62,7 +66,8 @@ export function superviseWorker(workerUrl: URL, options: SupervisorOptions = {})
     let fastFailures: number = 0;
 
     const start = (safeMode: boolean): void => {
-        const startedAt: number = Date.now();
+        // Measured from when the server is listening, so time spent installing plugins doesn't count.
+        let startedAt: number = Date.now();
         let restartRequested: boolean = false;
         const env: NodeJS.ProcessEnv = { ...process.env, [WORKER_ENV]: "1" };
         if (safeMode) {
@@ -72,6 +77,8 @@ export function superviseWorker(workerUrl: URL, options: SupervisorOptions = {})
         child.on("message", (message: any) => {
             if (message?.type === RESTART_MESSAGE.type) {
                 restartRequested = true;
+            } else if (message?.type === LISTENING_MESSAGE.type) {
+                startedAt = Date.now();
             }
         });
         child.on("exit", (code: number | null, signal: NodeJS.Signals | null) => {
@@ -112,6 +119,49 @@ export function superviseWorker(workerUrl: URL, options: SupervisorOptions = {})
     };
     start(false);
     return { stop };
+}
+
+/** Tells the supervisor (if any) that this process's server is listening. */
+export function notifyListening(): void {
+    if (process.send && process.env[WORKER_ENV] === "1") {
+        process.send(LISTENING_MESSAGE);
+    }
+}
+
+export interface RestartWorkerOptions {
+    logger?: { info(msg: string): void; error(msg: string): void };
+    /** How long stopping may take before the process exits anyway. */
+    timeoutMs?: number;
+    /** Replaceable for tests. */
+    exit?: () => void;
+}
+
+/**
+ * Stops this process's server with `stop` and exits for a restart - even if `stop` fails, or hasn't finished within
+ * `timeoutMs`, so a server that can't stop cleanly isn't left running without its plugin watcher.
+ */
+export async function restartWorker(stop: () => Promise<void>, options: RestartWorkerOptions = {}): Promise<void> {
+    const { logger, timeoutMs = 30_000, exit = exitForRestart } = options;
+    let exited: boolean = false;
+    const exitOnce = (): void => {
+        if (!exited) {
+            exited = true;
+            exit();
+        }
+    };
+    const timer: NodeJS.Timeout = setTimeout(() => {
+        logger?.error(`Stopping the server took longer than ${Math.round(timeoutMs / 1000)}s; restarting anyway.`);
+        exitOnce();
+    }, timeoutMs);
+    try {
+        logger?.info("Restarting to apply plugin changes...");
+        await stop();
+    } catch (err: any) {
+        logger?.error(`The server didn't stop cleanly before restarting: ${err?.message ?? err}`);
+    } finally {
+        clearTimeout(timer);
+        exitOnce();
+    }
 }
 
 /** Tells the supervisor (if any) that this process should be started again, then exits. */

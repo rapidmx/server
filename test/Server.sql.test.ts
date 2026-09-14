@@ -24,6 +24,8 @@ import {
 } from "@rapidmx/restapi";
 import { PostgresFullTextSearchProvider } from "@rapidmx/restapi/search";
 import { ClamAvScanProvider, RspamdSpamScanProvider } from "@rapidmx/restapi/scan";
+import { TieredRateLimiter } from "../src/lib/TieredRateLimiter.js";
+import { setDraining } from "../src/plugins/readiness.js";
 import * as fs from "fs";
 import * as sqlite3 from "sqlite3";
 
@@ -67,6 +69,7 @@ describe("Server Tests", () => {
     // config-driven (mail:pki:signing_enrollment:backend) - a test run has no business making live ACME
     // network calls against a real certificate authority.
     objectFactory.register(ManualSigningCertificateEnrollment, "SigningCertificateEnrollment");
+    objectFactory.register(TieredRateLimiter, "RateLimiter");
     const server: Server = new Server({ config, basePath: "./src/sql", logger, objectFactory });
 
     beforeAll(async () => {
@@ -116,6 +119,16 @@ describe("Server Tests", () => {
         expect(result.headers["access-control-allow-origin"]).toEqual(corsOrigins[0]);
         result = await request(server).options("/").set("Origin", "http://localhost:3005");
         expect(result.headers["access-control-allow-origin"]).not.toBeDefined();
+    });
+
+    it("Reports not ready while draining for a plugin restart.", async () => {
+        expect((await request(server).get("/api/status")).status).toBe(200);
+        setDraining(true);
+        try {
+            expect((await request(server).get("/api/status")).status).toBe(503);
+        } finally {
+            setDraining(false);
+        }
     });
 
     it("Can stop server.", async () => {

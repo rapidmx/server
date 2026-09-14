@@ -4754,3 +4754,61 @@ page
   seeds and is skipped at load.
 - restapi patch refreshed with the new `dist`. The published restapi 0.8.0 lacks `semver` in its dependencies; it
   resolves here because the server depends on `semver` directly - the next restapi release lists it properly.
+
+## 2026-09-14 — Review fixes: plugin host robustness, tiered rate limits, web-client 0.4
+
+Fixed from a verified review of the plugin system and today's config changes (nothing committed; restapi patch untouched).
+
+- **Redis `error` listeners.** node-redis emits `error` on every failed reconnect, and an unhandled `error` event is thrown -
+  a Redis blip crashed every worker. All plugin-code clients now go through `createWatcherRedisClient`/`withErrorListener`
+  (`PluginWatcher.ts`), which warns at most once a minute per client. No other `createClient` in this repo's plugin code.
+- **Safe mode no longer undoes itself.** It loaded `hash([])`, so the watcher saw the DB differ, requested a restart, the
+  supervisor treated that as healthy and started without safe mode - a crash loop. In safe mode the watcher now records the
+  DB plugin hash at start (or first readable check) and only restarts when that changes (an admin fixed/disabled something).
+  Heartbeats continue.
+- **Restart lock (`PluginRestartLock`).** TTL 5 min -> 60s (`system.plugins.restart.lock_ttl_ms`), renewed every TTL/3 while
+  held: by the old process from acquiring until it exits (the watcher's `stop()` during a restart keeps the cache connection),
+  and by the new process from the very start of `PluginHost.prepare` (before npm install) until
+  `lock_release_delay_ms` (15s) after it's serving. A start that crashes stops renewing, so the lock frees within the TTL.
+- **Draining.** Before stopping for a restart the watcher sets `readiness.ts`'s draining flag - `GET /api/status` (the Helm
+  readinessProbe, 5s x 2 failures) answers 503 via `BaseReadinessStatusRoute` - then waits `drain_delay_ms` (15s). Without a
+  cache (no lock) a restart first waits a random `jitter_ms` (0-30s) so copies don't all restart at once.
+- **Worker restart can't get stuck.** `restartWorker()` (supervisor.ts) runs `stopServer` in try/finally and force-exits for a
+  restart after 30s. All three `worker*.ts` use it.
+- **Install retry.** npm failing (registry outage) left a pod pluginless until an unrelated restart. `PluginInstaller` counts
+  consecutive npm failures in `plugins/.install-failures` (cleared on success) and returns `installFailures`; `PluginHost`
+  turns that into `retryDelayMs` = 60s doubling to 10 min (`install_retry_ms`/`install_retry_max_ms`), and the watcher then
+  restarts under the lock. Requested restarts aren't fast failures. Plugins that installed but failed checks aren't retried.
+- **Supervisor fast-failure window** is now measured from the worker's `rapidmx:listening` IPC message (`notifyListening()`
+  after `server.start()`), falling back to fork time for a worker that never reports listening.
+- **Integrity / lockfile.** A registry plugin whose row has no `integrity` is refused with an error (local `sources` tarballs
+  are exempt). `package-lock.json` is no longer deleted before every reinstall: it's kept (npm updates entries for changed
+  plugins, pinning everyone else's transitive deps) and only dropped when the registry settings change (lock `resolved` URLs).
+  `.install-stamp` is now JSON `{plugins, registries, complete}` - an interrupted install is redone; the old string stamp
+  causes one reinstall after upgrade. Consequence: a row seeded from a `sources` tarball (no integrity) is refused once the
+  source mapping is removed - update/re-add it.
+- **Shared peer copies.** Walks the lockfile dependency graph from each plugin (Node-style nested resolution); a plugin that
+  reaches a non-peer copy of `@rapidrest/core`/`service-core`/`@rapidmx/restapi` anywhere (hoisted or nested) is failed, and
+  a *hoisted* `plugins/node_modules/<peer>` is deleted after attribution, since it would shadow the server's copy for every
+  plugin (the old per-plugin resolution check, which still runs afterwards, then passes for the innocent ones).
+- **`plugins:status`** entries: own entry `hDel`'d on a normal stop; each heartbeat prunes entries older than restapi's
+  `PLUGIN_STATUS_MAX_AGE_MS` (or unreadable).
+- **`.npmrc`** is rewritten/removed on every start and `chmod 0600`'d (mode on create only applied to new files).
+- **Default seeding vs requirements.** `loadAndSeed` now describes all new defaults first, runs restapi's
+  `pruneUnmetRequirements` over existing enabled rows + enabled seeds, and seeds any dropped default **disabled** with a
+  warning naming the missing requirement (order-independent, cascading).
+- **Rate limits (JP's intent: signed-in users very high, limits only stop automation).** service-core's `RateLimiter` reads a
+  single `rateLimit` block for everyone; `RouteUtils.checkRateLimiter` runs after the route's auth middleware, keys the
+  identifier counter `uid|METHOD|path` when signed in (`perUser`) or `METHOD|path` otherwise, plus a shared
+  `ratelimit:ip:<addr>` counter. So dfefb36's 10k/20k applied to anonymous booking POSTs and key discovery too.
+  `src/lib/TieredRateLimiter.ts` subclasses it and is registered as `"RateLimiter"` in all worker entry points and both
+  Server tests: anonymous requests get top-level `rateLimit` (restored to the framework defaults 100/60s per identifier,
+  100/300s per IP); requests with `req.user.uid` get `rateLimit.authenticated` (10k/300s identifier, 20k/300s IP) with their
+  per-IP counter under a separate key, so signed-in office traffic never eats the anonymous IP budget.
+- **`mail.auto_provision.enabled: true`** - checked: already `true` at ec7de20 and earlier (predates today), so left as-is.
+  It does get persisted into the mailbox policy row on first read of a new deployment (8a6f27d's design).
+- **web-client/react-shared** bumped `^0.3.x` -> `^0.4.0` (both published; 0.3 called the removed `mail/branding` routes).
+  `webClientAppDir` still resolves (`node_modules/@rapidmx/web-client/{apps,dist/apps}` present), build passes; its stale
+  "portal-linked" comment fixed (vite/vitest config comments still say portal-linked - not touched).
+- **Skipped: Helm `system__plugins__namespaces` example "not valid JSON".** Not a bug - it's YAML flow syntax, and
+  `service-config.yaml` renders slices with `toJson`; `helm template` with the lines uncommented produced valid JSON.

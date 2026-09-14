@@ -9,6 +9,7 @@ import {
     defaultPluginSettings,
     NpmRegistryClient,
     parsePluginManifest,
+    pruneUnmetRequirements,
     type Plugin,
     type PluginManifest,
 } from "@rapidmx/restapi";
@@ -104,18 +105,42 @@ export class PluginStateStore {
         return this.withRepository(async (repo) => {
             let rows: Plugin[] = await findAllPlugins(repo);
             const known: Set<string> = new Set(rows.map((row) => row.name));
+            const seeds: Partial<Plugin>[] = [];
             for (const plugin of defaults) {
                 if (known.has(plugin.name)) {
                     continue;
                 }
                 try {
-                    const seeded: any = await this.describeDefault(plugin, registryFor, sources);
-                    await repo.save(new this.pluginClass(seeded));
+                    seeds.push(await this.describeDefault(plugin, registryFor, sources));
                     known.add(plugin.name);
-                    this.logger?.info(`Added default plugin ${plugin.name}@${seeded.packageVersion}.`);
                 } catch (err: any) {
                     // Not fatal: it's retried at the next start.
                     this.logger?.warn(`Could not add default plugin ${plugin.name}: ${err.message}`);
+                }
+            }
+
+            // A default whose required plugins won't all be enabled, in range, would be skipped at every start - for example
+            // one requiring a plugin an administrator removed. It's added disabled instead. Checked across the existing rows
+            // and every default being added together, so the order of the defaults doesn't matter.
+            const { dropped } = pruneUnmetRequirements(
+                [...rows.filter((row) => row.enabled && !row.removed), ...seeds.filter((seed) => seed.enabled)].map((plugin) => ({
+                    name: plugin.name!,
+                    version: plugin.packageVersion!,
+                    manifest: plugin.manifest,
+                })),
+            );
+            const unmet: Map<string, string> = new Map(dropped.map((plugin) => [plugin.name, plugin.message]));
+
+            for (const seeded of seeds) {
+                if (seeded.enabled && unmet.has(seeded.name!)) {
+                    seeded.enabled = false;
+                    this.logger?.warn(`Default plugin ${seeded.name} is added disabled: ${unmet.get(seeded.name!)}`);
+                }
+                try {
+                    await repo.save(new this.pluginClass(seeded));
+                    this.logger?.info(`Added default plugin ${seeded.name}@${seeded.packageVersion}.`);
+                } catch (err: any) {
+                    this.logger?.warn(`Could not add default plugin ${seeded.name}: ${err.message}`);
                 }
             }
             rows = await findAllPlugins(repo);

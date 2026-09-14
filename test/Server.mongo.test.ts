@@ -12,7 +12,7 @@ process.env[`cors__origins`] = JSON.stringify(corsOrigins);
 import config from "../src/config.mongo.js";
 import { MongoMemoryServer } from "mongodb-memory-server";
 import { Logger, sleep } from "@rapidrest/core";
-import { ObjectFactory, Server } from "@rapidrest/service-core";
+import { ObjectFactory, RateLimiter, Server } from "@rapidrest/service-core";
 import { request } from "@rapidrest/service-core/test";
 import {
     FsDkimKeyProvider,
@@ -25,6 +25,8 @@ import {
 } from "@rapidmx/restapi";
 import { MongoTextSearchProvider } from "@rapidmx/restapi/search";
 import { ClamAvScanProvider, RspamdSpamScanProvider } from "@rapidmx/restapi/scan";
+import { TieredRateLimiter } from "../src/lib/TieredRateLimiter.js";
+import { setDraining } from "../src/plugins/readiness.js";
 
 const mongod: MongoMemoryServer = new MongoMemoryServer({
     instance: {
@@ -64,6 +66,7 @@ describe("Server Tests", () => {
     // config-driven (mail:pki:signing_enrollment:backend) - a test run has no business making live ACME
     // network calls against a real certificate authority.
     objectFactory.register(ManualSigningCertificateEnrollment, "SigningCertificateEnrollment");
+    objectFactory.register(TieredRateLimiter, "RateLimiter");
     const server: Server = new Server({ config, basePath: "./src/mongo", logger, objectFactory });
 
     beforeAll(async () => {
@@ -92,6 +95,18 @@ describe("Server Tests", () => {
         expect(result.headers["access-control-allow-origin"]).toEqual(corsOrigins[0]);
         result = await request(server).options("/").set("Origin", "http://localhost:3005");
         expect(result.headers["access-control-allow-origin"]).not.toBeDefined();
+    });
+
+    it("Reports not ready while draining for a plugin restart, and rate limits with TieredRateLimiter.", async () => {
+        expect((await request(server).get("/api/status")).status).toBe(200);
+        setDraining(true);
+        try {
+            expect((await request(server).get("/api/status")).status).toBe(503);
+        } finally {
+            setDraining(false);
+        }
+        expect((await request(server).get("/api/status")).status).toBe(200);
+        expect(await objectFactory.newInstance(RateLimiter, { name: "default" })).toBeInstanceOf(TieredRateLimiter);
     });
 
     it("Can stop server.", async () => {

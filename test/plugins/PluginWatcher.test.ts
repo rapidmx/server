@@ -1,17 +1,19 @@
 ///////////////////////////////////////////////////////////////////////////////
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
-import { computePluginStateHash, PLUGIN_CHANGED_EVENT, PLUGIN_EVENTS_CHANNEL, PLUGIN_STATUS_KEY } from "@rapidmx/restapi";
-import { PLUGIN_RESTART_LOCK_KEY, PluginWatcher, type WatcherRedisClient } from "../../src/plugins/PluginWatcher.js";
+import { computePluginStateHash, PLUGIN_CHANGED_EVENT, PLUGIN_EVENTS_CHANNEL, PLUGIN_STATUS_KEY, PLUGIN_STATUS_MAX_AGE_MS } from "@rapidmx/restapi";
+import { PLUGIN_RESTART_LOCK_KEY, PluginRestartLock, PluginWatcher, type WatcherRedisClient } from "../../src/plugins/PluginWatcher.js";
+import { isDraining, setDraining } from "../../src/plugins/readiness.js";
 
 /** A shared in-memory Redis for the watcher's cache and subscriber clients. */
 class FakeRedis {
     public values: Map<string, string> = new Map();
     public hashes: Map<string, Map<string, string>> = new Map();
     public listeners: ((message: string) => void)[] = [];
+    public errorListeners: ((err: Error) => void)[] = [];
     public failConnect: boolean = false;
 
-    public client(): WatcherRedisClient & { quit: any } {
+    public client(): WatcherRedisClient & { quit: any; on: any } {
         return {
             connect: vi.fn(async () => {
                 if (this.failConnect) {
@@ -19,6 +21,10 @@ class FakeRedis {
                 }
             }),
             quit: vi.fn(async () => undefined),
+            on: vi.fn((event: string, listener: (err: Error) => void) => {
+                expect(event).toBe("error");
+                this.errorListeners.push(listener);
+            }),
             subscribe: vi.fn(async (channel: string, listener: (message: string) => void) => {
                 expect(channel).toBe(PLUGIN_EVENTS_CHANNEL);
                 this.listeners.push(listener);
@@ -32,12 +38,15 @@ class FakeRedis {
             }),
             get: vi.fn(async (key: string) => this.values.get(key) ?? null),
             del: vi.fn(async (key: string) => (this.values.delete(key) ? 1 : 0)),
+            pExpire: vi.fn(async () => 1),
             hSet: vi.fn(async (key: string, field: string, value: string) => {
                 const hash = this.hashes.get(key) ?? new Map();
                 hash.set(field, value);
                 this.hashes.set(key, hash);
                 return 1;
             }),
+            hGetAll: vi.fn(async (key: string) => Object.fromEntries(this.hashes.get(key) ?? new Map())),
+            hDel: vi.fn(async (key: string, field: string) => (this.hashes.get(key)?.delete(field) ? 1 : 0)),
         };
     }
 
@@ -52,15 +61,28 @@ describe("PluginWatcher", () => {
     let redis: FakeRedis;
     let rows: any[];
     let restart: any;
+    let watchers: PluginWatcher[];
 
     beforeEach(() => {
         redis = new FakeRedis();
         rows = [plugin("@rapidmx/activesync")];
         restart = vi.fn(async () => undefined);
+        watchers = [];
+    });
+
+    afterEach(async () => {
+        for (const w of watchers) {
+            (w as any).restarting = false;
+            (w as any).stopped = false;
+            await w.stop();
+        }
+        setDraining(false);
+        vi.useRealTimers();
+        vi.restoreAllMocks();
     });
 
     function watcher(extra: Record<string, any> = {}) {
-        return new PluginWatcher({
+        const w = new PluginWatcher({
             instance: "pod-a",
             loadedHash: computePluginStateHash(rows),
             status: { loaded: [{ name: "@rapidmx/activesync", version: "1.0.0" }], errors: [], safeMode: false },
@@ -70,11 +92,16 @@ describe("PluginWatcher", () => {
             cacheUrl: "redis://cache",
             createRedisClient: () => redis.client(),
             lockRetryMs: 1,
+            lockReleaseDelayMs: 0,
+            drainDelayMs: 0,
+            restartJitterMs: 0,
             pollIntervalMs: 60_000,
             heartbeatIntervalMs: 60_000,
-            logger: { info: vi.fn(), warn: vi.fn(), debug: vi.fn() },
+            logger: { info: vi.fn(), warn: vi.fn(), debug: vi.fn(), error: vi.fn() },
             ...extra,
         });
+        watchers.push(w);
+        return w;
     }
 
     it("reports its status and releases a restart lock it held from before it restarted", async () => {
@@ -87,12 +114,38 @@ describe("PluginWatcher", () => {
         await w.stop();
     });
 
+    it("keeps an inherited restart lock until it has been serving a while, renewing it meanwhile", async () => {
+        vi.useFakeTimers();
+        redis.values.set(PLUGIN_RESTART_LOCK_KEY, "pod-a");
+        const client = redis.client();
+        const w = watcher({ createRedisClient: () => client, lockReleaseDelayMs: 15_000, lockTtlMs: 3_000 });
+        await w.start();
+        await vi.advanceTimersByTimeAsync(14_000);
+        expect(redis.values.get(PLUGIN_RESTART_LOCK_KEY)).toBe("pod-a");
+        expect(client.pExpire).toHaveBeenCalledWith(PLUGIN_RESTART_LOCK_KEY, 3_000);
+        await vi.advanceTimersByTimeAsync(1_000);
+        expect(redis.values.has(PLUGIN_RESTART_LOCK_KEY)).toBe(false);
+    });
+
     it("leaves another copy's restart lock alone at startup", async () => {
         redis.values.set(PLUGIN_RESTART_LOCK_KEY, "pod-b");
         const w = watcher();
         await w.start();
         expect(redis.values.get(PLUGIN_RESTART_LOCK_KEY)).toBe("pod-b");
         await w.stop();
+        expect(redis.values.get(PLUGIN_RESTART_LOCK_KEY)).toBe("pod-b");
+    });
+
+    it("logs Redis connection errors at most once a minute instead of letting them go unhandled", async () => {
+        const logger = { info: vi.fn(), warn: vi.fn(), debug: vi.fn() };
+        const w = watcher({ logger });
+        await w.start();
+        expect(redis.errorListeners).toHaveLength(2);
+        redis.errorListeners.forEach((listener) => listener(new Error("ECONNRESET")));
+        redis.errorListeners[0](new Error("ECONNRESET"));
+        const logged = logger.warn.mock.calls.filter(([message]) => /Redis connection error/.test(message));
+        expect(logged).toHaveLength(2);
+        expect(logged[0][0]).toMatch(/ECONNRESET/);
     });
 
     it("ignores change messages matching what it loaded, and unrelated messages", async () => {
@@ -106,14 +159,30 @@ describe("PluginWatcher", () => {
         await w.stop();
     });
 
-    it("restarts under the lock when a change message arrives and the plugin set really differs", async () => {
-        const loaded = computePluginStateHash(rows);
-        const w = watcher({ loadedHash: loaded });
+    it("restarts under the lock when a change message arrives, keeping the lock through its own stop", async () => {
+        const w = watcher({ lockTtlMs: 600_000 });
+        restart = vi.fn(async () => w.stop());
+        (w as any).options.restart = restart;
         await w.start();
         rows = [plugin("@rapidmx/activesync", "1.1.0")];
         redis.publish({ type: PLUGIN_CHANGED_EVENT, hash: computePluginStateHash(rows) });
         await vi.waitFor(() => expect(restart).toHaveBeenCalledTimes(1));
         expect(redis.values.get(PLUGIN_RESTART_LOCK_KEY)).toBe("pod-a");
+        expect(isDraining()).toBe(true);
+    });
+
+    it("reports itself not ready for the drain delay before restarting", async () => {
+        vi.useFakeTimers();
+        const w = watcher({ drainDelayMs: 15_000 });
+        await w.start();
+        rows = [];
+        const checking = w.check();
+        await vi.advanceTimersByTimeAsync(14_000);
+        expect(isDraining()).toBe(true);
+        expect(restart).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(1_000);
+        await checking;
+        expect(restart).toHaveBeenCalledTimes(1);
     });
 
     it("waits for another copy's restart to finish before restarting", async () => {
@@ -155,17 +224,67 @@ describe("PluginWatcher", () => {
         expect(restart).toHaveBeenCalledTimes(1);
     });
 
-    it("restarts immediately without Redis, relying on its periodic check", async () => {
+    it("restarts after a random delay without Redis, relying on its periodic check", async () => {
         vi.useFakeTimers();
-        try {
-            const w = watcher({ eventsUrl: undefined, cacheUrl: undefined, pollIntervalMs: 1000 });
-            await w.start();
-            rows = [];
-            await vi.advanceTimersByTimeAsync(1000);
-            expect(restart).toHaveBeenCalledTimes(1);
-        } finally {
-            vi.useRealTimers();
-        }
+        vi.spyOn(Math, "random").mockReturnValue(0.5);
+        const w = watcher({ eventsUrl: undefined, cacheUrl: undefined, pollIntervalMs: 1000, restartJitterMs: 30_000 });
+        await w.start();
+        rows = [];
+        await vi.advanceTimersByTimeAsync(1000);
+        await vi.advanceTimersByTimeAsync(14_000);
+        expect(restart).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(1_000);
+        expect(restart).toHaveBeenCalledTimes(1);
+    });
+
+    it("in safe mode, restarts only once the plugin table changes from what it was when safe mode started", async () => {
+        const w = watcher({ loadedHash: computePluginStateHash([]), status: { loaded: [], errors: [], safeMode: true } });
+        await w.start();
+        await w.check();
+        redis.publish({ type: PLUGIN_CHANGED_EVENT, hash: computePluginStateHash(rows) });
+        await w.check();
+        expect(restart).not.toHaveBeenCalled();
+        expect(JSON.parse(redis.hashes.get(PLUGIN_STATUS_KEY)!.get("pod-a")!).safeMode).toBe(true);
+
+        rows = [{ ...rows[0], enabled: false }];
+        await w.check();
+        expect(restart).toHaveBeenCalledTimes(1);
+    });
+
+    it("takes the safe mode baseline at the first check when the plugin table can't be read at startup", async () => {
+        let fail = true;
+        const w = watcher({
+            loadedHash: computePluginStateHash([]),
+            status: { loaded: [], errors: [], safeMode: true },
+            readPlugins: async () => (fail ? Promise.reject(new Error("db down")) : rows),
+        });
+        await w.start();
+        fail = false;
+        await w.check();
+        expect(restart).not.toHaveBeenCalled();
+        rows = [];
+        await w.check();
+        expect(restart).toHaveBeenCalledTimes(1);
+    });
+
+    it("restarts to retry after a failed plugin install, even though the plugin table is unchanged", async () => {
+        vi.useFakeTimers();
+        const w = watcher({ retryDelayMs: 120_000 });
+        await w.start();
+        await vi.advanceTimersByTimeAsync(119_000);
+        expect(restart).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(1_000);
+        expect(restart).toHaveBeenCalledTimes(1);
+    });
+
+    it("logs a restart that fails", async () => {
+        const logger = { info: vi.fn(), warn: vi.fn(), debug: vi.fn(), error: vi.fn() };
+        restart = vi.fn(async () => Promise.reject(new Error("stuck")));
+        const w = watcher({ logger });
+        await w.start();
+        rows = [];
+        await w.check();
+        expect(logger.error).toHaveBeenCalledWith(expect.stringMatching(/failed: stuck/));
     });
 
     it("keeps running when Redis is unavailable or reading the plugin table fails", async () => {
@@ -183,15 +302,79 @@ describe("PluginWatcher", () => {
 
     it("refreshes its status report on a timer and tolerates a failed report", async () => {
         vi.useFakeTimers();
+        const client = redis.client();
+        const w = watcher({ heartbeatIntervalMs: 1000, createRedisClient: () => client });
+        await w.start();
+        (client.hSet as any).mockRejectedValueOnce(new Error("busy"));
+        await vi.advanceTimersByTimeAsync(1000);
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(client.hSet).toHaveBeenCalledTimes(3);
+        await w.stop();
+    });
+
+    it("prunes other copies' stale status reports, and removes its own when it stops", async () => {
+        const status = new Map<string, string>([
+            ["pod-old", JSON.stringify({ updatedAt: new Date(Date.now() - PLUGIN_STATUS_MAX_AGE_MS - 1000).toISOString() })],
+            ["pod-junk", "not json"],
+            ["pod-b", JSON.stringify({ updatedAt: new Date().toISOString() })],
+        ]);
+        redis.hashes.set(PLUGIN_STATUS_KEY, status);
+        const w = watcher();
+        await w.start();
+        expect([...status.keys()].sort()).toEqual(["pod-a", "pod-b"]);
+        await w.stop();
+        expect([...status.keys()]).toEqual(["pod-b"]);
+    });
+
+    it("uses a cache connection and lock handed to it", async () => {
+        const client = redis.client();
+        redis.values.set(PLUGIN_RESTART_LOCK_KEY, "pod-a");
+        const lock = new PluginRestartLock(client, "pod-a", 60_000);
+        const createRedisClient = vi.fn(() => redis.client());
+        const w = watcher({ cache: client, lock, eventsUrl: undefined, createRedisClient });
+        await w.start();
+        expect(createRedisClient).not.toHaveBeenCalled();
+        expect(redis.values.has(PLUGIN_RESTART_LOCK_KEY)).toBe(false);
+        expect(redis.hashes.get(PLUGIN_STATUS_KEY)!.has("pod-a")).toBe(true);
+    });
+});
+
+describe("PluginRestartLock", () => {
+    it("takes a free lock, never takes or releases another copy's, and stops renewing once it's lost", async () => {
+        vi.useFakeTimers();
         try {
+            const redis = new FakeRedis();
             const client = redis.client();
-            const w = watcher({ heartbeatIntervalMs: 1000, createRedisClient: () => client });
-            await w.start();
-            (client.hSet as any).mockRejectedValueOnce(new Error("busy"));
-            await vi.advanceTimersByTimeAsync(1000);
-            await vi.advanceTimersByTimeAsync(1000);
-            expect(client.hSet).toHaveBeenCalledTimes(3);
-            await w.stop();
+            const a = new PluginRestartLock(client, "pod-a", 3_000);
+            const b = new PluginRestartLock(redis.client(), "pod-b", 3_000);
+            expect(await a.tryAcquire()).toBe(true);
+            expect(await b.tryAcquire()).toBe(false);
+            expect(await b.resume()).toBe(false);
+            await b.release();
+            expect(redis.values.get(PLUGIN_RESTART_LOCK_KEY)).toBe("pod-a");
+
+            redis.values.set(PLUGIN_RESTART_LOCK_KEY, "pod-b");
+            const renewals = (client.pExpire as any).mock.calls.length;
+            await vi.advanceTimersByTimeAsync(3_000);
+            expect((client.pExpire as any).mock.calls.length).toBe(renewals);
+            expect((a as any).renewTimer).toBeUndefined();
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it("tolerates a failed renewal", async () => {
+        vi.useFakeTimers();
+        try {
+            const redis = new FakeRedis();
+            const client = redis.client();
+            const logger = { debug: vi.fn() };
+            const lock = new PluginRestartLock(client, "pod-a", 300, logger);
+            await lock.tryAcquire();
+            (client.get as any).mockRejectedValueOnce(new Error("down"));
+            await vi.advanceTimersByTimeAsync(100);
+            expect(logger.debug).toHaveBeenCalledWith(expect.stringMatching(/renew.*down/));
+            lock.stopRenewing();
         } finally {
             vi.useRealTimers();
         }

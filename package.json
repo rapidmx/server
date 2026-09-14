@@ -33,9 +33,9 @@
     "trailingComma": "es5"
   },
   "dependencies": {
-    "@rapidmx/react-shared": "^0.3.0",
+    "@rapidmx/react-shared": "^0.4.0",
     "@rapidmx/restapi": "patch:@rapidmx/restapi@npm%3A0.8.0#~/.yarn/patches/@rapidmx-restapi-npm-0.8.0-d588a97668.patch",
-    "@rapidmx/web-client": "^0.3.1",
+    "@rapidmx/web-client": "^0.4.0",
     "@rapidrest/core": "^5.2.2",
     "@rapidrest/react": "2.0.0-beta.2",
     "@rapidrest/service-core": "^2.0.0",

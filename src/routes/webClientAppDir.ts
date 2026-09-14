@@ -4,8 +4,8 @@
 
 /**
  * Resolves the on-disk path to the `@rapidmx/web-client` package's `www`/`admin`/`escrow` app directory -
- * portal-linked for now (`portal:../web-client` in package.json — see `.claude/NOTES.md`'s 2026-09-10
- * spike entry for the full rationale/history). Used as `WwwRoute`/`AdminConsoleRoute`/`EscrowConsoleRoute`'s
+ * an ordinary npm registry dependency installed under `node_modules` (see `.claude/NOTES.md`'s 2026-09-10
+ * spike entry for the history, when it was still `portal:`-linked). Used as `WwwRoute`/`AdminConsoleRoute`/`EscrowConsoleRoute`'s
  * `appDir` override in place of the old local `apps/www`/`apps/admin`/`apps/escrow`.
  *
  * Mirrors `@rapidrest/react`'s own `ReactRoute.resolveAppFile()` `hasTsxContext` detection exactly: in

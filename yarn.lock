@@ -976,6 +976,18 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@journeyapps/wa-sqlite@npm:^2.0.4":
+  version: 2.0.4
+  resolution: "@journeyapps/wa-sqlite@npm:2.0.4"
+  dependenciesMeta:
+    monaco-editor@0.34.1:
+      unplugged: true
+    web-test-runner-jasmine@0.0.6:
+      unplugged: true
+  checksum: 10c0/93572e8d3bded31f0dcc7e6fbfe2afcabc17044e9ebda1407f02bb5cd77371e6636b1f5bea2c54aa4475e886ce45649c3e777dedc5193b6bddd2890070425168
+  languageName: node
+  linkType: hard
+
 "@jridgewell/gen-mapping@npm:^0.3.5":
   version: 0.3.13
   resolution: "@jridgewell/gen-mapping@npm:0.3.13"
@@ -1543,9 +1555,9 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@rapidmx/react-shared@npm:^0.3.0":
-  version: 0.3.0
-  resolution: "@rapidmx/react-shared@npm:0.3.0"
+"@rapidmx/react-shared@npm:^0.4.0":
+  version: 0.4.0
+  resolution: "@rapidmx/react-shared@npm:0.4.0"
   dependencies:
     "@emoji-mart/data": "npm:^1.2.1"
     "@peculiar/x509": "npm:^2.1.0"
@@ -1560,7 +1572,7 @@ __metadata:
   peerDependencies:
     react: 19.x
     react-dom: 19.x
-  checksum: 10c0/0e7e1912f24c04cc344db76c9e990c7f503f4dccdb51e4fa9f7cd91a599637d319e5d0994de0d065dfa49881e20315a88eed289045b99fe198cd5200a9eb85cd
+  checksum: 10c0/c8807e5d416d8782be69dfd6fd93578e378668144f0a96116613474b9fefe0d87958eba371b22ada69b8bf89b8153e0bda62d84ec4508f509a8953435e43a497
   languageName: node
   linkType: hard
 
@@ -1603,7 +1615,7 @@ __metadata:
 
 "@rapidmx/restapi@patch:@rapidmx/restapi@npm%3A0.8.0#~/.yarn/patches/@rapidmx-restapi-npm-0.8.0-d588a97668.patch":
   version: 0.8.0
-  resolution: "@rapidmx/restapi@patch:@rapidmx/restapi@npm%3A0.8.0#~/.yarn/patches/@rapidmx-restapi-npm-0.8.0-d588a97668.patch::version=0.8.0&hash=e7cd49"
+  resolution: "@rapidmx/restapi@patch:@rapidmx/restapi@npm%3A0.8.0#~/.yarn/patches/@rapidmx-restapi-npm-0.8.0-d588a97668.patch::version=0.8.0&hash=b84287"
   dependencies:
     "@peculiar/x509": "npm:^2.1.0"
     acme-client: "npm:^5.4.0"
@@ -1634,17 +1646,18 @@ __metadata:
       optional: true
     pdf-parse:
       optional: true
-  checksum: 10c0/06f07c346ae150b1c0800834467c76b15f7d462d0b2b9250e3be79e88cbfd91a1ee958641878182ca7dff5ca8bab374ad5077f77803543d93a97fc7585afa7ba
+  checksum: 10c0/f10a78617466c5fbdb2ec2592dd3fd8d8ac738c6a78ddc97fcc49b47d1c597f5d44737cd269a6a39e7df4bde288902d55cb3faa785162445b4281604735b6981
   languageName: node
   linkType: hard
 
-"@rapidmx/web-client@npm:^0.3.1":
-  version: 0.3.1
-  resolution: "@rapidmx/web-client@npm:0.3.1"
+"@rapidmx/web-client@npm:^0.4.0":
+  version: 0.4.0
+  resolution: "@rapidmx/web-client@npm:0.4.0"
   dependencies:
     "@dnd-kit/core": "npm:^6.3.1"
+    "@journeyapps/wa-sqlite": "npm:^2.0.4"
     "@peculiar/x509": "npm:^2.1.0"
-    "@rapidmx/react-shared": "npm:^0.3.0"
+    "@rapidmx/react-shared": "npm:^0.4.0"
     "@tiptap/core": "npm:^3.31.3"
     "@tiptap/extension-highlight": "npm:^3.31.3"
     "@tiptap/extension-image": "npm:^3.31.3"
@@ -1666,7 +1679,7 @@ __metadata:
   peerDependencies:
     react: 19.x
     react-dom: 19.x
-  checksum: 10c0/f082ec9f9d0aaf3fa145870e4f9f31ec1dff0b0560655d90e9ac696bb6befa2878d446fdcb9c111b2fb2f1f6312cdccae407f44fb7ebcf867c8246e2a4d11665
+  checksum: 10c0/3de34ce4d72952f08a4a2b64ec208de28b7d9d9db4b5bfb2c64c0bc8a045d2df16009f59832a5845531ab048584475aaf643380064a7a59edf97d524aa4742dc
   languageName: node
   linkType: hard
 
@@ -9601,9 +9614,9 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "server@workspace:."
   dependencies:
-    "@rapidmx/react-shared": "npm:^0.3.0"
+    "@rapidmx/react-shared": "npm:^0.4.0"
     "@rapidmx/restapi": "patch:@rapidmx/restapi@npm%3A0.8.0#~/.yarn/patches/@rapidmx-restapi-npm-0.8.0-d588a97668.patch"
-    "@rapidmx/web-client": "npm:^0.3.1"
+    "@rapidmx/web-client": "npm:^0.4.0"
     "@rapidrest/cli": "npm:^2.0.0"
     "@rapidrest/core": "npm:^5.2.2"
     "@rapidrest/react": "npm:2.0.0-beta.2"

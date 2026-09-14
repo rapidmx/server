@@ -7,7 +7,7 @@ import path from "path";
 import zlib from "zlib";
 import nconf from "nconf";
 import { computePluginStateHash, PluginRegistry } from "@rapidmx/restapi";
-import { PLUGIN_SAFE_MODE_ENV, PluginHost } from "../../src/plugins/PluginHost.js";
+import { installRetryDelayMs, PLUGIN_SAFE_MODE_ENV, PluginHost } from "../../src/plugins/PluginHost.js";
 import { findAllPlugins, PluginStateStore, readTarballPackageJson } from "../../src/plugins/PluginStateStore.js";
 
 const MANIFEST = { apiVersion: 1, displayName: "EAS", settings: [{ key: "mail:eas:sync_window_size", label: "Window", type: "number", default: 100 }] };
@@ -81,6 +81,45 @@ describe("PluginStateStore", () => {
         );
         expect(logger.warn).toHaveBeenCalledWith(expect.stringMatching(/@rapidmx\/missing@latest was not found/));
         expect(logger.warn).toHaveBeenCalledWith(expect.stringMatching(/@rapidmx\/bad: not a plugin/));
+    });
+
+    it("seeds a default whose required plugins won't be enabled as disabled, whatever the order of the defaults", async () => {
+        const requires: Record<string, Record<string, string>> = {
+            "@rapidmx/needs-mapi": { "@rapidmx/mapi": "^1.0.0" },
+            "@rapidmx/needs-needs-mapi": { "@rapidmx/needs-mapi": "*" },
+            "@rapidmx/needs-base": { "@rapidmx/base": "^2.0.0" },
+            "@rapidmx/needs-off": { "@rapidmx/off": "*" },
+        };
+        const planning: any = {
+            getVersion: vi.fn(async (name: string) => ({ name, version: "2.0.0", integrity: "sha512-x", manifest: { ...MANIFEST, requires: requires[name] } })),
+        };
+        const warn = vi.spyOn(logger, "warn");
+        const store = new MemoryStore([row("@rapidmx/mapi", { removed: true, enabled: false })]);
+        const rows = await store.loadAndSeed(
+            [
+                { name: "@rapidmx/needs-needs-mapi" },
+                { name: "@rapidmx/needs-mapi" },
+                // Listed before the plugin it requires, which is added in the same start.
+                { name: "@rapidmx/needs-base" },
+                { name: "@rapidmx/base" },
+                { name: "@rapidmx/off", enabled: false },
+                { name: "@rapidmx/needs-off" },
+            ],
+            () => planning,
+            {},
+        );
+        const enabled = Object.fromEntries(rows.map((r) => [r.name, r.enabled]));
+        expect(enabled).toEqual({
+            "@rapidmx/mapi": false,
+            "@rapidmx/needs-needs-mapi": false,
+            "@rapidmx/needs-mapi": false,
+            "@rapidmx/needs-base": true,
+            "@rapidmx/base": true,
+            "@rapidmx/off": false,
+            "@rapidmx/needs-off": false,
+        });
+        expect(warn).toHaveBeenCalledWith("Default plugin @rapidmx/needs-mapi is added disabled: It requires @rapidmx/mapi ^1.0.0, which isn't loaded.");
+        expect(warn).toHaveBeenCalledWith(expect.stringMatching(/needs-needs-mapi is added disabled: It requires @rapidmx\/needs-mapi/));
     });
 
     it("seeds a default from a local tarball source", async () => {
@@ -215,6 +254,74 @@ describe("PluginHost", () => {
         expect(installer.install).toHaveBeenCalledWith([]);
         expect(host.safeMode).toBe(true);
         expect(host.loadedHash).toBe(computePluginStateHash([]));
+    });
+
+    it("backs off retrying failed installs, doubling up to a cap", () => {
+        expect([1, 2, 3, 4, 5, 50].map((failures) => installRetryDelayMs(failures))).toEqual([60_000, 120_000, 240_000, 480_000, 600_000, 600_000]);
+        expect(installRetryDelayMs(3, 1_000, 3_000)).toBe(3_000);
+    });
+
+    it("schedules a retry when npm failed to install, but not when plugins merely failed their checks", async () => {
+        const failing: any = { install: vi.fn(async () => ({ installed: [], errors: [{ name: "@rapidmx/activesync", message: "ETIMEDOUT" }], installFailures: 2 })) };
+        const config = configWith({ system: { plugins: { restart: { install_retry_ms: 10_000 } } } });
+        const retried = await PluginHost.prepare({ config, logger, datastore: "mongo", pluginClass: class {}, appRoot: process.cwd(), store: new MemoryStore([row("@rapidmx/activesync")]), installer: failing });
+        expect(retried.retryDelayMs).toBe(20_000);
+
+        const checked: any = { install: vi.fn(async () => ({ installed: [], errors: [{ name: "@rapidmx/activesync", message: "integrity" }] })) };
+        const notRetried = await PluginHost.prepare({ config, logger, datastore: "mongo", pluginClass: class {}, appRoot: process.cwd(), store: new MemoryStore([row("@rapidmx/activesync")]), installer: checked });
+        expect(notRetried.retryDelayMs).toBeUndefined();
+    });
+
+    it("keeps renewing a restart lock it inherited from startup, and hands it to the watcher to release once serving", async () => {
+        const values = new Map<string, string>([["plugins:restart-lock", "pod-a"]]);
+        const client: any = {
+            connect: vi.fn(async () => undefined),
+            quit: vi.fn(async () => undefined),
+            on: vi.fn(),
+            set: vi.fn(async () => null),
+            get: vi.fn(async (key: string) => values.get(key) ?? null),
+            del: vi.fn(async (key: string) => (values.delete(key) ? 1 : 0)),
+            pExpire: vi.fn(async () => 1),
+            hSet: vi.fn(async () => 1),
+            hGetAll: vi.fn(async () => ({})),
+            hDel: vi.fn(async () => 1),
+        };
+        const createRedisClient = vi.fn(() => client);
+        let renewedDuringInstall = false;
+        const installer: any = {
+            install: vi.fn(async () => {
+                renewedDuringInstall = client.pExpire.mock.calls.length > 0;
+                return { installed: [], errors: [] };
+            }),
+        };
+        const config = configWith({
+            datastores: { cache: { url: "redis://cache" } },
+            system: { plugins: { instance_id: "pod-a", restart: { lock_release_delay_ms: 0 } } },
+        });
+        const host = await PluginHost.prepare({ config, logger, datastore: "mongo", pluginClass: class {}, appRoot: process.cwd(), store: new MemoryStore([]), installer, createRedisClient });
+        expect(renewedDuringInstall).toBe(true);
+        expect(values.get("plugins:restart-lock")).toBe("pod-a");
+
+        await host.start({ getInstance: () => undefined } as any, async () => undefined);
+        expect(createRedisClient).toHaveBeenCalledTimes(1);
+        expect(values.has("plugins:restart-lock")).toBe(false);
+        await host.stop();
+        expect(client.quit).toHaveBeenCalled();
+    });
+
+    it("closes the restart lock connection when stopped before the server started", async () => {
+        const client: any = { connect: vi.fn(async () => undefined), quit: vi.fn(async () => undefined), get: vi.fn(async () => null) };
+        const config = configWith({ datastores: { cache: { url: "redis://cache" } } });
+        const installer: any = { install: vi.fn(async () => ({ installed: [], errors: [] })) };
+        const host = await PluginHost.prepare({ config, logger, datastore: "mongo", pluginClass: class {}, appRoot: process.cwd(), store: new MemoryStore([]), installer, createRedisClient: () => client });
+        await host.stop();
+        expect(client.quit).toHaveBeenCalled();
+
+        const warn = vi.spyOn(logger, "warn");
+        const down: any = { connect: vi.fn(async () => Promise.reject(new Error("refused"))), quit: vi.fn(async () => undefined) };
+        await PluginHost.prepare({ config, logger, datastore: "mongo", pluginClass: class {}, appRoot: process.cwd(), store: new MemoryStore([]), installer, createRedisClient: () => down });
+        expect(warn).toHaveBeenCalledWith(expect.stringMatching(/status reporting is unavailable: refused/));
+        expect(down.quit).toHaveBeenCalled();
     });
 
     it("still starts the server when the plugin table can't be read", async () => {

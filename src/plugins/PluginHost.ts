@@ -21,10 +21,19 @@ import {
 import { PluginClassLoader } from "./PluginClassLoader.js";
 import { PluginInstaller, type PluginInstallResult } from "./PluginInstaller.js";
 import { findAllPlugins, PluginStateStore, type DefaultPlugin } from "./PluginStateStore.js";
-import { PluginWatcher } from "./PluginWatcher.js";
+import { createWatcherRedisClient, DEFAULT_LOCK_TTL_MS, PluginRestartLock, PluginWatcher, type WatcherRedisClient } from "./PluginWatcher.js";
 
 /** Set by the supervisor after repeated failed starts: the server then starts with no plugins at all. */
 export const PLUGIN_SAFE_MODE_ENV = "RAPIDMX_PLUGINS_SAFE_MODE";
+
+/**
+ * How long to wait before restarting to retry after `failures` failed plugin installs in a row: `baseMs`, doubling
+ * with each further failure, up to `maxMs` - so a registry outage is retried soon, and a package that can never
+ * install doesn't restart the server over and over.
+ */
+export function installRetryDelayMs(failures: number, baseMs: number = 60_000, maxMs: number = 10 * 60_000): number {
+    return Math.min(maxMs, baseMs * 2 ** Math.max(0, Math.min(failures - 1, 30)));
+}
 
 export interface PluginHostOptions {
     config: any;
@@ -39,6 +48,13 @@ export interface PluginHostOptions {
     store?: PluginStateStore;
     installer?: PluginInstaller;
     registry?: NpmRegistryClient;
+    createRedisClient?: (url: string) => WatcherRedisClient;
+}
+
+/** The restart lock and the cache connection holding it, opened before plugins install. */
+interface RestartLockConnection {
+    cache: WatcherRedisClient;
+    lock: PluginRestartLock;
 }
 
 /**
@@ -64,6 +80,9 @@ export class PluginHost {
         private readonly errors: { name: string; message: string }[],
         public readonly safeMode: boolean,
         installed: PluginInstallResult["installed"],
+        /** Set when plugins failed to install: how long until restarting to try again. */
+        public readonly retryDelayMs?: number,
+        private readonly restartLock?: RestartLockConnection,
     ) {
         const { config, logger } = options;
         this.classLoader = new PluginClassLoader(config.get("base_path"), config.get("class_loader:ignore"), installed, logger);
@@ -86,6 +105,9 @@ export class PluginHost {
         };
         const safeMode: boolean = process.env[PLUGIN_SAFE_MODE_ENV] === "1";
         const errors: { name: string; message: string }[] = [];
+        // If this copy restarted to apply a plugin change, it still holds the restart lock: keep it alive through the
+        // install, so the next copy doesn't stop before this one is serving again - but let it expire if this start crashes.
+        const restartLock: RestartLockConnection | undefined = await PluginHost.resumeRestartLock(options);
 
         let rows: Plugin[] = [];
         if (safeMode) {
@@ -135,7 +157,42 @@ export class PluginHost {
         }
         PluginRegistry.setLoaded(installed.map((plugin) => ({ name: plugin.name, version: plugin.version })));
 
-        return new PluginHost(options, computePluginStateHash(safeMode ? [] : rows), errors, safeMode, installed);
+        // npm failing (say, the registry is down) isn't the plugins' fault: try again later rather than running without them
+        // until the next unrelated restart.
+        const retryDelayMs: number | undefined = result.installFailures
+            ? installRetryDelayMs(
+                  result.installFailures,
+                  config.get("system:plugins:restart:install_retry_ms") ?? undefined,
+                  config.get("system:plugins:restart:install_retry_max_ms") ?? undefined,
+              )
+            : undefined;
+
+        return new PluginHost(options, computePluginStateHash(safeMode ? [] : rows), errors, safeMode, installed, retryDelayMs, restartLock);
+    }
+
+    private static instanceId(config: any): string {
+        return config.get("system:plugins:instance_id") || os.hostname();
+    }
+
+    private static async resumeRestartLock(options: PluginHostOptions): Promise<RestartLockConnection | undefined> {
+        const { config, logger } = options;
+        const url: string | undefined = config.get("datastores:cache:url");
+        if (!url) {
+            return undefined;
+        }
+        let cache: WatcherRedisClient | undefined;
+        try {
+            cache = options.createRedisClient ? options.createRedisClient(url) : createWatcherRedisClient(url, logger);
+            await cache.connect();
+            const ttlMs: number = config.get("system:plugins:restart:lock_ttl_ms") ?? DEFAULT_LOCK_TTL_MS;
+            const lock: PluginRestartLock = new PluginRestartLock(cache, PluginHost.instanceId(config), ttlMs, logger);
+            await lock.resume();
+            return { cache, lock };
+        } catch (err: any) {
+            logger.warn(`Plugin status reporting is unavailable: ${err.message}`);
+            await (cache?.quit?.() ?? cache?.disconnect?.())?.catch(() => undefined);
+            return undefined;
+        }
     }
 
     /** Starts watching for plugin changes once the server is running. `restart` stops this process so its supervisor
@@ -145,7 +202,7 @@ export class PluginHost {
         // Entry points that failed to import are only known once the server has loaded its classes.
         PluginRegistry.setLoaded(this.classLoader.loaded.map((plugin) => ({ name: plugin.name, version: plugin.version })));
         this.watcher = new PluginWatcher({
-            instance: config.get("system:plugins:instance_id") || os.hostname(),
+            instance: PluginHost.instanceId(config),
             loadedHash: this.loadedHash,
             status: {
                 loaded: this.classLoader.loaded.map((plugin) => ({ name: plugin.name, version: plugin.version })),
@@ -160,13 +217,28 @@ export class PluginHost {
             },
             restart,
             eventsUrl: config.get("datastores:events:url"),
+            // Already connected in prepare() when the cache was reachable then; otherwise the watcher tries again.
             cacheUrl: config.get("datastores:cache:url"),
+            cache: this.restartLock?.cache,
+            lock: this.restartLock?.lock,
+            lockTtlMs: config.get("system:plugins:restart:lock_ttl_ms") ?? undefined,
+            lockReleaseDelayMs: config.get("system:plugins:restart:lock_release_delay_ms") ?? undefined,
+            drainDelayMs: config.get("system:plugins:restart:drain_delay_ms") ?? undefined,
+            restartJitterMs: config.get("system:plugins:restart:jitter_ms") ?? undefined,
+            retryDelayMs: this.retryDelayMs,
+            createRedisClient: this.options.createRedisClient,
             logger,
         });
         await this.watcher.start();
     }
 
     public async stop(): Promise<void> {
-        await this.watcher?.stop();
+        if (this.watcher) {
+            await this.watcher.stop();
+        } else if (this.restartLock) {
+            // The server never started: the watcher didn't take over the cache connection.
+            this.restartLock.lock.stopRenewing();
+            await (this.restartLock.cache.quit?.() ?? this.restartLock.cache.disconnect?.())?.catch(() => undefined);
+        }
     }
 }

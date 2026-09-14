@@ -33,6 +33,43 @@ export interface InstalledPlugin {
 export interface PluginInstallResult {
     installed: InstalledPlugin[];
     errors: { name: string; message: string }[];
+    /** When npm itself failed (for example the registry was unreachable): how many installs in a row have failed.
+     * Worth retrying, unlike a plugin that installed but failed its checks. */
+    installFailures?: number;
+}
+
+/** What the last install was run with, recorded in `.install-stamp`. */
+interface InstallStamp {
+    /** Hash of the plugin directory's `package.json`. */
+    plugins: string;
+    /** Hash of the registries packages come from. */
+    registries: string;
+    /** Whether that install finished. */
+    complete: boolean;
+}
+
+const sha256 = (value: unknown): string => crypto.createHash("sha256").update(JSON.stringify(value)).digest("hex");
+
+/** The lockfile path of dependency `name` as Node resolves it from the package at lockfile path `from`. */
+function resolveLockDependency(packages: Record<string, any>, from: string, name: string): string | undefined {
+    let base: string = from;
+    for (;;) {
+        const candidate: string = `${base}/node_modules/${name}`;
+        if (packages[candidate]) {
+            return candidate;
+        }
+        const parent: number = base.lastIndexOf("/node_modules/");
+        if (parent < 0) {
+            break;
+        }
+        base = base.slice(0, parent);
+    }
+    return packages[`node_modules/${name}`] ? `node_modules/${name}` : undefined;
+}
+
+/** The package name at lockfile path `key` (`node_modules/a/node_modules/@scope/b` -> `@scope/b`). */
+function lockPackageName(key: string): string {
+    return key.slice(key.lastIndexOf("node_modules/") + "node_modules/".length);
 }
 
 export interface PluginInstallerOptions {
@@ -110,10 +147,26 @@ export class PluginInstaller {
         this.runNpm = options.runNpm ?? runNpm;
     }
 
-    public async install(plugins: DesiredPlugin[]): Promise<PluginInstallResult> {
+    public async install(desired: DesiredPlugin[]): Promise<PluginInstallResult> {
         const { dir } = this.options;
         fs.mkdirSync(dir, { recursive: true });
         const errors: { name: string; message: string }[] = [];
+        // Tokens can change or be removed without anything else changing, so this is rewritten on every start.
+        this.writeNpmrc();
+
+        // Without the integrity hash recorded when a registry plugin was added, nothing proves the registry still serves
+        // the same package. (A local `sources` tarball has none, and isn't checked.)
+        const plugins: DesiredPlugin[] = [];
+        for (const plugin of desired) {
+            if (!this.options.sources?.[plugin.name] && !plugin.integrity) {
+                errors.push({
+                    name: plugin.name,
+                    message: "No integrity hash was recorded when the plugin was added, so the installed package can't be verified. Update or re-add the plugin.",
+                });
+            } else {
+                plugins.push(plugin);
+            }
+        }
 
         const dependencies: Record<string, string> = {};
         for (const plugin of plugins) {
@@ -121,16 +174,25 @@ export class PluginInstaller {
             dependencies[plugin.name] = source ? `file:${path.resolve(source)}` : plugin.packageVersion;
         }
         const manifest = { name: "rapidmx-plugins", private: true, dependencies };
-        const stamp: string = crypto.createHash("sha256").update(JSON.stringify([manifest, this.options.registry, this.scopedRegistries()])).digest("hex");
+        const stamp: InstallStamp = { plugins: sha256(manifest), registries: sha256([this.options.registry, this.scopedRegistries()]), complete: false };
         const stampFile: string = path.join(dir, ".install-stamp");
+        const failuresFile: string = path.join(dir, ".install-failures");
+        const previous: InstallStamp | undefined = this.readJson(stampFile);
 
         const upToDate: boolean =
-            fs.existsSync(stampFile) && fs.readFileSync(stampFile, "utf8") === stamp && fs.existsSync(path.join(dir, "node_modules"));
+            !!previous?.complete &&
+            previous.plugins === stamp.plugins &&
+            previous.registries === stamp.registries &&
+            fs.existsSync(path.join(dir, "node_modules"));
         if (!upToDate) {
             fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify(manifest, null, 2));
-            fs.rmSync(path.join(dir, "package-lock.json"), { force: true });
-            fs.rmSync(stampFile, { force: true });
-            this.writeNpmrc();
+            // The lockfile keeps the plugins' own dependencies pinned from one install to the next; npm updates it for the
+            // plugins that changed. Its entries record the registry each package came from, so it starts over when the
+            // registries change.
+            if (previous?.registries !== stamp.registries) {
+                fs.rmSync(path.join(dir, "package-lock.json"), { force: true });
+            }
+            fs.writeFileSync(stampFile, JSON.stringify(stamp));
             if (plugins.length === 0) {
                 fs.rmSync(path.join(dir, "node_modules"), { recursive: true, force: true });
             } else {
@@ -151,22 +213,66 @@ export class PluginInstaller {
                     );
                 } catch (err: any) {
                     // One unavailable package fails the whole install, so every plugin is reported as not loaded.
-                    return { installed: [], errors: plugins.map((plugin) => ({ name: plugin.name, message: err.message })) };
+                    const installFailures: number = (Number(this.readJson(failuresFile)) || 0) + 1;
+                    fs.writeFileSync(failuresFile, String(installFailures));
+                    return { installed: [], errors: [...errors, ...plugins.map((plugin) => ({ name: plugin.name, message: err.message }))], installFailures };
                 }
             }
-            fs.writeFileSync(stampFile, stamp);
+            fs.writeFileSync(stampFile, JSON.stringify({ ...stamp, complete: true }));
+            fs.rmSync(failuresFile, { force: true });
         }
 
-        const lock: any = this.readLock();
+        const lock: any = this.readJson(path.join(dir, "package-lock.json")) ?? {};
+        const bundledPeers: Map<string, string> = this.findBundledPeers(plugins, lock);
         const installed: InstalledPlugin[] = [];
         for (const plugin of plugins) {
             try {
-                installed.push(this.check(plugin, lock));
+                installed.push(this.check(plugin, lock, bundledPeers.get(plugin.name)));
             } catch (err: any) {
                 errors.push({ name: plugin.name, message: err.message });
             }
         }
         return { installed, errors };
+    }
+
+    /**
+     * Finds the plugins whose installed dependencies include a copy of one of `SHARED_PLUGIN_PEERS`, from the lockfile:
+     * returns each such plugin's first copy (its lockfile path). npm may hoist such a copy to the top of the plugin
+     * directory, where every plugin's import of that package would find it before the server's copy - so a hoisted copy
+     * is deleted once it's attributed to the plugins that brought it, which aren't loaded, and the rest still load.
+     */
+    private findBundledPeers(plugins: DesiredPlugin[], lock: any): Map<string, string> {
+        const packages: Record<string, any> = lock.packages ?? {};
+        const result: Map<string, string> = new Map();
+        const hoisted: Set<string> = new Set();
+        for (const plugin of plugins) {
+            const root: string = `node_modules/${plugin.name}`;
+            const reached: Set<string> = new Set([root]);
+            const queue: string[] = [root];
+            while (queue.length > 0) {
+                const from: string = queue.shift()!;
+                const entry: any = packages[from];
+                for (const dependency of Object.keys({ ...entry?.dependencies, ...entry?.optionalDependencies })) {
+                    const found: string | undefined = resolveLockDependency(packages, from, dependency);
+                    if (found && !reached.has(found)) {
+                        reached.add(found);
+                        queue.push(found);
+                    }
+                }
+            }
+            const copies: string[] = [...reached].filter(
+                (key) => key !== root && SHARED_PLUGIN_PEERS.includes(lockPackageName(key)) && !packages[key]?.peer && !packages[key]?.dev,
+            );
+            if (copies.length > 0) {
+                result.set(plugin.name, copies[0]);
+                copies.filter((key) => key.split("node_modules/").length === 2).forEach((key) => hoisted.add(key));
+            }
+        }
+        for (const key of hoisted) {
+            this.options.logger?.warn?.(`Removing ${key} from the plugin directory: it would replace the server's copy for every plugin.`);
+            fs.rmSync(path.join(this.options.dir, ...key.split("/")), { recursive: true, force: true });
+        }
+        return result;
     }
 
     /** Namespaces installed from their own registry, as `[scope, registry]` pairs. */
@@ -198,17 +304,20 @@ export class PluginInstaller {
             return;
         }
         fs.writeFileSync(npmrc, `${lines.join("\n")}\n`, { mode: 0o600 });
+        // `mode` only applies when the file is created.
+        fs.chmodSync(npmrc, 0o600);
     }
 
-    private readLock(): any {
+    /** The parsed JSON in `file`, or `undefined` when it's missing or unreadable. */
+    private readJson(file: string): any {
         try {
-            return JSON.parse(fs.readFileSync(path.join(this.options.dir, "package-lock.json"), "utf8"));
+            return JSON.parse(fs.readFileSync(file, "utf8"));
         } catch {
-            return {};
+            return undefined;
         }
     }
 
-    private check(plugin: DesiredPlugin, lock: any): InstalledPlugin {
+    private check(plugin: DesiredPlugin, lock: any, bundledPeer?: string): InstalledPlugin {
         const packageDir: string = path.join(this.options.dir, "node_modules", ...plugin.name.split("/"));
         const packageJson: string = path.join(packageDir, "package.json");
         if (!fs.existsSync(packageJson)) {
@@ -222,7 +331,7 @@ export class PluginInstaller {
                 throw new Error(`Expected version ${plugin.packageVersion}, but ${pkg.version} was installed.`);
             }
             const installedIntegrity: string | undefined = lock.packages?.[`node_modules/${plugin.name}`]?.integrity;
-            if (plugin.integrity && installedIntegrity !== plugin.integrity) {
+            if (installedIntegrity !== plugin.integrity) {
                 throw new Error("The installed package's integrity hash doesn't match the one recorded when it was added.");
             }
         }
@@ -232,6 +341,9 @@ export class PluginInstaller {
             throw new Error(manifest);
         }
 
+        if (bundledPeer) {
+            throw new Error(`The plugin brings its own copy of ${lockPackageName(bundledPeer)} (${bundledPeer}) instead of using the server's, so it can't be loaded.`);
+        }
         for (const peer of SHARED_PLUGIN_PEERS) {
             const fromPlugin: string | undefined = findPackageDir(packageDir, peer);
             const fromServer: string | undefined = findPackageDir(this.options.appRoot, peer);

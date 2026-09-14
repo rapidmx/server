@@ -318,6 +318,22 @@ conf.defaults({
             // Package name -> local .tgz (from `npm pack`) installed instead of the registry version, for developing a
             // plugin against this server. Tarballs rather than directories, so the plugin uses this server's packages.
             sources: {},
+            // How server copies restart to apply a plugin change (see src/plugins/PluginWatcher.ts).
+            restart: {
+                // How long a copy reports itself not ready (GET /api/status answers 503) before it stops, so the load
+                // balancer takes it out of rotation first. Keep it above the readiness probe's period x failure threshold.
+                drain_delay_ms: 15_000,
+                // How long a restarted copy keeps the restart lock once it is serving, so it is ready before the next stops.
+                lock_release_delay_ms: 15_000,
+                // The restart lock expires this long after it was last renewed, e.g. when a copy crashes while holding it.
+                lock_ttl_ms: 60_000,
+                // Without a cache datastore (no restart lock), each copy waits a random time up to this before restarting.
+                jitter_ms: 30_000,
+                // After npm fails to install plugins (e.g. the registry is down), restart to retry after this long, doubling
+                // with each failure in a row up to `install_retry_max_ms`.
+                install_retry_ms: 60_000,
+                install_retry_max_ms: 600_000,
+            },
         },
     },
     class_loader: {
@@ -330,32 +346,37 @@ conf.defaults({
     metrics: {
         authRequired: true,
     },
-    // Read by `RateLimiter` (see `@rapidrest/service-core`), which backs every `@RateLimit()`-decorated
-    // endpoint in `@rapidmx/restapi` - the three mutating booking endpoints, the public key-discovery
-    // endpoint, AND `GET /mailbox/:id/keys/lookup`, which every logged-in user's compose flow calls once
-    // per new recipient. The framework's own built-in default (100 attempts/60s per identifier, 100
-    // attempts/300s per source IP - see `RateLimiter`'s class default) is tuned for brute-force-prone
-    // anonymous endpoints and is far too tight for that key-lookup route: an ordinary logged-in user
-    // moving around the app and composing to a handful of new contacts in one session can trip 429s on
-    // legitimate traffic, and because the per-IP counter is shared across every rate-limited endpoint
-    // (not just the one being called), that trips even faster for anyone behind a shared/NAT'd IP.
-    // Raised well past `@rapidmx/restapi`'s own test-suite headroom (1000/300, 5000/300 - see
-    // `test/config-defaults.ts`) a second time after that still proved too tight for real interactive
-    // use: the identifier layer is already scoped per logged-in user + endpoint (`@RateLimit()`'s default
-    // `perUser: true`), so there is little downside to making it very permissive - ~33 req/s sustained per
-    // user per endpoint is far beyond anything a human clicking around could produce, but a scripted flood
-    // sustained past that still exhausts the window and gets 429'd. The per-IP layer is raised
-    // proportionally, since it's the one most likely to trip first for anyone testing from a single
-    // machine (dev, or a shared/NAT'd office IP) - it still bounds a genuine multi-account flood from one
-    // source, just at a much higher ceiling.
+    // Read by `TieredRateLimiter` (src/lib/TieredRateLimiter.ts, registered in place of `@rapidrest/service-core`'s
+    // `RateLimiter`), which backs every `@RateLimit()`-decorated endpoint in `@rapidmx/restapi` - the three mutating
+    // booking endpoints and the public key-discovery endpoint (both reachable anonymously; booking emails the booker),
+    // AND `GET /mailbox/:id/keys/lookup`, which every logged-in user's compose flow calls once per new recipient.
+    //
+    // The top-level limits apply to ANONYMOUS requests and stay conservative - the framework's own defaults (100
+    // attempts/60s per identifier, i.e. per endpoint path; 100 attempts/300s per source IP across all rate-limited
+    // endpoints) - since those endpoints can be abused to send mail or enumerate keys.
+    //
+    // `authenticated` applies instead to requests signed in as a user, and is deliberately very high: limits for
+    // signed-in users should only stop automation of large tasks, never interactive use. The identifier counter there
+    // is already per user + endpoint (`@RateLimit()`'s default `perUser: true`), ~33 req/s sustained per user per
+    // endpoint; the signed-in per-IP counter is separate from the anonymous one, so a shared/NAT'd office IP never
+    // exhausts the anonymous budget (or the other way round), and still bounds a multi-account flood from one source.
     rateLimit: {
         enabled: true,
-        maxAttempts: 10_000,
-        windowSeconds: 300,
+        maxAttempts: 100,
+        windowSeconds: 60,
         ip: {
             enabled: true,
-            maxAttempts: 20_000,
+            maxAttempts: 100,
             windowSeconds: 300,
+        },
+        authenticated: {
+            maxAttempts: 10_000,
+            windowSeconds: 300,
+            ip: {
+                enabled: true,
+                maxAttempts: 20_000,
+                windowSeconds: 300,
+            },
         },
     },
     // Exact IP addresses of proxies/load balancers this server sits behind and trusts to set
