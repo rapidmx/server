@@ -4727,8 +4727,8 @@ page
   `PUT /api/system/plugins/:id` restarted the worker in ~4s and `/mapi/emsmdb` went 404, re-enabling brought it back.
   The admin Plugins page isn't visible in `yarn dev` until web-client/react-shared are published (same as before).
 - **Paths/config.** Plugins API is `system/plugins`; branding, retention-policy and encryption-policy moved from `mail/` to
-  `system/` (branding also stays mounted at `mail/branding` because uploaded asset URLs saved in the DB use it;
-  `mail:branding:public_url` default is now `/api/system`). Plugin config keys are `system:plugins:*`.
+  `system/` with no `mail/` aliases (`mail:branding:public_url` default is now `/api/system`, so asset URLs saved before
+  the move need re-uploading). Plugin config keys are `system:plugins:*`.
 - **Not done / to flag.** Packages aren't published: until activesync/mapi/autodiscover (with manifests) and restapi (with
   the plugin contract) are released, the defaults can't be fetched from npm and seeding logs a warning per plugin.
   Removing a plugin keeps its data. A plugin runs with full server privileges; protections are trusted-role-only API,

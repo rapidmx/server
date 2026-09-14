@@ -152,7 +152,7 @@ conf.defaults({
         // a literal `/branding/logo`/`/branding/stylesheet`, which assumes the route is mounted at bare
         // `/branding` — but this repo mounts it under `@ApiRoute("system/branding")` (real path
         // `/api/system/branding/...`). `/api/system` is the prefix that makes the concatenation land on the
-        // real mounted URL. (URLs saved before the move still work: `mail/branding` stays mounted too.)
+        // real mounted URL.
         branding: {
             public_url: "/api/system",
         },
