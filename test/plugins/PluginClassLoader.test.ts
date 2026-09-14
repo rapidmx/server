@@ -47,9 +47,17 @@ describe("PluginClassLoader", () => {
         expect(logger.error).toHaveBeenCalled();
     });
 
-    it("loads plugins once, not again for each subdirectory it scans", async () => {
-        const loader = new PluginClassLoader(path.join(dir, "base"), undefined, [plugin("@rapidmx/good", "good.mjs")]);
+    it("loads plugins once, not again for each subdirectory it scans, reporting once that it's loading them", async () => {
+        const onPluginsLoaded = vi.fn(() => expect(loader.loaded).toHaveLength(0));
+        const loader = new PluginClassLoader(path.join(dir, "base"), undefined, [plugin("@rapidmx/good", "good.mjs")], undefined, onPluginsLoaded);
         await loader.load();
         expect(loader.loaded).toHaveLength(1);
+        expect(onPluginsLoaded).toHaveBeenCalledTimes(1);
+    });
+
+    it("doesn't report loading plugins when there are none", async () => {
+        const onPluginsLoaded = vi.fn();
+        await new PluginClassLoader(path.join(dir, "base"), undefined, [], undefined, onPluginsLoaded).load();
+        expect(onPluginsLoaded).not.toHaveBeenCalled();
     });
 });

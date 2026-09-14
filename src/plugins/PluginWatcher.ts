@@ -21,8 +21,19 @@ export const PLUGIN_RESTART_LOCK_KEY = "plugins:restart-lock";
  * others this long. A copy renews it while it holds it. */
 export const DEFAULT_LOCK_TTL_MS = 60_000;
 
+/** Set to the plugin-state hash being rolled out by a copy that restarted into it but couldn't install it: the other
+ * copies don't restart into that hash while it's set, so they keep their working plugins. It expires unless the
+ * failing copy keeps renewing it, and a copy that installs the hash cleanly clears it. */
+export const PLUGIN_ROLLOUT_HALT_KEY = "plugins:rollout-halt";
+
 /** How often a Redis client's connection errors are logged, at most. */
 const ERROR_LOG_INTERVAL_MS = 60_000;
+
+/** Renews `KEYS[1]` for `ARGV[2]` ms only while it still holds `ARGV[1]`, in one step. */
+const RENEW_IF_HELD_SCRIPT = 'if redis.call("GET", KEYS[1]) == ARGV[1] then return redis.call("PEXPIRE", KEYS[1], ARGV[2]) else return 0 end';
+
+/** Deletes `KEYS[1]` only while it still holds `ARGV[1]`, in one step. */
+const DELETE_IF_HELD_SCRIPT = 'if redis.call("GET", KEYS[1]) == ARGV[1] then return redis.call("DEL", KEYS[1]) else return 0 end';
 
 /** The subset of a node-redis client the watcher uses. */
 export interface WatcherRedisClient {
@@ -31,10 +42,10 @@ export interface WatcherRedisClient {
     quit?(): Promise<unknown>;
     on?(event: "error", listener: (err: Error) => void): unknown;
     subscribe(channel: string, listener: (message: string) => void): Promise<unknown>;
-    set(key: string, value: string, options: { NX: true; PX: number }): Promise<string | null>;
+    set(key: string, value: string, options: { NX?: true; PX: number }): Promise<string | null>;
     get(key: string): Promise<string | null>;
     del(key: string): Promise<number>;
-    pExpire(key: string, ms: number): Promise<unknown>;
+    eval(script: string, options: { keys: string[]; arguments: string[] }): Promise<unknown>;
     hSet(key: string, field: string, value: string): Promise<number>;
     hGetAll(key: string): Promise<Record<string, string>>;
     hDel(key: string, field: string): Promise<number>;
@@ -70,6 +81,7 @@ export function withErrorListener<C extends WatcherRedisClient>(client: C, url: 
  */
 export class PluginRestartLock {
     private renewTimer?: NodeJS.Timeout;
+    private holdTimer?: NodeJS.Timeout;
 
     constructor(
         private readonly client: WatcherRedisClient,
@@ -101,16 +113,36 @@ export class PluginRestartLock {
         return false;
     }
 
+    /** Deletes the lock if this copy holds it - checked and deleted atomically, so a lock that expired and was taken by
+     * another copy in between is never deleted. */
     public async release(): Promise<void> {
         this.stopRenewing();
-        if (await this.isHeld()) {
-            await this.client.del(PLUGIN_RESTART_LOCK_KEY);
-        }
+        await this.client.eval(DELETE_IF_HELD_SCRIPT, { keys: [PLUGIN_RESTART_LOCK_KEY], arguments: [this.instance] });
+    }
+
+    /** Stops renewing the lock after `ms` unless `clearHoldLimit()` is called first - so a start that hangs (say, in npm)
+     * doesn't hold up every other copy's restart indefinitely. */
+    public limitHold(ms: number): void {
+        this.clearHoldLimit();
+        this.holdTimer = setTimeout(() => {
+            this.holdTimer = undefined;
+            if (this.renewTimer) {
+                this.logger?.warn?.(`Still starting after ${Math.round(ms / 1000)}s; letting the plugin restart lock expire so other copies can restart.`);
+                this.stopRenewing();
+            }
+        }, ms);
+        this.holdTimer.unref?.();
+    }
+
+    public clearHoldLimit(): void {
+        clearTimeout(this.holdTimer);
+        this.holdTimer = undefined;
     }
 
     public stopRenewing(): void {
         clearInterval(this.renewTimer);
         this.renewTimer = undefined;
+        this.clearHoldLimit();
     }
 
     private keepAlive(): void {
@@ -122,9 +154,11 @@ export class PluginRestartLock {
 
     private async renew(): Promise<void> {
         try {
-            if (await this.isHeld()) {
-                await this.client.pExpire(PLUGIN_RESTART_LOCK_KEY, this.ttlMs);
-            } else {
+            const renewed: unknown = await this.client.eval(RENEW_IF_HELD_SCRIPT, {
+                keys: [PLUGIN_RESTART_LOCK_KEY],
+                arguments: [this.instance, String(this.ttlMs)],
+            });
+            if (Number(renewed) !== 1) {
                 this.stopRenewing();
             }
         } catch (err: any) {
@@ -161,6 +195,14 @@ export interface PluginWatcherOptions {
     restartJitterMs?: number;
     /** Set when plugins failed to install: restart after this long to try again. */
     retryDelayMs?: number;
+    /** Set when npm failed to install this copy's plugins: other copies don't restart into the same plugin set while
+     * this copy is running with that failure, so a bad rollout stops at the first copy. */
+    haltRollout?: boolean;
+    /** In safe mode, the plugin-state hash of the plugin set that failed (from the supervisor). Without it, the hash is
+     * read from the plugin table when the watcher starts. */
+    safeModeBaseline?: string;
+    /** In safe mode, how long until restarting to try the plugins again. */
+    safeModeRetryMs?: number;
     createRedisClient?: (url: string) => WatcherRedisClient;
 }
 
@@ -175,9 +217,13 @@ const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout
  * it has started, so copies restart one at a time while the rest keep serving. Without a cache datastore there's no
  * lock: each copy restarts after a random delay instead.
  *
- * In safe mode (no plugins loaded after repeated failed starts) the copy only restarts once the plugin table changes
- * from what it was when safe mode started - an administrator fixed or disabled something - rather than straight
- * back into the plugins that just failed.
+ * A copy that restarted into a plugin set npm couldn't install publishes `plugins:rollout-halt` for as long as it runs
+ * that way, and the other copies hold off restarting into that set - they keep their working plugins while the failing
+ * copy retries.
+ *
+ * In safe mode (no plugins loaded after repeated failed starts) the copy restarts once the plugin table changes from
+ * the plugin set that failed - an administrator fixed or disabled something - and otherwise tries the plugins again
+ * after `safeModeRetryMs`, rather than staying without plugins until someone notices.
  */
 export class PluginWatcher {
     private subscriber?: WatcherRedisClient;
@@ -187,12 +233,15 @@ export class PluginWatcher {
     private checking?: Promise<void>;
     private restarting: boolean = false;
     private stopped: boolean = false;
+    private shuttingDown: boolean = false;
     private retryDue: boolean = false;
+    private haltLogged: boolean = false;
     private safeModeBaseline?: string;
 
     constructor(private readonly options: PluginWatcherOptions) {
         this.cache = options.cache;
         this.lock = options.lock;
+        this.safeModeBaseline = options.safeModeBaseline || undefined;
     }
 
     private newClient(url: string): WatcherRedisClient {
@@ -215,10 +264,11 @@ export class PluginWatcher {
         if (this.cache) {
             this.lock ??= new PluginRestartLock(this.cache, instance, lockTtlMs ?? DEFAULT_LOCK_TTL_MS, logger);
             try {
+                // The heartbeat publishes (or clears) the rollout halt, before the next copy can take the lock.
+                await this.heartbeat();
                 if (await this.lock.resume()) {
                     await this.scheduleLockRelease();
                 }
-                await this.heartbeat();
             } catch (err: any) {
                 logger?.warn(`Plugin status reporting is unavailable: ${err.message}`);
             }
@@ -233,7 +283,7 @@ export class PluginWatcher {
                 this.subscriber = undefined;
             }
         }
-        if (status.safeMode) {
+        if (status.safeMode && this.safeModeBaseline === undefined) {
             try {
                 this.safeModeBaseline = await this.desiredHash();
             } catch {
@@ -244,36 +294,47 @@ export class PluginWatcher {
         if (this.cache) {
             this.timers.push(setInterval(() => void this.heartbeat(), this.options.heartbeatIntervalMs ?? 30_000));
         }
-        if (this.options.retryDelayMs !== undefined && !status.safeMode) {
-            logger?.warn(`Plugins failed to install; trying again in ${Math.round(this.options.retryDelayMs / 1000)}s.`);
+        const retryMs: number | undefined = status.safeMode ? this.options.safeModeRetryMs : this.options.retryDelayMs;
+        if (retryMs !== undefined) {
+            logger?.warn(
+                status.safeMode
+                    ? `Running without plugins; trying them again in ${Math.round(retryMs / 1000)}s.`
+                    : `Plugins failed to install; trying again in ${Math.round(retryMs / 1000)}s.`,
+            );
             this.timers.push(
                 setTimeout(() => {
                     this.retryDue = true;
                     void this.check();
-                }, this.options.retryDelayMs),
+                }, retryMs),
             );
         }
     }
 
-    /** Stops watching. Unless this copy is restarting, it also gives back the restart lock and its status report. */
-    public async stop(): Promise<void> {
-        const wasStopped: boolean = this.stopped;
+    /**
+     * Stops watching. Unless this copy is restarting, it also gives back the restart lock and its status report - and
+     * with `shutdown` (the process is stopping for good) it gives them back even part-way through a restart, which
+     * then doesn't go ahead.
+     */
+    public async stop(options: { shutdown?: boolean } = {}): Promise<void> {
         this.stopped = true;
+        this.shuttingDown ||= !!options.shutdown;
         this.timers.forEach((timer) => clearTimeout(timer));
         this.timers = [];
         await (this.subscriber?.quit?.() ?? this.subscriber?.disconnect?.())?.catch(() => undefined);
         this.subscriber = undefined;
-        if (this.restarting) {
+        if (this.restarting && !this.shuttingDown) {
             // The cache connection stays open so the lock keeps being renewed until this process exits.
             return;
         }
-        if (this.cache && !wasStopped) {
-            await this.lock?.release().catch(() => undefined);
-            await this.cache.hDel(PLUGIN_STATUS_KEY, this.options.instance).catch(() => undefined);
-        }
-        this.lock?.stopRenewing();
-        await (this.cache?.quit?.() ?? this.cache?.disconnect?.())?.catch(() => undefined);
+        const cache: WatcherRedisClient | undefined = this.cache;
+        // Cleared first, so a second stop() doesn't give anything back twice.
         this.cache = undefined;
+        this.lock?.stopRenewing();
+        if (cache) {
+            await this.lock?.release().catch(() => undefined);
+            await cache.hDel(PLUGIN_STATUS_KEY, this.options.instance).catch(() => undefined);
+            await (cache.quit?.() ?? cache.disconnect?.())?.catch(() => undefined);
+        }
     }
 
     private onMessage(message: string): void {
@@ -303,6 +364,9 @@ export class PluginWatcher {
     }
 
     private async needsRestart(): Promise<boolean> {
+        if (this.retryDue) {
+            return true;
+        }
         const desired: string = await this.desiredHash();
         if (this.options.status.safeMode) {
             if (this.safeModeBaseline === undefined) {
@@ -310,7 +374,18 @@ export class PluginWatcher {
             }
             return desired !== this.safeModeBaseline;
         }
-        return this.retryDue || desired !== this.options.loadedHash;
+        if (desired === this.options.loadedHash) {
+            return false;
+        }
+        // Another copy couldn't install this plugin set: keep the plugins this copy has until that copy recovers.
+        if (this.cache && (await this.cache.get(PLUGIN_ROLLOUT_HALT_KEY)) === desired) {
+            if (!this.haltLogged) {
+                this.haltLogged = true;
+                this.options.logger?.warn("Not applying the plugin change yet: another server copy failed to install it.");
+            }
+            return false;
+        }
+        return true;
     }
 
     private async runCheck(): Promise<void> {
@@ -325,7 +400,7 @@ export class PluginWatcher {
             if (!(await this.acquireLock())) {
                 return;
             }
-            // The plugin set may have changed back while this copy waited its turn.
+            // The plugin set may have changed back (or its rollout halted) while this copy waited its turn.
             if (this.stopped || !(await this.needsRestart())) {
                 await this.lock?.release();
                 return;
@@ -336,7 +411,7 @@ export class PluginWatcher {
         }
 
         this.restarting = true;
-        logger?.info("The plugin set changed; restarting to apply it.");
+        logger?.info(this.retryDue ? "Restarting to try loading plugins again." : "The plugin set changed; restarting to apply it.");
         setDraining(true);
         try {
             await this.stop();
@@ -345,6 +420,10 @@ export class PluginWatcher {
             }
         } catch (err: any) {
             logger?.warn(`Could not stop watching plugins cleanly: ${err.message}`);
+        }
+        if (this.shuttingDown) {
+            // The process is shutting down meanwhile, and has already given back the lock.
+            return;
         }
         await this.options.restart().catch((err: any) => logger?.error?.(`Restarting to apply plugin changes failed: ${err.message}`));
     }
@@ -381,6 +460,18 @@ export class PluginWatcher {
 
     private async heartbeat(): Promise<void> {
         const { instance, loadedHash, status, logger } = this.options;
+        try {
+            if (this.options.haltRollout) {
+                // Renewed with the status report, so it lapses soon after this copy goes away.
+                const ttlMs: number = Math.max(this.options.lockTtlMs ?? DEFAULT_LOCK_TTL_MS, 3 * (this.options.heartbeatIntervalMs ?? 30_000));
+                await this.cache?.set(PLUGIN_ROLLOUT_HALT_KEY, loadedHash, { PX: ttlMs });
+            } else if (!status.safeMode) {
+                // This copy installed the plugin set cleanly, so a halt on it no longer applies.
+                await this.cache?.eval(DELETE_IF_HELD_SCRIPT, { keys: [PLUGIN_ROLLOUT_HALT_KEY], arguments: [loadedHash] });
+            }
+        } catch (err: any) {
+            logger?.debug?.(`Could not update the plugin rollout halt: ${err.message}`);
+        }
         try {
             const report: PluginInstanceStatus = { ...status, instance, hash: loadedHash, updatedAt: new Date().toISOString() };
             await this.cache?.hSet(PLUGIN_STATUS_KEY, instance, JSON.stringify(report));

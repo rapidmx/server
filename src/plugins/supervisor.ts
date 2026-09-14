@@ -11,8 +11,19 @@ export const RESTART_MESSAGE = { type: "rapidmx:restart" };
 /** The message a worker sends once its server is listening. A failed exit soon after this counts as a failed start. */
 export const LISTENING_MESSAGE = { type: "rapidmx:listening" };
 
+/** The message type a worker sends once it has loaded at least one plugin's classes, with the plugin-state `hash` of
+ * the set it loaded. Only failed starts after this can be the plugins' fault, so only they lead to safe mode. */
+export const PLUGINS_LOADED_MESSAGE_TYPE = "rapidmx:plugins-loaded";
+
 /** Set on the environment of the process the supervisor starts. */
 export const WORKER_ENV = "RAPIDMX_WORKER";
+
+/** Set on a safe-mode worker's environment: the plugin-state hash of the plugin set that kept failing. */
+export const SAFE_MODE_BASELINE_ENV = "RAPIDMX_PLUGINS_SAFE_MODE_BASELINE";
+
+/** Set on a safe-mode worker's environment: how many times in a row the server has fallen back to safe mode (1 the
+ * first time), so its retries back off. */
+export const SAFE_MODE_ATTEMPT_ENV = "RAPIDMX_PLUGINS_SAFE_MODE_ATTEMPT";
 
 /**
  * The Node flags the worker starts with: the supervisor's own (so loaders such as tsx carry over), except that an
@@ -35,7 +46,8 @@ export interface SupervisorOptions {
     /** How soon after the worker reports it is listening (or after it was started, if it never did) a failed exit
      * counts as a failed start. */
     fastFailureMs?: number;
-    /** Failed starts in a row before the next start is in safe mode (no plugins). */
+    /** Failed starts in a row before the supervisor gives up: the next start is in safe mode (no plugins) if every one
+     * of them had loaded plugins, and otherwise the supervisor exits. */
     maxFastFailures?: number;
     logger?: { info(msg: string): void; warn(msg: string): void; error(msg: string): void };
     /** Called with the supervisor's own exit code - replaceable for tests. */
@@ -50,9 +62,12 @@ export interface SupervisorOptions {
  * caches every imported module for the life of a process - so applying a plugin change needs a fresh process,
  * which this supervisor provides without the container itself restarting.
  *
- * If the server keeps failing shortly after starting (for example a broken plugin), the next start is in safe
- * mode: no plugins at all, so mail keeps flowing while an administrator fixes or disables the plugin. Any other
- * exit ends the supervisor with the same code, so the container's own restart policy applies as before.
+ * If the server keeps failing shortly after it loaded its plugins (for example a broken plugin), the next start is in
+ * safe mode: no plugins at all, so mail keeps flowing while an administrator fixes or disables the plugin. The
+ * safe-mode server tries the plugins again now and then (see `PluginWatcher`), backing off each time it ends up back in
+ * safe mode. Failed starts before any plugin loaded (say, the database is down) aren't the plugins' fault: after
+ * `maxFastFailures` of them the supervisor exits, as it does on any other exit, so the container's own restart policy
+ * applies.
  */
 export function superviseWorker(workerUrl: URL, options: SupervisorOptions = {}): { stop: (signal: NodeJS.Signals) => void } {
     const fastFailureMs: number = options.fastFailureMs ?? 60_000;
@@ -64,14 +79,21 @@ export function superviseWorker(workerUrl: URL, options: SupervisorOptions = {})
     let child: ChildProcess | undefined;
     let stopping: boolean = false;
     let fastFailures: number = 0;
+    let pluginFailures: number = 0;
+    let safeModeAttempts: number = 0;
 
-    const start = (safeMode: boolean): void => {
+    const start = (safeMode: boolean, failedHash?: string): void => {
         // Measured from when the server is listening, so time spent installing plugins doesn't count.
         let startedAt: number = Date.now();
         let restartRequested: boolean = false;
+        let loadedHash: string | undefined;
         const env: NodeJS.ProcessEnv = { ...process.env, [WORKER_ENV]: "1" };
         if (safeMode) {
             env[safeModeEnv] = "1";
+            env[SAFE_MODE_ATTEMPT_ENV] = String(safeModeAttempts);
+            if (failedHash) {
+                env[SAFE_MODE_BASELINE_ENV] = failedHash;
+            }
         }
         child = fork(fileURLToPath(workerUrl), process.argv.slice(2), { env, stdio: "inherit", execArgv: workerExecArgv(process.execArgv) });
         child.on("message", (message: any) => {
@@ -79,6 +101,8 @@ export function superviseWorker(workerUrl: URL, options: SupervisorOptions = {})
                 restartRequested = true;
             } else if (message?.type === LISTENING_MESSAGE.type) {
                 startedAt = Date.now();
+            } else if (message?.type === PLUGINS_LOADED_MESSAGE_TYPE) {
+                loadedHash = typeof message.hash === "string" ? message.hash : "";
             }
         });
         child.on("exit", (code: number | null, signal: NodeJS.Signals | null) => {
@@ -88,17 +112,30 @@ export function superviseWorker(workerUrl: URL, options: SupervisorOptions = {})
                 return;
             }
             if (restartRequested) {
-                log.info("Restarting the server to apply plugin changes.");
+                log.info(safeMode ? "Restarting the server to try its plugins again." : "Restarting the server to apply plugin changes.");
                 fastFailures = 0;
+                pluginFailures = 0;
+                if (!safeMode) {
+                    // A server that ran its plugins long enough to see them change: safe mode starts over at the first retry delay.
+                    safeModeAttempts = 0;
+                }
                 start(false);
                 return;
             }
             const failed: boolean = code !== 0 || signal !== null;
             if (failed && !safeMode && Date.now() - startedAt < fastFailureMs) {
                 fastFailures++;
-                if (fastFailures >= maxFastFailures) {
-                    log.error(`The server failed to start ${fastFailures} times in a row; starting it without plugins.`);
-                    start(true);
+                if (loadedHash !== undefined) {
+                    pluginFailures++;
+                    if (pluginFailures >= maxFastFailures) {
+                        safeModeAttempts++;
+                        log.error(`The server failed to start ${pluginFailures} times in a row after loading its plugins; starting it without plugins.`);
+                        start(true, loadedHash);
+                        return;
+                    }
+                } else if (fastFailures >= maxFastFailures) {
+                    log.error(`The server failed to start ${fastFailures} times in a row before loading any plugins.`);
+                    exit(code ?? 1);
                     return;
                 }
                 log.warn(`The server exited (${signal ?? code}) shortly after starting; starting it again.`);
@@ -125,6 +162,13 @@ export function superviseWorker(workerUrl: URL, options: SupervisorOptions = {})
 export function notifyListening(): void {
     if (process.send && process.env[WORKER_ENV] === "1") {
         process.send(LISTENING_MESSAGE);
+    }
+}
+
+/** Tells the supervisor (if any) that this process has loaded the classes of the plugin set with plugin-state `hash`. */
+export function notifyPluginsLoaded(hash: string): void {
+    if (process.send && process.env[WORKER_ENV] === "1") {
+        process.send({ type: PLUGINS_LOADED_MESSAGE_TYPE, hash });
     }
 }
 

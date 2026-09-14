@@ -105,7 +105,8 @@ export class PluginStateStore {
         return this.withRepository(async (repo) => {
             let rows: Plugin[] = await findAllPlugins(repo);
             const known: Set<string> = new Set(rows.map((row) => row.name));
-            const seeds: Partial<Plugin>[] = [];
+            let seeds: Partial<Plugin>[] = [];
+            const failed: Set<string> = new Set();
             for (const plugin of defaults) {
                 if (known.has(plugin.name)) {
                     continue;
@@ -115,8 +116,24 @@ export class PluginStateStore {
                     known.add(plugin.name);
                 } catch (err: any) {
                     // Not fatal: it's retried at the next start.
+                    failed.add(plugin.name);
                     this.logger?.warn(`Could not add default plugin ${plugin.name}: ${err.message}`);
                 }
+            }
+
+            // A default requiring a default that couldn't be described this time (say, the registry was briefly unreachable)
+            // is left for the next start too, rather than added disabled below for good - and so is anything requiring it.
+            for (let deferred: boolean = true; deferred; ) {
+                deferred = false;
+                seeds = seeds.filter((seed) => {
+                    const waitingOn: string | undefined = Object.keys(seed.manifest?.requires ?? {}).find((name) => failed.has(name));
+                    if (waitingOn) {
+                        failed.add(seed.name!);
+                        deferred = true;
+                        this.logger?.warn(`Default plugin ${seed.name} is added at a later start: it requires ${waitingOn}, which couldn't be added this time.`);
+                    }
+                    return !waitingOn;
+                });
             }
 
             // A default whose required plugins won't all be enabled, in range, would be skipped at every start - for example

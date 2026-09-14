@@ -4,7 +4,7 @@
 import config from "../../src/config.mongo.js";
 import { ObjectFactory } from "@rapidrest/service-core";
 import { JWTUtils, Logger } from "@rapidrest/core";
-import { DevAutoAuthStrategy } from "../../src/dev/DevAutoAuthStrategy.js";
+import { DEV_USER_UID, DevAutoAuthStrategy } from "../../src/dev/DevAutoAuthStrategy.js";
 
 function fakeReq(cookies: Record<string, string> = {}): any {
     return { cookies, path: "/test" };
@@ -41,7 +41,9 @@ describe("DevAutoAuthStrategy Tests", () => {
             const { res, setCookieCalls } = fakeRes();
             const result = await strategy.authenticate(fakeReq(), res);
 
-            expect(result?.user?.uid).toBe("dev-user");
+            expect(result?.user?.uid).toBe(DEV_USER_UID);
+            // restapi only grants mailbox access to UUID-shaped uids.
+            expect(DEV_USER_UID).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
             expect(result?.user?.roles).toEqual(["admin"]);
             expect(setCookieCalls).toHaveLength(1);
             expect(setCookieCalls[0]).toMatch(/^jwt=.+; Path=\/; SameSite=Lax$/);
@@ -64,7 +66,7 @@ describe("DevAutoAuthStrategy Tests", () => {
 
         it("re-mints a fresh token when an existing cookie decodes to this strategy's own dev uid but is missing a valid 'elevated' timestamp (a stale pre-elevation-fix token).", async () => {
             const staleDevToken = JWTUtils.createTokenSync(config.get("auth"), {
-                uid: "dev-user",
+                uid: DEV_USER_UID,
                 roles: ["admin"],
                 scopes: [],
                 // No `elevated` at all — the exact shape `buildDevUser()` produced before it started
@@ -74,14 +76,14 @@ describe("DevAutoAuthStrategy Tests", () => {
 
             const result = await strategy.authenticate(fakeReq({ jwt: staleDevToken }), res);
 
-            expect(result?.user?.uid).toBe("dev-user");
+            expect(result?.user?.uid).toBe(DEV_USER_UID);
             expect(result?.user?.elevated).toBeGreaterThan(0);
             expect(setCookieCalls).toHaveLength(1);
         });
 
         it("re-mints a fresh token when an existing cookie decodes to this strategy's own dev uid with a non-positive 'elevated' value.", async () => {
             const staleDevToken = JWTUtils.createTokenSync(config.get("auth"), {
-                uid: "dev-user",
+                uid: DEV_USER_UID,
                 roles: ["admin"],
                 scopes: [],
                 elevated: -1,
@@ -115,19 +117,19 @@ describe("DevAutoAuthStrategy Tests", () => {
 
             const result = await strategy.authenticate(fakeReq({ jwt: "not-a-real-token" }), res);
 
-            expect(result?.user?.uid).toBe("dev-user");
+            expect(result?.user?.uid).toBe(DEV_USER_UID);
             expect(setCookieCalls).toHaveLength(1);
         });
 
         it("still mints successfully when no response object is given (never throws on a missing res).", async () => {
             const result = await strategy.authenticate(fakeReq());
-            expect(result?.user?.uid).toBe("dev-user");
+            expect(result?.user?.uid).toBe(DEV_USER_UID);
         });
 
         it("falls back to a generic label in its log message when the request has no path.", async () => {
             const { res } = fakeRes();
             const result = await strategy.authenticate({ cookies: {} } as any, res);
-            expect(result?.user?.uid).toBe("dev-user");
+            expect(result?.user?.uid).toBe(DEV_USER_UID);
         });
     });
 

@@ -318,6 +318,12 @@ conf.defaults({
             // Package name -> local .tgz (from `npm pack`) installed instead of the registry version, for developing a
             // plugin against this server. Tarballs rather than directories, so the plugin uses this server's packages.
             sources: {},
+            // Whether a registry plugin needs the integrity hash the registry published when it was added. Turn off only
+            // for a registry that doesn't publish integrity hashes (only legacy sha1 `shasum`s): its plugins then load
+            // without their packages being verified.
+            require_integrity: true,
+            // How long npm may take to install plugins before it's stopped and the install counts as failed.
+            npm_timeout_ms: 600_000,
             // How server copies restart to apply a plugin change (see src/plugins/PluginWatcher.ts).
             restart: {
                 // How long a copy reports itself not ready (GET /api/status answers 503) before it stops, so the load
@@ -333,6 +339,16 @@ conf.defaults({
                 // with each failure in a row up to `install_retry_max_ms`.
                 install_retry_ms: 60_000,
                 install_retry_max_ms: 600_000,
+                // npm failures in a row after which a copy stops restarting to retry (it keeps the plugins it already had
+                // installed, and reports the failure). Errors retrying can't fix (E404, E401, EINTEGRITY...) aren't retried.
+                install_retry_max_attempts: 6,
+                // A copy running without plugins after repeated failed starts (safe mode) tries them again after this long,
+                // doubling each time it ends up back in safe mode, up to `safe_mode_retry_max_ms`.
+                safe_mode_retry_ms: 300_000,
+                safe_mode_retry_max_ms: 3_600_000,
+                // The most a restarted copy may take to start serving while holding the restart lock, before it lets the
+                // lock expire so the other copies aren't held up by a stuck start.
+                max_lock_hold_ms: 900_000,
             },
         },
     },
@@ -379,12 +395,14 @@ conf.defaults({
             },
         },
     },
-    // Exact IP addresses of proxies/load balancers this server sits behind and trusts to set
+    // IP addresses of proxies/load balancers this server sits behind and trusts to set
     // X-Forwarded-For/X-Real-IP truthfully. Left empty by default (fail closed: forwarding headers are
     // ignored and NetUtils.getIPAddress() falls back to the socket's own remote address), which is safe
     // but means per-IP rate limiting and audit-log IPs will all collapse onto the proxy's own address in
     // any deployment that actually sits behind one (the common case in production). Set this to your
-    // reverse proxy/load balancer's IP(s) if you deploy behind one.
+    // reverse proxy/load balancer's IP(s) if you deploy behind one (the Helm chart sets it from
+    // `service.trustedProxies`). Rate limiting (TieredRateLimiter) also accepts CIDR ranges here, e.g.
+    // "10.0.0.0/8"; service-core's own audit-log IP lookup only matches exact addresses.
     trusted_proxies: [],
 });
 

@@ -67,6 +67,20 @@ service:
   # read in service-core, and/or gateway-level rate limiting, and/or restapi capping every export job's
   # aggregation) gets designed and prioritized separately - flagged to JP rather than guessed at here.
   replicas: 2
+  # Proxies whose X-Forwarded-For header is trusted for the client's address (config `trusted_proxies`; exact
+  # addresses or CIDR ranges). Every request reaches the server through the nginx Gateway, so with an empty list every
+  # client shares the Gateway pod's address and one caller can use up the anonymous per-IP rate limits (booking, key
+  # discovery) for everyone. The default trusts the private ranges the Gateway pods run in. Narrow it to your cluster's
+  # pod CIDR if other workloads in those ranges can reach this Service directly (they could otherwise claim any address),
+  # and make sure the Gateway itself sees real client addresses (e.g. its LoadBalancer Service uses
+  # `externalTrafficPolicy: Local`, or the load balancer in front uses PROXY protocol) - otherwise it forwards a node's
+  # address, which is also in these ranges, and the client-supplied part of X-Forwarded-For would be used instead.
+  # Set to [] when not running behind the Gateway.
+  trustedProxies:
+    - 10.0.0.0/8
+    - 172.16.0.0/12
+    - 192.168.0.0/16
+    - fc00::/7
   # Sized for mail:max_body_size's 100 MiB cap (config.defaults.ts's DEFAULT_MAX_BODY_SIZE_BYTES): the
   # framework's readBody() buffers a whole request body in memory with no per-route override, and briefly
   # holds ~2x a request's own body size during assembly (an accumulating chunks array plus the final

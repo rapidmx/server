@@ -166,18 +166,23 @@ const start = async function (config: any, logger: any) {
 
 void start(config, logger);
 
-const stopServer = async () => {
-    await pluginHost?.stop();
-    if (server) {
-        await server.stop();
-    }
-    if (objectFactory) {
-        await objectFactory.destroy();
-    }
-};
+// Shared by a plugin restart and a shutdown signal arriving meanwhile, so the server is only stopped once.
+let stopping: Promise<void> | undefined;
+const stopServer = (): Promise<void> =>
+    (stopping ??= (async () => {
+        await pluginHost?.stop();
+        if (server) {
+            await server.stop();
+        }
+        if (objectFactory) {
+            await objectFactory.destroy();
+        }
+    })());
 
 const shutdown = async () => {
     logger.info("Shutting down...");
+    // Gives back the plugin restart lock even if this copy was part-way through a plugin restart, which then stops.
+    await pluginHost?.stop({ shutdown: true }).catch(() => undefined);
     await stopServer();
     process.exit(0);
 };

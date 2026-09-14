@@ -5,7 +5,10 @@ import fs from "fs";
 import path from "path";
 import { pathToFileURL } from "url";
 import * as uuid from "uuid";
-import { LISTENING_MESSAGE, RESTART_MESSAGE, restartWorker, superviseWorker, workerExecArgv } from "../../src/plugins/supervisor.js";
+import { LISTENING_MESSAGE, PLUGINS_LOADED_MESSAGE_TYPE, RESTART_MESSAGE, restartWorker, superviseWorker, workerExecArgv } from "../../src/plugins/supervisor.js";
+
+/** Worker code: report loading the plugin set with hash `hash`, then run `then`. */
+const pluginsLoaded = (then: string, hash = "hash-1") => `process.send(${JSON.stringify({ type: PLUGINS_LOADED_MESSAGE_TYPE, hash })}, () => { ${then} });`;
 
 describe("restartWorker", () => {
     afterEach(() => {
@@ -76,7 +79,8 @@ describe("superviseWorker", () => {
             file,
             `import fs from "fs";
 const log = ${JSON.stringify(path.join(dir, "starts.log"))};
-fs.appendFileSync(log, (process.env.RAPIDMX_PLUGINS_SAFE_MODE === "1" ? "safe" : "normal") + "\\n");
+const env = process.env;
+fs.appendFileSync(log, (env.RAPIDMX_PLUGINS_SAFE_MODE === "1" ? "safe " + env.RAPIDMX_PLUGINS_SAFE_MODE_ATTEMPT + " " + env.RAPIDMX_PLUGINS_SAFE_MODE_BASELINE : "normal") + "\\n");
 const starts = fs.readFileSync(log, "utf8").trim().split("\\n").length;
 ${behavior}
 `,
@@ -99,9 +103,11 @@ ${behavior}
         expect(code).toBe(3);
     }, 30_000);
 
-    it("starts without plugins after repeated failed starts", async () => {
-        const code = await run(worker(`process.exit(process.env.RAPIDMX_PLUGINS_SAFE_MODE === "1" ? 0 : 1);`), { maxFastFailures: 2 });
-        expect(starts()).toEqual(["normal", "normal", "safe"]);
+    it("starts without plugins after repeated failed starts after loading plugins, passing it the failed set's hash", async () => {
+        const code = await run(worker(`if (process.env.RAPIDMX_PLUGINS_SAFE_MODE === "1") { process.exit(0); } else { ${pluginsLoaded("process.exit(1)")} }`), {
+            maxFastFailures: 2,
+        });
+        expect(starts()).toEqual(["normal", "normal", "safe 1 hash-1"]);
         expect(code).toBe(0);
         expect(logger.error).toHaveBeenCalledWith(expect.stringMatching(/without plugins/));
     }, 30_000);
@@ -111,11 +117,11 @@ ${behavior}
         const code = await run(
             worker(
                 `if (process.env.RAPIDMX_PLUGINS_SAFE_MODE === "1") { process.exit(0); }
-setTimeout(() => process.send(${JSON.stringify(LISTENING_MESSAGE)}, () => process.exit(1)), 1500);`,
+${pluginsLoaded(`setTimeout(() => process.send(${JSON.stringify(LISTENING_MESSAGE)}, () => process.exit(1)), 1500);`)}`,
             ),
             { fastFailureMs: 1000, maxFastFailures: 2 },
         );
-        expect(starts()).toEqual(["normal", "normal", "safe"]);
+        expect(starts()).toEqual(["normal", "normal", "safe 1 hash-1"]);
         expect(code).toBe(0);
     }, 30_000);
 
@@ -129,10 +135,31 @@ setTimeout(() => process.send(${JSON.stringify(LISTENING_MESSAGE)}, () => proces
     }, 30_000);
 
     it("exits with the worker's code when safe mode fails too", async () => {
-        const code = await run(worker(`process.exit(4);`), { maxFastFailures: 1 });
-        expect(starts()).toEqual(["normal", "safe"]);
+        const code = await run(worker(pluginsLoaded("process.exit(4)")), { maxFastFailures: 1 });
+        expect(starts()).toEqual(["normal", "safe 1 hash-1"]);
         expect(code).toBe(4);
     }, 30_000);
+
+    it("exits instead of entering safe mode when starts fail before any plugin loaded", async () => {
+        const code = await run(worker(`process.exit(7);`), { maxFastFailures: 2 });
+        expect(starts()).toEqual(["normal", "normal"]);
+        expect(code).toBe(7);
+        expect(logger.error).toHaveBeenCalledWith(expect.stringMatching(/before loading any plugins/));
+    }, 30_000);
+
+    it("tries plugins again when safe mode asks to restart, backing off each time it falls back to safe mode", async () => {
+        // Normal starts keep failing after loading plugins; safe mode asks to retry them, until its third time.
+        const code = await run(
+            worker(
+                `if (process.env.RAPIDMX_PLUGINS_SAFE_MODE !== "1") { ${pluginsLoaded("process.exit(1)")} }
+else if (process.env.RAPIDMX_PLUGINS_SAFE_MODE_ATTEMPT === "3") { process.exit(0); }
+else { process.send(${JSON.stringify(RESTART_MESSAGE)}, () => process.exit(0)); }`,
+            ),
+            { maxFastFailures: 1 },
+        );
+        expect(starts()).toEqual(["normal", "safe 1 hash-1", "normal", "safe 2 hash-1", "normal", "safe 3 hash-1"]);
+        expect(code).toBe(0);
+    }, 60_000);
 
     it("forwards a stop signal to the worker and exits when it does", async () => {
         const url = worker(`process.on("SIGTERM", () => process.exit(0)); process.send?.("ready"); setInterval(() => {}, 1000);`);

@@ -6,6 +6,9 @@ import { AuthMiddleware, RouteUtils, type ObjectFactory, type Server } from "@ra
 import { DevAutoAuthStrategy } from "./DevAutoAuthStrategy.js";
 import { DevImpersonationRoute } from "./DevImpersonationRoute.js";
 
+/** The username auto-provisioning offers the dev user under `yarn dev` (its mailbox is `dev-user@example.com`). */
+export const DEV_USER_ALIAS = "dev-user";
+
 /**
  * `true` only when this process is `tsx --watch src/server*.ts` — i.e. `yarn dev`/`rapidrest dev` — never a
  * compiled `dist/**\/*.js` run (production) and never a test runner. Mirrors `@rapidrest/react`'s own
@@ -95,9 +98,10 @@ export async function mountDevImpersonationRouteIfApplicable(
  * process: a Node `fetch()` back to this server's own listening address, issued from inside a request
  * handler already running on it, is refused at the TCP level (confirmed directly — the underlying
  * uWebSockets.js server doesn't accept a new self-connection while still mid-request), so a real
- * self-referencing HTTP round-trip can't work here regardless of what it points at. The alias list
- * mirrors `DevAutoAuthStrategy`'s own synthetic uid (`mail:dev_auto_login:uid`, default `"dev-user"`) so
- * the identity auto-provisioning resolves for is the same one every other request auto-authenticates as.
+ * self-referencing HTTP round-trip can't work here regardless of what it points at. The alias list is
+ * the dev user's username (`DEV_USER_ALIAS`): auto-provisioning offers `dev-user@example.com` to whoever
+ * asks, which under `yarn dev` is `DevAutoAuthStrategy`'s synthetic user (uid `DEV_USER_UID`). It's a
+ * name, not the uid - uids are UUIDs (restapi only grants mailbox access to UUID-shaped uids).
  *
  * Only fills in a value that isn't already explicitly configured (checked via a plain `config.get()`,
  * not `@Config`'s own decorator — that only supplies a fallback at the read site, it never writes the
@@ -120,8 +124,7 @@ export function configureDevAutoProvisioningIfApplicable(config: any, logger: an
         configured = true;
     }
     if (!(config.get("mail:auto_provision:static_aliases")?.length > 0)) {
-        const devUid = config.get("mail:dev_auto_login:uid") ?? "dev-user";
-        config.set("mail:auto_provision:static_aliases", [devUid]);
+        config.set("mail:auto_provision:static_aliases", [DEV_USER_ALIAS]);
         configured = true;
     }
 

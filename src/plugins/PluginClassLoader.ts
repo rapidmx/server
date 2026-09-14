@@ -31,6 +31,8 @@ export class PluginClassLoader extends ClassLoader {
         ignore: RegExp[] | undefined,
         private readonly plugins: InstalledPlugin[],
         private readonly logger?: any,
+        /** Called when the plugins' entry points are about to be imported (not at all when there are none). */
+        private readonly onPluginsLoaded?: () => void,
     ) {
         super(rootDir, true, true, ignore);
     }
@@ -40,6 +42,10 @@ export class PluginClassLoader extends ClassLoader {
         // `load()` recurses through itself for subdirectories; plugins are added once, after the top-level scan.
         if (dir !== "") {
             return;
+        }
+        // Reported before importing, so a plugin that takes the process down as it's imported counts too.
+        if (this.plugins.length > 0) {
+            this.onPluginsLoaded?.();
         }
         for (const plugin of this.plugins) {
             const file: string = fileURLToPath(plugin.entryUrl);

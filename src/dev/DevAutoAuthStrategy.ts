@@ -32,6 +32,13 @@ const { Config, Logger } = ObjectDecorators;
  */
 const COOKIE_NAME = "jwt";
 
+/**
+ * The synthetic dev user's uid (`mail:dev_auto_login:uid` overrides it). A fixed UUID rather than a readable name:
+ * `@rapidmx/restapi` only grants mailbox access to UUID-shaped uids, and validates `ownerUserUid` as a UUID, just as
+ * real auth-server uids are.
+ */
+export const DEV_USER_UID = "00000000-0000-4000-8000-00000000de01";
+
 export class DevAutoAuthStrategy implements AuthStrategy {
     /** Must be exactly `"jwt"` — this replaces whatever is registered under that name in `AuthMiddleware`. */
     public readonly name: string = "jwt";
@@ -39,8 +46,8 @@ export class DevAutoAuthStrategy implements AuthStrategy {
     @Config("auth")
     private authConfig: any;
 
-    @Config("mail:dev_auto_login:uid", "dev-user")
-    private devUid: string = "dev-user";
+    @Config("mail:dev_auto_login:uid", DEV_USER_UID)
+    private devUid: string = DEV_USER_UID;
 
     @Config("mail:dev_auto_login:roles", ["admin"])
     private devRoles: string[] = ["admin"];

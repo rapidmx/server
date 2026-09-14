@@ -245,17 +245,17 @@ describe("configureDevAutoProvisioningIfApplicable Tests", () => {
         expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("[dev]"));
     });
 
-    it("derives the static alias from a custom mail:dev_auto_login:uid, matching whatever DevAutoAuthStrategy actually mints.", () => {
+    it("offers the dev-user alias whatever mail:dev_auto_login:uid is, since the uid is a UUID rather than a username.", () => {
         process.argv[1] = "/project/src/server.ts";
         delete process.env.NODE_ENV;
         delete process.env.VITEST;
         delete process.env.JEST_WORKER_ID;
         const logger = { warn: vi.fn() };
-        const fake = fakeConfig({ port: 3001, "mail:dev_auto_login:uid": "custom-dev-uid" });
+        const fake = fakeConfig({ port: 3001, "mail:dev_auto_login:uid": "5b0f6a3e-2f7c-4a9b-9d3e-1c2b3a4d5e6f" });
 
         configureDevAutoProvisioningIfApplicable(fake, logger);
 
-        expect(fake.get("mail:auto_provision:static_aliases")).toEqual(["custom-dev-uid"]);
+        expect(fake.get("mail:auto_provision:static_aliases")).toEqual(["dev-user"]);
     });
 
     it("leaves an admin's own explicit mail:auto_provision:enabled/mail:domains/static_aliases alone.", () => {

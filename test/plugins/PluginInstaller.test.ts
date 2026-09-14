@@ -91,6 +91,7 @@ describe("PluginInstaller", () => {
         expect(npm).toHaveBeenCalledWith(
             expect.arrayContaining(["install", "--omit=dev", "--omit=peer", "--legacy-peer-deps", "--ignore-scripts", "--registry", "https://registry.example.com"]),
             dir,
+            600_000,
         );
         expect(JSON.parse(fs.readFileSync(path.join(dir, "package.json"), "utf8")).dependencies).toEqual({ "@rapidmx/one": "1.0.0" });
     });
@@ -152,6 +153,41 @@ describe("PluginInstaller", () => {
             { name: "@rapidmx/two", packageVersion: "1.0.0", integrity: "sha512-@rapidmx/two" },
         ]);
         expect(npm).toHaveBeenCalledTimes(1);
+    });
+
+    it("still loads previously installed plugins that match what's wanted when npm fails, and marks errors retrying won't fix", async () => {
+        const one = { name: "@rapidmx/one", packageVersion: "1.0.0", integrity: "sha512-@rapidmx/one" };
+        const two = { name: "@rapidmx/two", packageVersion: "1.0.0", integrity: "sha512-@rapidmx/two" };
+        await installer(fakeNpm({ "@rapidmx/one": {}, "@rapidmx/two": {} })).install([one, two]);
+
+        // Upgrading two fails: one is untouched and still loads; two's installed copy is the wrong version.
+        const timeout = vi.fn(async () => Promise.reject(new Error("npm install failed: ETIMEDOUT")));
+        const result = await installer(timeout, { npmTimeoutMs: 5_000 }).install([one, { ...two, packageVersion: "1.1.0" }]);
+        expect(timeout).toHaveBeenCalledWith(expect.any(Array), dir, 5_000);
+        expect(result.installed.map((p) => p.name)).toEqual(["@rapidmx/one"]);
+        expect(result.errors).toEqual([{ name: "@rapidmx/two", message: "npm install failed: ETIMEDOUT" }]);
+        expect(result.installFailures).toBe(1);
+        expect(result.installFailurePermanent).toBe(false);
+
+        const missing = vi.fn(async () => Promise.reject(new Error("npm install failed: npm error code E404")));
+        const permanent = await installer(missing).install([one, { ...two, packageVersion: "1.1.0" }]);
+        expect(permanent.installFailures).toBe(2);
+        expect(permanent.installFailurePermanent).toBe(true);
+        // Still not recorded as installed, so the next start tries npm again.
+        const retried = fakeNpm({ "@rapidmx/one": {}, "@rapidmx/two": { version: "1.1.0" } });
+        expect((await installer(retried).install([one, { ...two, packageVersion: "1.1.0" }])).installed).toHaveLength(2);
+        expect(retried).toHaveBeenCalledTimes(1);
+    });
+
+    it("installs a registry plugin with no recorded integrity hash when require_integrity is off", async () => {
+        const npm = fakeNpm({ "@rapidmx/one": {}, "@rapidmx/two": { integrity: "sha512-other" } });
+        const result = await installer(npm, { requireIntegrity: false }).install([
+            { name: "@rapidmx/one", packageVersion: "1.0.0" },
+            { name: "@rapidmx/two", packageVersion: "1.0.0", integrity: "sha512-@rapidmx/two" },
+        ]);
+        expect(result.installed.map((p) => p.name)).toEqual(["@rapidmx/one"]);
+        // A hash that was recorded is still checked.
+        expect(result.errors).toEqual([{ name: "@rapidmx/two", message: expect.stringMatching(/integrity hash doesn't match/) }]);
     });
 
     it("installs a local tarball source without checking its version or integrity", async () => {
@@ -301,5 +337,6 @@ describe("PluginInstaller", () => {
     it("runs npm and reports its output when it fails", async () => {
         await expect(runNpm(["--version"], appRoot)).resolves.toBeUndefined();
         await expect(runNpm(["definitely-not-a-command"], appRoot)).rejects.toThrow(/npm definitely-not-a-command failed/);
+        await expect(runNpm(["--version"], appRoot, 1)).rejects.toThrow(/npm --version failed: it took longer than 0s/);
     }, 60_000);
 });

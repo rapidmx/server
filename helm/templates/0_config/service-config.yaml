@@ -14,6 +14,9 @@ data:
   {{- $publicScheme := ternary "https" "http" $.Values.gateway.tls }}
   {{- $corsHosts := list "http://localhost:3000" (printf "%s://%s" $publicScheme $.Values.host) }}
   cors__origins: {{ $corsHosts | toJson | quote }}
+  # Which proxies' X-Forwarded-For is trusted for the client's address (per-IP rate limits) - see values.yaml's
+  # service.trustedProxies.
+  trusted_proxies: {{ $.Values.service.trustedProxies | default list | toJson | quote }}
   # Browser-facing: apps/www's/apps/admin's unauthenticated-redirect and this service's own SSR both
   # resolve auth-server through this URL, so it must be reachable from the visitor's browser, not just
   # from inside the cluster - hence the authServer subdomain host, not a Service DNS name. Only rendered

@@ -34,9 +34,19 @@ export interface PluginInstallResult {
     installed: InstalledPlugin[];
     errors: { name: string; message: string }[];
     /** When npm itself failed (for example the registry was unreachable): how many installs in a row have failed.
-     * Worth retrying, unlike a plugin that installed but failed its checks. */
+     * Worth retrying, unlike a plugin that installed but failed its checks. Plugins already installed by an earlier
+     * install that still match what's wanted are loaded anyway. */
     installFailures?: number;
+    /** Set with `installFailures` when npm's error won't go away by retrying (a missing package or version, refused
+     * credentials, a corrupt package). */
+    installFailurePermanent?: boolean;
 }
+
+/** npm error codes that retrying the same install won't fix. */
+const PERMANENT_NPM_ERRORS = /\b(E404|E401|E403|ETARGET|EINTEGRITY|EBADENGINE|ENOVERSIONS)\b/;
+
+/** How long an npm install may take before it's stopped, when not configured. */
+export const DEFAULT_NPM_TIMEOUT_MS = 10 * 60_000;
 
 /** What the last install was run with, recorded in `.install-stamp`. */
 interface InstallStamp {
@@ -87,17 +97,29 @@ export interface PluginInstallerOptions {
     /** Which entry point to load: `mongo` or `sql`. */
     datastore: string;
     logger?: any;
+    /** How long npm may run before it's stopped and the install counts as failed. */
+    npmTimeoutMs?: number;
+    /** Whether a registry plugin must have an integrity hash recorded when it was added (default `true`). With `false`,
+     * a plugin from a registry that doesn't publish integrity hashes loads without its package being verified. */
+    requireIntegrity?: boolean;
     /** Runs npm. Replaceable so tests needn't reach a registry. */
-    runNpm?: (args: string[], cwd: string) => Promise<void>;
+    runNpm?: (args: string[], cwd: string, timeoutMs: number) => Promise<void>;
 }
 
-/** Runs `npm` in `cwd`, rejecting with its output when it fails. */
-export function runNpm(args: string[], cwd: string): Promise<void> {
+/** Runs `npm` in `cwd`, rejecting with its output when it fails or takes longer than `timeoutMs`. */
+export function runNpm(args: string[], cwd: string, timeoutMs: number = DEFAULT_NPM_TIMEOUT_MS): Promise<void> {
     const windows: boolean = process.platform === "win32";
     return new Promise((resolve, reject) => {
-        execFile(windows ? "npm.cmd" : "npm", args, { cwd, shell: windows, maxBuffer: 16 * 1024 * 1024 }, (err, stdout, stderr) => {
+        execFile(windows ? "npm.cmd" : "npm", args, { cwd, shell: windows, maxBuffer: 16 * 1024 * 1024, timeout: timeoutMs }, (err, stdout, stderr) => {
             if (err) {
-                reject(new Error(`npm ${args[0]} failed: ${String(stderr || stdout || err.message).trim()}`));
+                const timedOut: boolean = (err as any).killed && (err as any).signal !== null;
+                reject(
+                    new Error(
+                        timedOut
+                            ? `npm ${args[0]} failed: it took longer than ${Math.round(timeoutMs / 1000)}s.`
+                            : `npm ${args[0]} failed: ${String(stderr || stdout || err.message).trim()}`,
+                    ),
+                );
                 return;
             }
             resolve();
@@ -141,7 +163,7 @@ function exportTarget(pkg: any, subpath: string): string | undefined {
  * dependencies, which resolve to the server's own copies instead.
  */
 export class PluginInstaller {
-    private readonly runNpm: (args: string[], cwd: string) => Promise<void>;
+    private readonly runNpm: (args: string[], cwd: string, timeoutMs: number) => Promise<void>;
 
     constructor(private readonly options: PluginInstallerOptions) {
         this.runNpm = options.runNpm ?? runNpm;
@@ -158,7 +180,7 @@ export class PluginInstaller {
         // the same package. (A local `sources` tarball has none, and isn't checked.)
         const plugins: DesiredPlugin[] = [];
         for (const plugin of desired) {
-            if (!this.options.sources?.[plugin.name] && !plugin.integrity) {
+            if (this.options.requireIntegrity !== false && !this.options.sources?.[plugin.name] && !plugin.integrity) {
                 errors.push({
                     name: plugin.name,
                     message: "No integrity hash was recorded when the plugin was added, so the installed package can't be verified. Update or re-add the plugin.",
@@ -184,6 +206,7 @@ export class PluginInstaller {
             previous.plugins === stamp.plugins &&
             previous.registries === stamp.registries &&
             fs.existsSync(path.join(dir, "node_modules"));
+        let npmFailure: Pick<PluginInstallResult, "installFailures" | "installFailurePermanent"> & { message: string } | undefined;
         if (!upToDate) {
             fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify(manifest, null, 2));
             // The lockfile keeps the plugins' own dependencies pinned from one install to the next; npm updates it for the
@@ -210,16 +233,20 @@ export class PluginInstaller {
                             this.options.registry,
                         ],
                         dir,
+                        this.options.npmTimeoutMs ?? DEFAULT_NPM_TIMEOUT_MS,
                     );
                 } catch (err: any) {
-                    // One unavailable package fails the whole install, so every plugin is reported as not loaded.
+                    // One unavailable package fails the whole install. Plugins an earlier install left in place still load
+                    // below if they pass every check against what's wanted now; the rest report npm's error.
                     const installFailures: number = (Number(this.readJson(failuresFile)) || 0) + 1;
                     fs.writeFileSync(failuresFile, String(installFailures));
-                    return { installed: [], errors: [...errors, ...plugins.map((plugin) => ({ name: plugin.name, message: err.message }))], installFailures };
+                    npmFailure = { message: err.message, installFailures, installFailurePermanent: PERMANENT_NPM_ERRORS.test(String(err.message)) };
                 }
             }
-            fs.writeFileSync(stampFile, JSON.stringify({ ...stamp, complete: true }));
-            fs.rmSync(failuresFile, { force: true });
+            if (!npmFailure) {
+                fs.writeFileSync(stampFile, JSON.stringify({ ...stamp, complete: true }));
+                fs.rmSync(failuresFile, { force: true });
+            }
         }
 
         const lock: any = this.readJson(path.join(dir, "package-lock.json")) ?? {};
@@ -229,8 +256,11 @@ export class PluginInstaller {
             try {
                 installed.push(this.check(plugin, lock, bundledPeers.get(plugin.name)));
             } catch (err: any) {
-                errors.push({ name: plugin.name, message: err.message });
+                errors.push({ name: plugin.name, message: npmFailure ? npmFailure.message : err.message });
             }
+        }
+        if (npmFailure) {
+            return { installed, errors, installFailures: npmFailure.installFailures, installFailurePermanent: npmFailure.installFailurePermanent };
         }
         return { installed, errors };
     }
@@ -331,7 +361,8 @@ export class PluginInstaller {
                 throw new Error(`Expected version ${plugin.packageVersion}, but ${pkg.version} was installed.`);
             }
             const installedIntegrity: string | undefined = lock.packages?.[`node_modules/${plugin.name}`]?.integrity;
-            if (installedIntegrity !== plugin.integrity) {
+            // Without a recorded hash (only let through when `requireIntegrity` is off) there's nothing to compare.
+            if ((plugin.integrity || this.options.requireIntegrity !== false) && installedIntegrity !== plugin.integrity) {
                 throw new Error("The installed package's integrity hash doesn't match the one recorded when it was added.");
             }
         }

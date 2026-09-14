@@ -4812,3 +4812,80 @@ Fixed from a verified review of the plugin system and today's config changes (no
   "portal-linked" comment fixed (vite/vitest config comments still say portal-linked - not touched).
 - **Skipped: Helm `system__plugins__namespaces` example "not valid JSON".** Not a bug - it's YAML flow syntax, and
   `service-config.yaml` renders slices with `toJson`; `helm template` with the lines uncommented produced valid JSON.
+
+## 2026-09-14 — Review round 2 fixes: safe mode, rollout halts, lock atomicity, anonymous rate-limit keys, dev uid
+
+Fixed from a second verified review (nothing committed; `.yarn/patches` untouched - restapi is changing concurrently).
+Every finding was confirmed in code first; all ten were real.
+
+- **Safe mode (supervisor.ts, PluginClassLoader.ts, PluginHost.ts, PluginWatcher.ts).** Before: any two fast crashes (e.g. DB
+  down) entered safe mode, which only ended on a plugin-table change; safe mode and plugin-table read errors called
+  `install([])`, which `rmSync`'d `plugins/node_modules`; the safe-mode baseline hash was read after the server started.
+  Now: `PluginClassLoader` calls back just *before* importing plugin entry points (only if there are any), and the worker
+  sends `{type: "rapidmx:plugins-loaded", hash}` (`notifyPluginsLoaded`). Only fast failures after that message count toward
+  safe mode; fast failures before it restart as before, and after `maxFastFailures` of them the supervisor **exits** with
+  the worker's code (the container restart policy, e.g. CrashLoopBackoff, handles DB outages). The supervisor passes the
+  failing set's hash (`RAPIDMX_PLUGINS_SAFE_MODE_BASELINE`) and a safe-mode attempt counter
+  (`RAPIDMX_PLUGINS_SAFE_MODE_ATTEMPT`); the watcher uses the hash as baseline and, after `safe_mode_retry_ms` (5 min)
+  doubling per attempt up to `safe_mode_retry_max_ms` (1 h), requests a restart (under the lock) that the supervisor starts
+  in normal mode. The counter resets only when a normal-mode worker requests a restart. `PluginHost.prepare` no longer calls
+  the installer at all in safe mode or when the plugin table can't be read, so installed plugins stay on disk. Notified
+  before import (not after) so a plugin that kills the process while importing counts too.
+- **npm failures (PluginInstaller.ts, PluginHost.ts, PluginWatcher.ts).** On npm failure the installer now falls through to
+  the normal lockfile/version/integrity/peer checks against what's on disk, so previously installed plugins still matching
+  their rows load; the rest report npm's error (the stamp stays incomplete so the next start re-runs npm).
+  `installFailurePermanent` is set for `E404|E401|E403|ETARGET|EINTEGRITY|EBADENGINE|ENOVERSIONS`; `PluginHost` stops
+  scheduling retry restarts on those or after `install_retry_max_attempts` (6) and adds a `{name: "*"}` status error.
+  **Rollout halt:** a copy with `installFailures` sets `plugins:rollout-halt` = its loaded hash (PX = max(lock TTL,
+  3 x heartbeat), renewed each heartbeat, set *before* releasing the inherited restart lock); other copies whose desired hash
+  equals the halt value don't restart into it (checked before and after taking the lock). A copy that loads that hash without
+  npm failures clears it (compare-and-delete script). Safe-mode and install-retry restarts bypass the halt. Chosen over
+  "hold the lock until TTL" because that only delays the next copy by the TTL. Needs a cache datastore.
+- **Anonymous endpoint rate limit was global per path (TieredRateLimiter.ts).** `RouteUtils.checkRateLimiter` keys
+  `METHOD|path` for anonymous callers, so one client could 429 key discovery (senders then fall back to unencrypted) or a
+  booking type for everyone. Anonymous identifier counters are now `anonymous:<ip>|METHOD|path`; a route with an explicit
+  `@RateLimit({ id })` keeps its shared counter. Per-IP counter keys unchanged (`ip:<addr>`, `authenticated-ip:<addr>`).
+  Signed-in callers were already per user (`@RateLimit()` defaults to `perUser: true`).
+- **trusted_proxies behind the chart's nginx Gateway.** service-core's `NetUtils.getIPAddress` only trusts exact addresses
+  (`trustedProxies.includes(remoteAddress)`) and then returns the *whole* `X-Forwarded-For` string (client-controllable
+  prefix). Gateway pod IPs are dynamic, so an exact list can't be a chart default. `TieredRateLimiter` now resolves the address
+  itself (`clientAddress()`): `trusted_proxies` entries may be CIDRs (`net.BlockList`, IPv4-mapped IPv6 normalized), and
+  behind a trusted peer it takes the nearest untrusted `X-Forwarded-For` entry right-to-left, then `X-Real-IP`. Helm: new
+  `service.trustedProxies` (default RFC1918 + `fc00::/7`), rendered as `trusted_proxies` in the service-config ConfigMap
+  (checked with `helm template`). Server config default stays `[]`. Caveats documented in values.yaml: the Gateway must see
+  real client IPs (`externalTrafficPolicy: Local` / PROXY protocol), otherwise it forwards a node IP that is itself
+  "trusted" and the client-supplied part of XFF would be used; narrow to the pod CIDR if other workloads can reach the
+  Service. service-core's audit-log IPs (ModelRoute) still use exact matching, so CIDR entries don't affect them. Don't also
+  set `trusted_proxies` under `service.config` (duplicate ConfigMap key).
+- **Default seeding (PluginStateStore.ts).** A default requiring a default whose describe failed this start (registry blip)
+  was seeded disabled forever. Now such seeds (and, to a fixpoint, seeds requiring them) are skipped and retried next start;
+  requirements that are truly unavailable (removed row, not a default, a disabled default) still seed disabled.
+- **Lock atomicity (PluginWatcher.ts).** `renew`/`release` were GET-then-PEXPIRE/DEL. Now Lua via `client.eval` (node-redis 5
+  `eval(script, {keys, arguments})`): PEXPIRE/DEL only if the value is this instance; renewing stops when the script returns
+  0. `pExpire` dropped from `WatcherRedisClient`; `set` options are `{NX?, PX}`. The test fake (`FakeRedis` in
+  test/plugins/PluginWatcher.test.ts) implements both scripts and honors NX.
+- **Stuck starts (PluginInstaller.ts, PluginWatcher.ts, PluginHost.ts).** `runNpm` passes execFile `timeout`
+  (`system.plugins.npm_timeout_ms`, 10 min). On Windows (`shell: true`) the timeout kills the shell, not necessarily npm.
+  `PluginRestartLock.limitHold()` stops renewing an inherited lock after `restart.max_lock_hold_ms` (15 min) unless
+  `PluginHost.start()` clears it once serving.
+- **SIGTERM during a restart drain (worker*.ts, PluginWatcher.ts, PluginHost.ts).** `stopServer` is a single shared promise;
+  `shutdown` first calls `pluginHost.stop({ shutdown: true })`, which releases the lock and status entry even mid-restart
+  (and before the server started), and the pending restart then doesn't call `restart()`. `watcher.stop()` is idempotent
+  (clears `cache` before giving things back) instead of the old `wasStopped` guard.
+- **Integrity-less registries.** Confirmed restapi's `NpmRegistryClient` only reads `dist.integrity` (no `shasum`), so the
+  server can't verify such packages. Added `system.plugins.require_integrity` (default `true`); with `false`, rows without a
+  recorded integrity install and skip the comparison (recorded hashes are still checked). **restapi should expose
+  `dist.shasum`** (npm's lockfile records `sha1-<base64>` for those) so the server could verify instead of opting out.
+- **Dev auth uid.** `DevAutoAuthStrategy` now defaults `mail:dev_auto_login:uid` to `DEV_USER_UID`
+  (`00000000-0000-4000-8000-00000000de01`, a v4-shaped fixed UUID). The auto-provisioning static alias is now the constant
+  `DEV_USER_ALIAS` = `"dev-user"` (a username, no longer derived from the uid). Existing dev databases have a
+  `dev-user@example.com` mailbox owned by uid `"dev-user"`: the new dev user doesn't own it, and auto-provisioning the same
+  address will conflict - reset the dev DB or reassign its `ownerUserUid`. DevImpersonationRoute had no "dev-user" default.
+
+New config keys (both config.mongo.ts and config.sql.ts): `system.plugins.require_integrity`, `system.plugins.npm_timeout_ms`,
+`system.plugins.restart.{install_retry_max_attempts, safe_mode_retry_ms, safe_mode_retry_max_ms, max_lock_hold_ms}`.
+
+Verification: tsc clean, `yarn lint` clean; plugin/lib/dev suites pass (new tests for each fix). Full `yarn vitest run`:
+Server.mongo/sql tests fail here with `ECONNREFUSED :6379` (no Redis running in this environment) and the seven
+`test/apps/book/*` files fail to collect ("Vitest failed to find the current suite") - neither involves anything changed
+in this round.

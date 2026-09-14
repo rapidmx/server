@@ -9,6 +9,7 @@ import nconf from "nconf";
 import { computePluginStateHash, PluginRegistry } from "@rapidmx/restapi";
 import { installRetryDelayMs, PLUGIN_SAFE_MODE_ENV, PluginHost } from "../../src/plugins/PluginHost.js";
 import { findAllPlugins, PluginStateStore, readTarballPackageJson } from "../../src/plugins/PluginStateStore.js";
+import { SAFE_MODE_ATTEMPT_ENV, SAFE_MODE_BASELINE_ENV } from "../../src/plugins/supervisor.js";
 
 const MANIFEST = { apiVersion: 1, displayName: "EAS", settings: [{ key: "mail:eas:sync_window_size", label: "Window", type: "number", default: 100 }] };
 
@@ -122,6 +123,38 @@ describe("PluginStateStore", () => {
         expect(warn).toHaveBeenCalledWith(expect.stringMatching(/needs-needs-mapi is added disabled: It requires @rapidmx\/needs-mapi/));
     });
 
+    it("leaves a default for a later start, rather than adding it disabled, when a default it requires couldn't be described", async () => {
+        let registryDown = true;
+        const requires: Record<string, Record<string, string>> = {
+            "@rapidmx/autodiscover": { "@rapidmx/mapi": "*" },
+            "@rapidmx/needs-autodiscover": { "@rapidmx/autodiscover": "*" },
+            "@rapidmx/needs-gone": { "@rapidmx/gone": "*" },
+        };
+        const flaky: any = {
+            getVersion: vi.fn(async (name: string) => {
+                if (name === "@rapidmx/mapi" && registryDown) {
+                    throw new Error("ETIMEDOUT");
+                }
+                return { name, version: "1.0.0", integrity: "sha512-x", manifest: { ...MANIFEST, requires: requires[name] } };
+            }),
+        };
+        const defaults = ["@rapidmx/needs-autodiscover", "@rapidmx/autodiscover", "@rapidmx/mapi", "@rapidmx/needs-gone"].map((name) => ({ name }));
+        const store = new MemoryStore([row("@rapidmx/gone", { removed: true, enabled: false })]);
+        const first = await store.loadAndSeed(defaults, () => flaky, {});
+        // Requiring a plugin an administrator removed is still added disabled.
+        expect(Object.fromEntries(first.map((r) => [r.name, r.enabled]))).toEqual({ "@rapidmx/gone": false, "@rapidmx/needs-gone": false });
+
+        registryDown = false;
+        const second = await store.loadAndSeed(defaults, () => flaky, {});
+        expect(Object.fromEntries(second.map((r) => [r.name, r.enabled]))).toEqual({
+            "@rapidmx/gone": false,
+            "@rapidmx/needs-gone": false,
+            "@rapidmx/needs-autodiscover": true,
+            "@rapidmx/autodiscover": true,
+            "@rapidmx/mapi": true,
+        });
+    });
+
     it("seeds a default from a local tarball source", async () => {
         const file = path.join(os.tmpdir(), `plugin-${Date.now()}.tgz`);
         tarball(file, { "README.md": "x".repeat(700), "package.json": JSON.stringify({ name: "@rapidmx/activesync", version: "3.0.0", rapidmx: { plugin: MANIFEST } }) });
@@ -154,6 +187,8 @@ describe("PluginStateStore", () => {
 describe("PluginHost", () => {
     afterEach(() => {
         delete process.env[PLUGIN_SAFE_MODE_ENV];
+        delete process.env[SAFE_MODE_BASELINE_ENV];
+        delete process.env[SAFE_MODE_ATTEMPT_ENV];
         PluginRegistry.setLoaded([]);
     });
 
@@ -246,14 +281,25 @@ describe("PluginHost", () => {
         expect(requested).toEqual(["@acme/crm-plugin -> https://npm.acme.test secret", "@rapidmx/mapi-plugin -> https://registry.default.test -"]);
     });
 
-    it("loads no plugins in safe mode", async () => {
+    it("loads no plugins in safe mode, leaving installed ones in place, and tries them again with a backoff", async () => {
         process.env[PLUGIN_SAFE_MODE_ENV] = "1";
+        process.env[SAFE_MODE_BASELINE_ENV] = "failed-hash";
         const store = new MemoryStore([row("@rapidmx/activesync")]);
         const installer: any = { install: vi.fn(async () => ({ installed: [], errors: [] })) };
         const host = await PluginHost.prepare({ config: configWith({}), logger, datastore: "sql", pluginClass: class {}, appRoot: process.cwd(), store, installer });
-        expect(installer.install).toHaveBeenCalledWith([]);
+        expect(installer.install).not.toHaveBeenCalled();
         expect(host.safeMode).toBe(true);
         expect(host.loadedHash).toBe(computePluginStateHash([]));
+        expect(host.retry).toEqual({ safeModeBaseline: "failed-hash", safeModeRetryMs: 300_000 });
+
+        process.env[SAFE_MODE_ATTEMPT_ENV] = "3";
+        const config = configWith({ system: { plugins: { restart: { safe_mode_retry_ms: 1_000, safe_mode_retry_max_ms: 3_000 } } } });
+        const third = await PluginHost.prepare({ config, logger, datastore: "sql", pluginClass: class {}, appRoot: process.cwd(), store, installer });
+        expect(third.retry.safeModeRetryMs).toBe(3_000);
+        process.env[SAFE_MODE_ATTEMPT_ENV] = "4";
+        expect((await PluginHost.prepare({ config: configWith({}), logger, datastore: "sql", pluginClass: class {}, appRoot: process.cwd(), store, installer })).retry.safeModeRetryMs).toBe(
+            2_400_000,
+        );
     });
 
     it("backs off retrying failed installs, doubling up to a cap", () => {
@@ -270,6 +316,23 @@ describe("PluginHost", () => {
         const checked: any = { install: vi.fn(async () => ({ installed: [], errors: [{ name: "@rapidmx/activesync", message: "integrity" }] })) };
         const notRetried = await PluginHost.prepare({ config, logger, datastore: "mongo", pluginClass: class {}, appRoot: process.cwd(), store: new MemoryStore([row("@rapidmx/activesync")]), installer: checked });
         expect(notRetried.retryDelayMs).toBeUndefined();
+        expect(retried.retry.haltRollout).toBe(true);
+        expect(notRetried.retry.haltRollout).toBe(false);
+    });
+
+    it("stops retrying failed installs after the most attempts, or on an error retrying won't fix, and reports it", async () => {
+        const failing = (installFailures: number, installFailurePermanent = false): any => ({
+            install: vi.fn(async () => ({ installed: [], errors: [{ name: "@rapidmx/activesync", message: "npm failed" }], installFailures, installFailurePermanent })),
+        });
+        const prepare = (installer: any) =>
+            PluginHost.prepare({ config: configWith({}), logger, datastore: "mongo", pluginClass: class {}, appRoot: process.cwd(), store: new MemoryStore([row("@rapidmx/activesync")]), installer });
+
+        expect((await prepare(failing(5))).retryDelayMs).toBe(600_000);
+        for (const host of [await prepare(failing(6)), await prepare(failing(1, true))]) {
+            expect(host.retryDelayMs).toBeUndefined();
+            expect(host.retry.haltRollout).toBe(true);
+            expect((host as any).errors).toContainEqual({ name: "*", message: expect.stringMatching(/won't be retried automatically/) });
+        }
     });
 
     it("keeps renewing a restart lock it inherited from startup, and hands it to the watcher to release once serving", async () => {
@@ -281,7 +344,15 @@ describe("PluginHost", () => {
             set: vi.fn(async () => null),
             get: vi.fn(async (key: string) => values.get(key) ?? null),
             del: vi.fn(async (key: string) => (values.delete(key) ? 1 : 0)),
-            pExpire: vi.fn(async () => 1),
+            eval: vi.fn(async (script: string, { keys: [key], arguments: [value] }: any) => {
+                if (values.get(key) !== value) {
+                    return 0;
+                }
+                if (/DEL/.test(script)) {
+                    values.delete(key);
+                }
+                return 1;
+            }),
             hSet: vi.fn(async () => 1),
             hGetAll: vi.fn(async () => ({})),
             hDel: vi.fn(async () => 1),
@@ -290,7 +361,7 @@ describe("PluginHost", () => {
         let renewedDuringInstall = false;
         const installer: any = {
             install: vi.fn(async () => {
-                renewedDuringInstall = client.pExpire.mock.calls.length > 0;
+                renewedDuringInstall = client.eval.mock.calls.some(([script]: string[]) => /PEXPIRE/.test(script));
                 return { installed: [], errors: [] };
             }),
         };
@@ -309,13 +380,21 @@ describe("PluginHost", () => {
         expect(client.quit).toHaveBeenCalled();
     });
 
-    it("closes the restart lock connection when stopped before the server started", async () => {
-        const client: any = { connect: vi.fn(async () => undefined), quit: vi.fn(async () => undefined), get: vi.fn(async () => null) };
+    it("closes the restart lock connection when stopped before the server started, giving the lock back on shutdown", async () => {
+        const client: any = {
+            connect: vi.fn(async () => undefined),
+            quit: vi.fn(async () => undefined),
+            get: vi.fn(async () => null),
+            eval: vi.fn(async () => 1),
+        };
         const config = configWith({ datastores: { cache: { url: "redis://cache" } } });
         const installer: any = { install: vi.fn(async () => ({ installed: [], errors: [] })) };
         const host = await PluginHost.prepare({ config, logger, datastore: "mongo", pluginClass: class {}, appRoot: process.cwd(), store: new MemoryStore([]), installer, createRedisClient: () => client });
+        await host.stop({ shutdown: true });
+        expect(client.quit).toHaveBeenCalledTimes(1);
+        expect(client.eval).toHaveBeenCalledWith(expect.stringContaining("DEL"), expect.objectContaining({ keys: ["plugins:restart-lock"] }));
         await host.stop();
-        expect(client.quit).toHaveBeenCalled();
+        expect(client.quit).toHaveBeenCalledTimes(1);
 
         const warn = vi.spyOn(logger, "warn");
         const down: any = { connect: vi.fn(async () => Promise.reject(new Error("refused"))), quit: vi.fn(async () => undefined) };
@@ -330,5 +409,7 @@ describe("PluginHost", () => {
         const host = await PluginHost.prepare({ config: configWith({ system: { plugins: { defaults: [{ name: "x" }] } } }), logger, datastore: "mongo", pluginClass: class {}, appRoot: process.cwd(), store, installer });
         expect(host.classLoader).toBeDefined();
         expect(logger.error).toHaveBeenCalledWith(expect.stringMatching(/Could not read the plugin list/));
+        // An unreadable list isn't an empty one: installed plugins are left alone.
+        expect(installer.install).not.toHaveBeenCalled();
     });
 });

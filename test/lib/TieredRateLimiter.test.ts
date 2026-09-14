@@ -4,7 +4,7 @@
 import nconf from "nconf";
 import { Logger } from "@rapidrest/core";
 import { ObjectFactory, RateLimiter } from "@rapidrest/service-core";
-import { TieredRateLimiter } from "../../src/lib/TieredRateLimiter.js";
+import { clientAddress, TieredRateLimiter, trustedProxyList } from "../../src/lib/TieredRateLimiter.js";
 import mongoConfig from "../../src/config.mongo.js";
 import sqlConfig from "../../src/config.sql.js";
 
@@ -15,10 +15,10 @@ describe("TieredRateLimiter", () => {
         await objectFactory?.destroy();
     });
 
-    async function limiter(rateLimit: any): Promise<RateLimiter> {
+    async function limiter(rateLimit: any, trustedProxies: string[] = []): Promise<RateLimiter> {
         const config = new nconf.Provider();
         config.use("memory");
-        config.defaults({ rateLimit, trusted_proxies: [] });
+        config.defaults({ rateLimit, trusted_proxies: trustedProxies });
         objectFactory = new ObjectFactory(config, new Logger());
         objectFactory.register(TieredRateLimiter, "RateLimiter");
         return objectFactory.newInstance(RateLimiter, { name: "default" });
@@ -60,6 +60,45 @@ describe("TieredRateLimiter", () => {
         expect(await attempts(rl, 1, "GET|/other", anonymous("10.0.0.2"))).toBe(1);
     });
 
+    it("keys an anonymous endpoint counter by source IP, so one caller can't use up an endpoint for everyone", async () => {
+        const rl = await limiter({ ...limits, ip: { enabled: true, maxAttempts: 50, windowSeconds: 300 } });
+        expect(await attempts(rl, 10, "GET|/.well-known/key/bob", anonymous("10.0.0.1"))).toBe(3);
+        expect(await attempts(rl, 10, "GET|/.well-known/key/bob", anonymous("10.0.0.2"))).toBe(3);
+    });
+
+    it("keeps one shared counter for a route with an explicit id", async () => {
+        const rl = await limiter({ ...limits, ip: { enabled: true, maxAttempts: 50, windowSeconds: 300 } });
+        const count = async (ip: string) => {
+            for (let i = 0; i < 10; i++) {
+                try {
+                    await rl.checkAndIncrement("login", { id: "login" } as any, anonymous(ip));
+                } catch {
+                    return i;
+                }
+            }
+            return 10;
+        };
+        expect(await count("10.0.0.1")).toBe(3);
+        expect(await count("10.0.0.2")).toBe(0);
+    });
+
+    it("takes the client address from X-Forwarded-For only behind a trusted proxy, including CIDR ranges", async () => {
+        const trusted = trustedProxyList(["10.0.0.0/8", "fc00::/7", "192.168.1.1", "not-an-ip", "10.0.0.0/99"]);
+        const req = (remoteAddress: string, headers: Record<string, string> = {}) => ({ socket: { remoteAddress }, headers });
+        // The nearest untrusted address wins, so a client-supplied entry to the left of it is ignored.
+        expect(clientAddress(req("10.1.2.3", { "x-forwarded-for": "6.6.6.6, 203.0.113.9, 10.9.9.9" }), trusted)).toBe("203.0.113.9");
+        expect(clientAddress(req("::ffff:10.1.2.3", { "x-forwarded-for": "203.0.113.9" }), trusted)).toBe("203.0.113.9");
+        expect(clientAddress(req("fd00::1", { "x-real-ip": "2001:db8::5" }), trusted)).toBe("2001:db8::5");
+        expect(clientAddress(req("192.168.1.1", { "x-forwarded-for": "10.0.0.5" }), trusted)).toBe("10.0.0.5");
+        expect(clientAddress(req("192.168.1.2", { "x-forwarded-for": "203.0.113.9" }), trusted)).toBe("192.168.1.2");
+        expect(clientAddress(req("10.1.2.3", { "x-forwarded-for": "garbage" }), trusted)).toBe("10.1.2.3");
+
+        const rl = await limiter(limits, ["10.0.0.0/8"]);
+        const behindGateway = (client: string) => ({ headers: { "x-forwarded-for": client }, socket: { remoteAddress: "10.244.0.7" } }) as any;
+        expect(await attempts(rl, 10, "GET|/.well-known/key/bob", behindGateway("203.0.113.1"))).toBe(3);
+        expect(await attempts(rl, 10, "GET|/.well-known/key/bob", behindGateway("203.0.113.2"))).toBe(3);
+    });
+
     it("gives signed-in requests the authenticated limits, with a per-IP counter apart from the anonymous one", async () => {
         const rl = await limiter(limits);
         expect(await attempts(rl, 60, "alice|GET|/mailbox/1/keys/lookup", signedIn("alice"))).toBe(50);
@@ -82,6 +121,7 @@ describe("TieredRateLimiter", () => {
             expect(rateLimit.ip.maxAttempts).toBeLessThanOrEqual(100);
             expect(rateLimit.authenticated.maxAttempts).toBeGreaterThanOrEqual(10_000);
             expect(rateLimit.authenticated.ip.maxAttempts).toBeGreaterThanOrEqual(20_000);
+            expect(config.get("trusted_proxies")).toEqual([]);
         }
     });
 });

@@ -2,12 +2,14 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import { computePluginStateHash, PLUGIN_CHANGED_EVENT, PLUGIN_EVENTS_CHANNEL, PLUGIN_STATUS_KEY, PLUGIN_STATUS_MAX_AGE_MS } from "@rapidmx/restapi";
-import { PLUGIN_RESTART_LOCK_KEY, PluginRestartLock, PluginWatcher, type WatcherRedisClient } from "../../src/plugins/PluginWatcher.js";
+import { PLUGIN_RESTART_LOCK_KEY, PLUGIN_ROLLOUT_HALT_KEY, PluginRestartLock, PluginWatcher, type WatcherRedisClient } from "../../src/plugins/PluginWatcher.js";
 import { isDraining, setDraining } from "../../src/plugins/readiness.js";
 
 /** A shared in-memory Redis for the watcher's cache and subscriber clients. */
 class FakeRedis {
     public values: Map<string, string> = new Map();
+    /** The last expiry set on each key, in ms. */
+    public ttls: Map<string, number> = new Map();
     public hashes: Map<string, Map<string, string>> = new Map();
     public listeners: ((message: string) => void)[] = [];
     public errorListeners: ((err: Error) => void)[] = [];
@@ -29,16 +31,30 @@ class FakeRedis {
                 expect(channel).toBe(PLUGIN_EVENTS_CHANNEL);
                 this.listeners.push(listener);
             }),
-            set: vi.fn(async (key: string, value: string) => {
-                if (this.values.has(key)) {
+            set: vi.fn(async (key: string, value: string, options: { NX?: true; PX: number }) => {
+                if (options?.NX && this.values.has(key)) {
                     return null;
                 }
                 this.values.set(key, value);
+                this.ttls.set(key, options?.PX);
                 return "OK";
             }),
             get: vi.fn(async (key: string) => this.values.get(key) ?? null),
             del: vi.fn(async (key: string) => (this.values.delete(key) ? 1 : 0)),
-            pExpire: vi.fn(async () => 1),
+            // The watcher's two scripts: PEXPIRE or DEL the key only while it holds ARGV[1].
+            eval: vi.fn(async (script: string, { keys: [key], arguments: [value, ms] }: { keys: string[]; arguments: string[] }) => {
+                if (this.values.get(key) !== value) {
+                    return 0;
+                }
+                if (/PEXPIRE/.test(script)) {
+                    this.ttls.set(key, Number(ms));
+                } else if (/DEL/.test(script)) {
+                    this.values.delete(key);
+                } else {
+                    throw new Error(`Unexpected script: ${script}`);
+                }
+                return 1;
+            }),
             hSet: vi.fn(async (key: string, field: string, value: string) => {
                 const hash = this.hashes.get(key) ?? new Map();
                 hash.set(field, value);
@@ -122,7 +138,7 @@ describe("PluginWatcher", () => {
         await w.start();
         await vi.advanceTimersByTimeAsync(14_000);
         expect(redis.values.get(PLUGIN_RESTART_LOCK_KEY)).toBe("pod-a");
-        expect(client.pExpire).toHaveBeenCalledWith(PLUGIN_RESTART_LOCK_KEY, 3_000);
+        expect(client.eval).toHaveBeenCalledWith(expect.stringContaining("PEXPIRE"), { keys: [PLUGIN_RESTART_LOCK_KEY], arguments: ["pod-a", "3000"] });
         await vi.advanceTimersByTimeAsync(1_000);
         expect(redis.values.has(PLUGIN_RESTART_LOCK_KEY)).toBe(false);
     });
@@ -337,6 +353,64 @@ describe("PluginWatcher", () => {
         expect(redis.values.has(PLUGIN_RESTART_LOCK_KEY)).toBe(false);
         expect(redis.hashes.get(PLUGIN_STATUS_KEY)!.has("pod-a")).toBe(true);
     });
+
+    it("in safe mode, uses the failed plugin set's hash from the supervisor as its baseline", async () => {
+        const failed = computePluginStateHash(rows);
+        // An administrator already disabled the plugin by the time this copy started in safe mode.
+        rows = [{ ...rows[0], enabled: false }];
+        const w = watcher({ loadedHash: computePluginStateHash([]), status: { loaded: [], errors: [], safeMode: true }, safeModeBaseline: failed });
+        await w.start();
+        await w.check();
+        expect(restart).toHaveBeenCalledTimes(1);
+    });
+
+    it("in safe mode, tries the plugins again after the retry delay even though nothing changed", async () => {
+        vi.useFakeTimers();
+        const w = watcher({ loadedHash: computePluginStateHash([]), status: { loaded: [], errors: [], safeMode: true }, safeModeRetryMs: 300_000 });
+        await w.start();
+        await vi.advanceTimersByTimeAsync(299_000);
+        expect(restart).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(1_000);
+        expect(restart).toHaveBeenCalledTimes(1);
+    });
+
+    it("halts a rollout that failed to install on the copy that restarted into it, until a copy installs it cleanly", async () => {
+        const next = [plugin("@rapidmx/activesync", "2.0.0")];
+        const failing = watcher({ instance: "pod-a", loadedHash: computePluginStateHash(next), haltRollout: true, lockTtlMs: 5_000, heartbeatIntervalMs: 1_000 });
+        await failing.start();
+        expect(redis.values.get(PLUGIN_ROLLOUT_HALT_KEY)).toBe(computePluginStateHash(next));
+        expect(redis.ttls.get(PLUGIN_ROLLOUT_HALT_KEY)).toBe(5_000);
+
+        const other = watcher({ instance: "pod-b" });
+        await other.start();
+        rows = next;
+        await other.check();
+        expect(restart).not.toHaveBeenCalled();
+
+        // A copy that installs it cleanly lifts the halt; one still on the old set leaves it alone.
+        const healthy = watcher({ instance: "pod-c", loadedHash: computePluginStateHash(next) });
+        await healthy.start();
+        expect(redis.values.has(PLUGIN_ROLLOUT_HALT_KEY)).toBe(false);
+        await other.check();
+        expect(restart).toHaveBeenCalledTimes(1);
+    });
+
+    it("gives the lock back and doesn't restart when shut down part-way through a restart", async () => {
+        vi.useFakeTimers();
+        const w = watcher({ drainDelayMs: 15_000 });
+        await w.start();
+        rows = [];
+        const checking = w.check();
+        await vi.advanceTimersByTimeAsync(1_000);
+        expect(redis.values.get(PLUGIN_RESTART_LOCK_KEY)).toBe("pod-a");
+        await w.stop({ shutdown: true });
+        expect(redis.values.has(PLUGIN_RESTART_LOCK_KEY)).toBe(false);
+        expect(redis.hashes.get(PLUGIN_STATUS_KEY)!.has("pod-a")).toBe(false);
+        await vi.advanceTimersByTimeAsync(15_000);
+        await checking;
+        expect(restart).not.toHaveBeenCalled();
+        await w.stop({ shutdown: true });
+    });
 });
 
 describe("PluginRestartLock", () => {
@@ -354,10 +428,37 @@ describe("PluginRestartLock", () => {
             expect(redis.values.get(PLUGIN_RESTART_LOCK_KEY)).toBe("pod-a");
 
             redis.values.set(PLUGIN_RESTART_LOCK_KEY, "pod-b");
-            const renewals = (client.pExpire as any).mock.calls.length;
+            redis.ttls.delete(PLUGIN_RESTART_LOCK_KEY);
             await vi.advanceTimersByTimeAsync(3_000);
-            expect((client.pExpire as any).mock.calls.length).toBe(renewals);
+            // Checked and renewed in one script, so the other copy's lock was never extended.
+            expect(redis.ttls.has(PLUGIN_RESTART_LOCK_KEY)).toBe(false);
+            await a.release();
+            expect(redis.values.get(PLUGIN_RESTART_LOCK_KEY)).toBe("pod-b");
             expect((a as any).renewTimer).toBeUndefined();
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it("stops renewing after its hold limit, unless the limit is cleared first", async () => {
+        vi.useFakeTimers();
+        try {
+            const redis = new FakeRedis();
+            const client = redis.client();
+            const logger = { warn: vi.fn() };
+            const lock = new PluginRestartLock(client, "pod-a", 3_000, logger);
+            await lock.tryAcquire();
+            lock.limitHold(10_000);
+            await vi.advanceTimersByTimeAsync(10_000);
+            expect((lock as any).renewTimer).toBeUndefined();
+            expect(logger.warn).toHaveBeenCalledWith(expect.stringMatching(/Still starting after 10s/));
+
+            await lock.tryAcquire();
+            lock.limitHold(10_000);
+            lock.clearHoldLimit();
+            await vi.advanceTimersByTimeAsync(20_000);
+            expect((lock as any).renewTimer).toBeDefined();
+            lock.stopRenewing();
         } finally {
             vi.useRealTimers();
         }
@@ -371,7 +472,7 @@ describe("PluginRestartLock", () => {
             const logger = { debug: vi.fn() };
             const lock = new PluginRestartLock(client, "pod-a", 300, logger);
             await lock.tryAcquire();
-            (client.get as any).mockRejectedValueOnce(new Error("down"));
+            (client.eval as any).mockRejectedValueOnce(new Error("down"));
             await vi.advanceTimersByTimeAsync(100);
             expect(logger.debug).toHaveBeenCalledWith(expect.stringMatching(/renew.*down/));
             lock.stopRenewing();
