@@ -460,6 +460,11 @@ export abstract class BaseMailComposeRoute<M extends Message, A extends Attachme
         if (folder?.type !== FolderType.DRAFTS) {
             throw new ApiError(ApiErrors.INVALID_REQUEST, 400, "Only a message in Drafts can be assembled.");
         }
+        // Delivered mail (scanned in by ingest) can land in Drafts through a mail filter rule; rewriting it here would
+        // forge its content, so only a genuine draft is assembled - the same rule activesync applies to body changes.
+        if ((message as any).scanResultUid) {
+            throw new ApiError(ApiErrors.INVALID_REQUEST, 400, "A delivered message can't be edited as a draft.");
+        }
 
         const mailbox: X | undefined = await this.mailboxRepo!.findOne(message.mailboxUid, { ignoreACL: true });
         if (!mailbox) {
@@ -637,6 +642,11 @@ export abstract class BaseMailComposeRoute<M extends Message, A extends Attachme
         const folder: F | undefined = await this.folderRepo!.findOne(message.folderUid, { ignoreACL: true });
         if (folder?.type !== FolderType.DRAFTS) {
             throw new ApiError(ApiErrors.INVALID_REQUEST, 400, "Only a message in Drafts can be assembled.");
+        }
+        // Delivered mail (scanned in by ingest) can land in Drafts through a mail filter rule; rewriting it here would
+        // forge its content, so only a genuine draft is assembled - the same rule activesync applies to body changes.
+        if ((message as any).scanResultUid) {
+            throw new ApiError(ApiErrors.INVALID_REQUEST, 400, "A delivered message can't be edited as a draft.");
         }
 
         const mailbox: X | undefined = await this.mailboxRepo!.findOne(message.mailboxUid, { ignoreACL: true });

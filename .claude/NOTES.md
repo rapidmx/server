@@ -5205,3 +5205,13 @@ and `helm lint` for the same combinations; NOTES.txt rendered via a scratch copy
 the installer plus a local run of its getopt, YAML quoting and nginx marker-replacement snippets; `npx tsc --noEmit -p
 tsconfig.json` and `-p tsconfig.client.json`, `yarn lint`, and `yarn vitest run` 312/312 (new tests: compose drafts/From/
 entity/legal hold, raw content audit, `_slotPaging`, both booking pages' paging).
+
+### 2026-09-14 - round-5 wrap-up
+
+- **Web client:** the server now consumes `@rapidmx/web-client` 0.4.0 (apps and dist) and `@rapidmx/react-shared` 0.4.0 through yarn patches (409434b). Before this, deployments served the stale npm builds, which broke "Send later" (a PUT of `scheduledSendTime` now gets a 400) and plugin adds (the add response is now `{plugin, dependencies}`). Refresh all three patches (restapi, react-shared, web-client) whenever those repos change, until they're published.
+- **restapi patch:** refreshed to restapi eef2ad9. Verified with tsc, lint and 329/329 tests.
+- **Compose:** refuses to assemble a message with a `scanResultUid`, because a mail filter rule can move delivered mail into Drafts. restapi now refuses non-trusted REST moves into Drafts except from Outbox or Drafts.
+- **Open items:**
+  - A non-trusted user can still move a draft into Sent Items or create a message there, which invents sent history (restapi).
+  - Plugin transitive dependencies float on Kubernetes.
+  - Five stale `rapidrest dev` watchers were found running in this repo and rebuilding on any root file change.

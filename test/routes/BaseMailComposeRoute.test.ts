@@ -117,6 +117,12 @@ describe("BaseMailComposeRoute.assembleRaw() Tests (mocked collaborators)", () =
         await expect(route.assembleRaw("m1", validInput, user)).rejects.toThrow(/only a message in drafts/i);
     });
 
+    it("rejects a delivered message that a mail filter moved into Drafts", async () => {
+        const route = buildRoute({ messageRepo: { findOne: vi.fn().mockResolvedValue({ ...message, scanResultUid: "scan-1" }), update: vi.fn() } });
+        await expect(route.assembleRaw("m1", validInput, user)).rejects.toThrow(/delivered message can't be edited/i);
+        expect((route as any).blobStore.put).not.toHaveBeenCalled();
+    });
+
     it("rejects with NOT_FOUND when the owning mailbox doesn't exist", async () => {
         const route = buildRoute({ mailboxRepo: { findOne: vi.fn().mockResolvedValue(undefined) } });
         await expect(route.assembleRaw("m1", validInput, user)).rejects.toThrow(/no resource could be found/i);
@@ -351,6 +357,13 @@ describe("BaseMailComposeRoute.assemble() drafts and From", () => {
             expect(patch.recipients).toEqual((input as any).cc ? [{ address: "carol@example.com", type: "cc" }] : []);
             expect(patch.bodyPreview).toBe("");
         }
+    });
+
+    it("refuses to rewrite a delivered message that a mail filter moved into Drafts", async () => {
+        const route = buildRoute({ message: { uid: "m1", version: 2, folderUid: "f1", mailboxUid: "mb1", scanResultUid: "scan-1" } });
+        await expect(route.assemble("m1", { html: "<p>forged</p>" }, user)).rejects.toThrow(/delivered message can't be edited/i);
+        expect(route.blobStore.put).not.toHaveBeenCalled();
+        expect(route.messageRepo.update).not.toHaveBeenCalled();
     });
 
     it("still rejects malformed input", async () => {
