@@ -5105,3 +5105,15 @@ strategy, `node --inspect` args), a TLS host on the chart's own Gateway (per-hos
 an external Gateway without/with httpsListener/authHttpsListener (http + no redirect / sectionName + ReferenceGrant),
 localhost, *.cluster.local, *.localhost, *.localdomain.com. Installer: `bash -n`, and the Gateway/nginx snippets rendered
 for a public and a .local domain. `docker compose config -q` for mongo/sql.
+
+### 2026-09-14 - round-4 restapi patch refresh (588bd8e)
+
+- **Deployment requirement:** restapi now trusts inbound `RapidMX-Key` and `X-RapidMX-Recall-Of` headers only when an
+  aligned, verified DKIM signature oversigns them. Outbound DKIM must oversign both headers (for example OpenDKIM
+  `OversignHeaders`), or key discovery and recall between RapidMX servers stop working. SES Easy DKIM likely can't.
+- **API contract:** `PUT /mail/messages/:id` can no longer set `scheduledSendTime`. Schedule with
+  `POST /mail/messages/:id/send` and a `scheduledSendTime` body. Moving or creating a message into Outbox is 403, and
+  sending a message already in Outbox or Sent Items is 409.
+- `src/lib/sqlColumnTypes.ts` still looks `applySqlDriverColumnTypes` up at runtime. The patched restapi exports it
+  from `@rapidmx/restapi/sql`, so it can become a plain import once the published restapi includes it.
+- Verified: tsc, lint and 286/286 tests against the refreshed patch.
