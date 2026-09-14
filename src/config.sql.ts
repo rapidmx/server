@@ -297,7 +297,8 @@ conf.defaults({
         // an unset trusted_authserv_id means every Authentication-Results header is treated as
         // unauthenticated, so RapidMX-Key/receipt trust checks pass nothing at all). An admin MUST set this
         // to the exact authserv-id string their MTA (Postfix/rspamd - see docker-compose.mail.yml) stamps
-        // before enabling E2E encryption or receipt verification in production.
+        // before enabling E2E encryption, receipt verification, calendar iTIP replies/cancellations, message
+        // recalls or ACME email challenges in production (all are ignored until it is set). Helm: mail.trustedAuthservId.
         security: {
             trusted_authserv_id: "",
         },

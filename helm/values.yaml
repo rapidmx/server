@@ -242,6 +242,11 @@ mail:
   # This deployment's public MX hostname (the Reporting-UA of outgoing read receipts, and what domain DNS checks
   # expect MX records to point at) - normally postfix-bridge's own mail.hostname. Defaults to `host`.
   mxHostname: ''
+  # The exact authserv-id your inbound MTA/DKIM verifier (postfix-bridge's milter) stamps on Authentication-Results.
+  # Left empty, every Authentication-Results header is untrusted (fail closed): published-key discovery via
+  # RapidMX-Key headers, read receipt verification, calendar iTIP replies/cancellations, message recalls and
+  # ACME email challenges are all ignored. Set it before relying on any of those.
+  trustedAuthservId: ''
   dkim:
     selector: mail
     autogenerate: true

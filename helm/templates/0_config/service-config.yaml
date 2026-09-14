@@ -41,6 +41,9 @@ data:
   {{- if not (hasKey $config "mail__dns__mx_hostname") }}
   mail__dns__mx_hostname: {{ $.Values.mail.mxHostname | default $.Values.host | quote }}
   {{- end }}
+  {{- if and $.Values.mail.trustedAuthservId (not (hasKey $config "mail__security__trusted_authserv_id")) }}
+  mail__security__trusted_authserv_id: {{ $.Values.mail.trustedAuthservId | quote }}
+  {{- end }}
   # Browser-facing: apps/www's/apps/admin's unauthenticated-redirect and this service's own SSR both
   # resolve auth-server through this URL, so it must be reachable from the visitor's browser, not just
   # from inside the cluster - hence the authServer subdomain host, not a Service DNS name. Only rendered
