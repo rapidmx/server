@@ -1603,7 +1603,7 @@ __metadata:
 
 "@rapidmx/restapi@patch:@rapidmx/restapi@npm%3A0.8.0#~/.yarn/patches/@rapidmx-restapi-npm-0.8.0-d588a97668.patch":
   version: 0.8.0
-  resolution: "@rapidmx/restapi@patch:@rapidmx/restapi@npm%3A0.8.0#~/.yarn/patches/@rapidmx-restapi-npm-0.8.0-d588a97668.patch::version=0.8.0&hash=8d4942"
+  resolution: "@rapidmx/restapi@patch:@rapidmx/restapi@npm%3A0.8.0#~/.yarn/patches/@rapidmx-restapi-npm-0.8.0-d588a97668.patch::version=0.8.0&hash=526650"
   dependencies:
     "@peculiar/x509": "npm:^2.1.0"
     acme-client: "npm:^5.4.0"
@@ -1634,7 +1634,7 @@ __metadata:
       optional: true
     pdf-parse:
       optional: true
-  checksum: 10c0/df45ae29cd46e5f824ab696b5013f5e2ce61e4387f317651b603eacb94834c5f924a8fc6f1ae122ff2162fed792778db43779415d2b762fdb647d01b98c3eab5
+  checksum: 10c0/4d736f48a4be0cf3d5c29e8d0135441891249837523365a432da8fe44c3abecc0aaac2cf0d68caba6d44ad24960cf47018dd19c118387dc884aede7008dd61f5
   languageName: node
   linkType: hard
 

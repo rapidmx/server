@@ -4733,3 +4733,15 @@ page
   the plugin contract) are released, the defaults can't be fetched from npm and seeding logs a warning per plugin.
   Removing a plugin keeps its data. A plugin runs with full server privileges; protections are trusted-role-only API,
   the config-only `allowed_packages` list, `--ignore-scripts` and integrity pinning.
+
+## 2026-09-13 — First-run setup wizard
+
+- Server mounts `system/setup` (wizard state) and `system/mailbox-policy` (restapi `BaseSetupRoute`/`BaseMailboxPolicyRoute`);
+  models added to `Models.ts`. New config `mail.default_quota_bytes`; it and `mail.auto_provision.*` seed the mailbox
+  policy row on first read and remain its fallback (JP: "both a db seed and live fallback").
+- The wizard itself lives in web-client (`apps/admin/setup`); `AdminShell` and the webmail `AppShell` redirect admins there
+  while `GET /api/system/setup` says `required` (non-admins get 403 and are left alone). Not visible under `yarn dev`
+  until web-client/react-shared are published.
+- `yarn dev` (`rapidrest dev`) starts its own MongoDB/Redis memory servers and sets `datastores__*` env - don't start
+  docker containers for a manual check. The dev database this session's check hit already had a `domain.local` domain,
+  so `required` was correctly false there; the empty-database case is covered by restapi's route suites.

@@ -143,6 +143,9 @@ conf.defaults({
     // unauthenticated visitor here to sign in, then back with a valid session.
     mail: {
         auth_server_url: "http://localhost:3001",
+        // `default_quota_bytes` and `auto_provision.enabled`/`quota_bytes` seed the admin-editable mailbox policy
+        // (system/mailbox-policy) the first time it's read, and stay its fallback for anything it leaves unset.
+        default_quota_bytes: 5_000_000_000,
         auto_provision: {
             enabled: true,
             quota_bytes: 5_000_000_000,
