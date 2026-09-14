@@ -37,7 +37,7 @@ import * as fs from "fs";
 import { readFile } from "fs/promises";
 import * as path from "path";
 import { assertProductionSecretsAreSet, DEVELOPMENT_ENVIRONMENTS } from "./config.defaults.js";
-import { configMs, drainAndStop } from "./lib/gracefulShutdown.js";
+import { configMs, DEFAULT_RELEASE_TIMEOUT_MS, drainAndStop, withTimeout } from "./lib/gracefulShutdown.js";
 import { startTelemetryToken } from "./lib/telemetryToken.js";
 import { PluginMongo } from "@rapidmx/restapi/mongo";
 import { PluginHost } from "./plugins/PluginHost.js";
@@ -161,7 +161,8 @@ void start(config, logger);
 let stopping: Promise<void> | undefined;
 const stopServer = (): Promise<void> =>
     (stopping ??= (async () => {
-        await pluginHost?.stop();
+        // Bounded like shutdown's own release below: with Redis down this would otherwise use up the whole stop timeout.
+        await withTimeout(pluginHost?.stop() ?? Promise.resolve(), DEFAULT_RELEASE_TIMEOUT_MS);
         if (server) {
             await server.stop();
         }
@@ -178,12 +179,12 @@ const shutdown = async (signal: string) => {
     shuttingDown = true;
     logger.info(`Shutting down (${signal})...`);
     telemetry?.stop();
-    // Gives back the plugin restart lock even if this copy was part-way through a plugin restart, which then stops.
-    await pluginHost?.stop({ shutdown: true }).catch(() => undefined);
     // SIGTERM is a container/pod stop: report not ready and let in-flight requests finish before stopping. An
     // interactive Ctrl+C (SIGINT), a vanished supervisor, or a development reload (tsx --watch) stops right away.
     const drain: boolean = signal === "SIGTERM" && !DEVELOPMENT_ENVIRONMENTS.includes(process.env.NODE_ENV ?? "");
     const result = await drainAndStop(stopServer, {
+        // Gives back the plugin restart lock even if this copy was part-way through a plugin restart, which then stops.
+        release: async () => await pluginHost?.stop({ shutdown: true }),
         drainDelayMs: drain ? configMs(config.get("shutdown:drain_delay_ms"), 5_000) : 0,
         timeoutMs: configMs(config.get("shutdown:timeout_ms"), 25_000),
         logger,

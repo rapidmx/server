@@ -28,18 +28,33 @@ describe("isRunningUnderYarnDev Tests", () => {
         else process.env.JEST_WORKER_ID = originalJestWorkerId;
     });
 
-    it("is true for a .ts entry point with no NODE_ENV/VITEST/JEST_WORKER_ID set.", () => {
+    it("is true for a .ts entry point with a development NODE_ENV and no VITEST/JEST_WORKER_ID set.", () => {
         process.argv[1] = "/project/src/server.ts";
-        delete process.env.NODE_ENV;
         delete process.env.VITEST;
         delete process.env.JEST_WORKER_ID;
 
-        expect(isRunningUnderYarnDev()).toBe(true);
+        for (const env of ["dev", "development", "test"]) {
+            process.env.NODE_ENV = env;
+            expect(isRunningUnderYarnDev()).toBe(true);
+        }
+    });
+
+    it("is false when NODE_ENV is unset or anything but a development environment, even from a .ts entry point.", () => {
+        process.argv[1] = "/project/src/server.ts";
+        delete process.env.VITEST;
+        delete process.env.JEST_WORKER_ID;
+
+        delete process.env.NODE_ENV;
+        expect(isRunningUnderYarnDev()).toBe(false);
+        for (const env of ["", "staging", "prod"]) {
+            process.env.NODE_ENV = env;
+            expect(isRunningUnderYarnDev()).toBe(false);
+        }
     });
 
     it("is false for a compiled .js entry point (production).", () => {
         process.argv[1] = "/project/dist/src/server.js";
-        delete process.env.NODE_ENV;
+        process.env.NODE_ENV = "development";
 
         expect(isRunningUnderYarnDev()).toBe(false);
     });
@@ -53,7 +68,7 @@ describe("isRunningUnderYarnDev Tests", () => {
 
     it("is false under Vitest, even from a .ts entry point.", () => {
         process.argv[1] = "/project/src/server.ts";
-        delete process.env.NODE_ENV;
+        process.env.NODE_ENV = "development";
         process.env.VITEST = "true";
 
         expect(isRunningUnderYarnDev()).toBe(false);
@@ -61,7 +76,7 @@ describe("isRunningUnderYarnDev Tests", () => {
 
     it("is false under Jest, even from a .ts entry point.", () => {
         process.argv[1] = "/project/src/server.ts";
-        delete process.env.NODE_ENV;
+        process.env.NODE_ENV = "development";
         delete process.env.VITEST;
         process.env.JEST_WORKER_ID = "1";
 
@@ -70,7 +85,7 @@ describe("isRunningUnderYarnDev Tests", () => {
 
     it("is false when there is no entry point at all.", () => {
         delete (process.argv as any)[1];
-        delete process.env.NODE_ENV;
+        process.env.NODE_ENV = "development";
         delete process.env.VITEST;
         delete process.env.JEST_WORKER_ID;
 
@@ -107,7 +122,7 @@ describe("enableDevAutoLoginIfApplicable Tests", () => {
         // Simulates real `yarn dev` conditions — vitest's own environment always sets `VITEST`/a `.ts`-less
         // argv[1] otherwise, which `isRunningUnderYarnDev()` correctly (and must) treat as NOT dev.
         process.argv[1] = "/project/src/server.ts";
-        delete process.env.NODE_ENV;
+        process.env.NODE_ENV = "development";
         delete process.env.VITEST;
         delete process.env.JEST_WORKER_ID;
         const logger = { warn: vi.fn() };
@@ -162,7 +177,7 @@ describe("mountDevImpersonationRouteIfApplicable Tests", () => {
 
     it("registers a DevImpersonationRoute against the server's application when running under yarn dev.", async () => {
         process.argv[1] = "/project/src/server.ts";
-        delete process.env.NODE_ENV;
+        process.env.NODE_ENV = "development";
         delete process.env.VITEST;
         delete process.env.JEST_WORKER_ID;
         const logger = { warn: vi.fn() };
@@ -231,7 +246,7 @@ describe("configureDevAutoProvisioningIfApplicable Tests", () => {
 
     it("fills in enabled/domains/static_aliases with dev defaults when none are already configured.", () => {
         process.argv[1] = "/project/src/server.ts";
-        delete process.env.NODE_ENV;
+        process.env.NODE_ENV = "development";
         delete process.env.VITEST;
         delete process.env.JEST_WORKER_ID;
         const logger = { warn: vi.fn() };
@@ -247,7 +262,7 @@ describe("configureDevAutoProvisioningIfApplicable Tests", () => {
 
     it("offers the dev-user alias whatever mail:dev_auto_login:uid is, since the uid is a UUID rather than a username.", () => {
         process.argv[1] = "/project/src/server.ts";
-        delete process.env.NODE_ENV;
+        process.env.NODE_ENV = "development";
         delete process.env.VITEST;
         delete process.env.JEST_WORKER_ID;
         const logger = { warn: vi.fn() };
@@ -260,7 +275,7 @@ describe("configureDevAutoProvisioningIfApplicable Tests", () => {
 
     it("leaves an admin's own explicit mail:auto_provision:enabled/mail:domains/static_aliases alone.", () => {
         process.argv[1] = "/project/src/server.ts";
-        delete process.env.NODE_ENV;
+        process.env.NODE_ENV = "development";
         delete process.env.VITEST;
         delete process.env.JEST_WORKER_ID;
         const logger = { warn: vi.fn() };

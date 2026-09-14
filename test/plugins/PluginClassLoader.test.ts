@@ -55,6 +55,15 @@ describe("PluginClassLoader", () => {
         expect(onPluginsLoaded).toHaveBeenCalledTimes(1);
     });
 
+    it("runs afterLoad once, after the server's own and the plugins' classes are all loaded", async () => {
+        const loader = new PluginClassLoader(path.join(dir, "base"), undefined, [plugin("@rapidmx/good", "good.mjs")]);
+        const seen: string[][] = [];
+        loader.afterLoad = vi.fn(async (classes: Map<string, any>) => void seen.push([...classes.keys()]));
+        await loader.load();
+        expect(loader.afterLoad).toHaveBeenCalledTimes(1);
+        expect(seen[0]).toEqual(expect.arrayContaining(["routes.OwnRoute", "plugins.rapidmx_good.DeviceModel"]));
+    });
+
     it("doesn't report loading plugins when there are none", async () => {
         const onPluginsLoaded = vi.fn();
         await new PluginClassLoader(path.join(dir, "base"), undefined, [], undefined, onPluginsLoaded).load();

@@ -26,6 +26,12 @@ export class PluginClassLoader extends ClassLoader {
     /** The plugins whose entry points imported cleanly. */
     public readonly loaded: InstalledPlugin[] = [];
 
+    /**
+     * Runs once every class - the server's own and the plugins' - is loaded, still inside `Server.start()` before it
+     * connects its datastores: the point to adjust model metadata for all of them (see lib/sqlColumnTypes.ts).
+     */
+    public afterLoad?: (classes: Map<string, any>) => Promise<void>;
+
     constructor(
         rootDir: string,
         ignore: RegExp[] | undefined,
@@ -58,5 +64,6 @@ export class PluginClassLoader extends ClassLoader {
                 this.logger?.error(`Plugin ${plugin.name}@${plugin.version} failed to load: ${err.stack ?? err.message}`);
             }
         }
+        await this.afterLoad?.(this.getClasses());
     }
 }

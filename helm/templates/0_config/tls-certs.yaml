@@ -1,4 +1,4 @@
-{{- if and $.Values.gateway.tls (ne $.Values.host "localhost") (not (contains ".local" $.Values.host)) }}
+{{- if eq (include "server.certificateEnabled" $) "true" }}
 ---
 apiVersion: cert-manager.io/v1
 kind: Certificate
@@ -32,4 +32,29 @@ spec:
     # We can reference ClusterIssuers by changing the kind here.
     # The default value is Issuer (i.e. a locally namespaced Issuer)
     kind: ClusterIssuer
+{{- end }}
+{{- $httpsListener := include "server.httpsListener" $ }}
+{{- $gatewayNamespace := tpl $.Values.gateway.namespace $ }}
+{{- if and $httpsListener (ne (include "server.ownsGateway" $) "true") (ne $gatewayNamespace $.Release.Namespace) }}
+---
+# A Gateway in another namespace (gateway.namespace) may only use this release's certificate Secret with this grant.
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: {{ include "rrst.fullname" . }}-tls-cert
+  namespace: {{ $.Release.Namespace }}
+spec:
+  from:
+  - group: gateway.networking.k8s.io
+    kind: Gateway
+    namespace: {{ $gatewayNamespace }}
+  to:
+  - group: ""
+    kind: Secret
+    name: {{ $.Values.host }}-tls-cert
+  {{- if include "server.authHttpsListener" $ }}
+  - group: ""
+    kind: Secret
+    name: {{ $.Values.authServer.host }}-tls-cert
+  {{- end }}
 {{- end }}

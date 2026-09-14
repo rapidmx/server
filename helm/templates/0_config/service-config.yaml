@@ -49,7 +49,7 @@ data:
   # from inside the cluster - hence the authServer subdomain host, not a Service DNS name. Only rendered
   # when authServer is actually enabled; set mail__auth_server_url directly via service.config otherwise.
   {{- if $.Values.authServer.create }}
-  mail__auth_server_url: {{ printf "%s://%s" $publicScheme $.Values.authServer.host | quote }}
+  mail__auth_server_url: {{ printf "%s://%s" (ternary "https" "http" (or (ne (include "server.authHttpsListener" $) "") (and (eq $.Values.authServer.host $.Values.host) (eq $publicScheme "https")))) $.Values.authServer.host | quote }}
   {{- end }}
   {{- range $k, $v := $.Values.service.config }}
   {{- if kindIs "string" $v }}
@@ -70,22 +70,13 @@ metadata:
   name: {{ include "rrst.fullname" . }}-service-db-info
 type: Opaque
 data:
-  {{- $mongoRootUser := "" }}
-  {{- $mongoRootPassword := "" }}
-  {{- if and $.Values.mongodb.create $.Values.mongodb.auth.enabled }}
-  {{- $mongoSecret := (lookup "v1" "Secret" $.Release.Namespace $.Values.mongodb.fullnameOverride) | default dict }}
-  {{- $mongoSecretData := (get $mongoSecret "data") | default dict }}
-  {{- $mongoRootUser = "root" }}
-  {{- $mongoRootPassword = (get $mongoSecretData "mongodb-root-password") | default "" | b64dec }}
-  {{- end }}
-  {{- $postgresUser := "" }}
-  {{- $postgresPassword := "" }}
-  {{- if and $.Values.postgresql.create $.Values.postgresql.auth.enablePostgresUser }}
-  {{- $postgresSecret := (lookup "v1" "Secret" $.Release.Namespace $.Values.postgresql.fullnameOverride) | default dict }}
-  {{- $postgresSecretData := (get $postgresSecret "data") | default dict }}
-  {{- $postgresUser = "postgres" }}
-  {{- $postgresPassword = (get $postgresSecretData "postgres-password") | default "" | b64dec }}
-  {{- end }}
+  {{- /*
+  The bundled databases' passwords are not read here: on a fresh install their Secrets don't exist yet when this renders
+  (`lookup` finds nothing), so they reach the pod as secretKeyRef env vars instead - see "server.datastorePasswordEnv" in
+  1_deployments/service.yaml. Only the parts that don't need the password are rendered here.
+  */}}
+  {{- $mongoAuth := and $.Values.mongodb.create $.Values.mongodb.auth.enabled }}
+  {{- $postgresAuth := and $.Values.postgresql.create $.Values.postgresql.auth.enablePostgresUser }}
   {{- if $.Values.mongodb.create }}
   datastores__acl__database: {{ include "rrst.render" (dict "value" $.Values.service.mongodb.acl.name "context" $) | b64enc | quote }}
   datastores__acl__host: {{ include "rrst.render" (dict "value" $.Values.service.mongodb.acl.host "context" $) | default (printf "%s" $.Values.mongodb.fullnameOverride) | b64enc | quote }}
@@ -94,9 +85,8 @@ data:
   datastores__acl__url: {{ (include "rrst.render" (dict "value" $.Values.mongodb.url "context" $) | b64enc | quote) }}
   {{- else if $.Values.service.mongodb.acl.url }}
   datastores__acl__url: {{ (include "rrst.render" (dict "value" $.Values.service.mongodb.acl.url "context" $) | b64enc | quote) }}
-  {{- else if $mongoRootPassword }}
-  datastores__acl__username: {{ $mongoRootUser | b64enc | quote }}
-  datastores__acl__password: {{ $mongoRootPassword | b64enc | quote }}
+  {{- else if $mongoAuth }}
+  datastores__acl__username: {{ $.Values.mongodb.auth.rootUser | default "root" | b64enc | quote }}
   datastores__acl__options: {{ print "authSource=admin" | b64enc | quote }}
   {{- end }}
   datastores__mongo__database: {{ include "rrst.render" (dict "value" $.Values.service.mongodb.mongo.name "context" $) | b64enc | quote }}
@@ -106,9 +96,8 @@ data:
   datastores__mongo__url: {{ include "rrst.render" (dict "value" $.Values.mongodb.url "context" $) | b64enc | quote }}
   {{- else if $.Values.service.mongodb.mongo.url }}
   datastores__mongo__url: {{ include "rrst.render" (dict "value" $.Values.service.mongodb.mongo.url "context" $) | b64enc | quote }}
-  {{- else if $mongoRootPassword }}
-  datastores__mongo__username: {{ $mongoRootUser | b64enc | quote }}
-  datastores__mongo__password: {{ $mongoRootPassword | b64enc | quote }}
+  {{- else if $mongoAuth }}
+  datastores__mongo__username: {{ $.Values.mongodb.auth.rootUser | default "root" | b64enc | quote }}
   datastores__mongo__options: {{ print "authSource=admin" | b64enc | quote }}
   {{- end }}
   {{- else if $.Values.postgresql.create }}
@@ -119,9 +108,8 @@ data:
   datastores__acl__url: {{ (include "rrst.render" (dict "value" $.Values.postgresql.url "context" $) | b64enc | quote) }}
   {{- else if $.Values.service.postgresql.acl.url }}
   datastores__acl__url: {{ (include "rrst.render" (dict "value" $.Values.service.postgresql.acl.url "context" $) | b64enc | quote) }}
-  {{- else if $postgresPassword }}
-  datastores__acl__username: {{ $postgresUser | b64enc | quote }}
-  datastores__acl__password: {{ $postgresPassword | b64enc | quote }}
+  {{- else if $postgresAuth }}
+  datastores__acl__username: {{ print "postgres" | b64enc | quote }}
   {{- end }}
   datastores__sql__type: {{ print "postgres" | b64enc | quote }}
   {{- /*
@@ -138,8 +126,8 @@ data:
   datastores__sql__url: {{ include "rrst.render" (dict "value" $.Values.postgresql.url "context" $) | b64enc | quote }}
   {{- else if $.Values.service.postgresql.sql.url }}
   datastores__sql__url: {{ include "rrst.render" (dict "value" $.Values.service.postgresql.sql.url "context" $) | b64enc | quote }}
-  {{- else if $postgresPassword }}
-  datastores__sql__url: {{ (printf "postgres://%s:%s@%s/%s" $postgresUser $postgresPassword $sqlHost $sqlDatabase) | b64enc | quote }}
+  {{- else if $postgresAuth }}
+  {{- /* datastores__sql__url itself is an env var in 1_deployments/service.yaml, built around the secretKeyRef password. */}}
   {{- else }}
   datastores__sql__url: {{ (printf "postgres://%s/%s" $sqlHost $sqlDatabase) | b64enc | quote }}
   {{- end }}

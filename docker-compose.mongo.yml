@@ -35,6 +35,10 @@ services:
             - auth__options__audience=${AUTH_AUDIENCE:-mydomain.com}
             - auth__options__issuer=${AUTH_ISSUER:-api.mydomain.com}
             - cookie_secret=${COOKIE_SECRET:-f0fLSKFJLKWJFe09f32joff098u2fOFIWJ32890fnfnlak}
+            # Keys the escrow audit log's hash chain (HMAC-SHA256). Unset, it falls back to unkeyed SHA-256, which anyone
+            # with database write access can rewrite undetectably. Generate once (e.g. `openssl rand -hex 32`) and never
+            # change it: entries chained under an old key stop verifying.
+            - mail__escrow__audit_hmac_key=${ESCROW_AUDIT_HMAC_KEY:-}
             # Browser-facing: apps/www's/apps/admin's unauthenticated-redirect and this service's own SSR
             # both resolve auth-server through this URL, so it must be reachable from the visitor's browser,
             # not just from inside the compose network (hence localhost:3001, not http://auth-server:3000).

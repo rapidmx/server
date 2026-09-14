@@ -14,6 +14,7 @@ import { Logger } from "@rapidrest/core";
 import {
     assertRawMimeHeadersMatch,
     BaseMailComposeRoute,
+    decodeEncodedWords,
     parseTopLevelHeaders,
     rewriteInlineImageSources,
     sanitizeComposeHtml,
@@ -186,7 +187,7 @@ describe("BaseMailComposeRoute.assembleRaw() header and size checks", () => {
 
     it("accepts an alias address as From, case-insensitively", async () => {
         const route = buildRoute();
-        await route.assembleRaw("m1", input(["FROM: Al <AL@Example.com>", "To: Bob <bob@example.com>"]), user);
+        await route.assembleRaw("m1", input(["FROM: Alice <AL@Example.com>","To: Bob <bob@example.com>"]), user);
         expect((route as any).blobStore.put).toHaveBeenCalled();
     });
 
@@ -199,8 +200,79 @@ describe("BaseMailComposeRoute.assembleRaw() header and size checks", () => {
     });
 });
 
+describe("BaseMailComposeRoute replaced body blobs", () => {
+    const mailbox = { uid: "mb1", displayName: "Alice", primarySmtpAddress: "alice@example.com", aliasAddresses: [] };
+    const user = { uid: "u1" } as any;
+    const rawInput = {
+        to: [{ address: "bob@example.com" }],
+        subject: "[...]",
+        rawMime: rawMessage(["From: alice@example.com", "To: bob@example.com"]),
+    };
+    const htmlInput = { to: [{ address: "bob@example.com" }], html: "<p>hi</p>" };
+
+    function buildRoute(bodyBlobKey: string | undefined, opts: { references?: number; updateError?: Error } = {}) {
+        const message = { uid: "m1", version: 3, folderUid: "f1", mailboxUid: "mb1", bodyBlobKey };
+        const route = new (TestMailComposeRoute as any)();
+        route._objectFactory = { newInstance: vi.fn() };
+        route.messageRepo = {
+            findOne: vi.fn().mockResolvedValue(message),
+            update: opts.updateError ? vi.fn().mockRejectedValue(opts.updateError) : vi.fn().mockResolvedValue(message),
+            count: vi.fn().mockResolvedValue(opts.references ?? 0),
+        };
+        route.folderRepo = { findOne: vi.fn().mockResolvedValue({ uid: "f1", type: "drafts" }) };
+        route.mailboxRepo = { findOne: vi.fn().mockResolvedValue(mailbox) };
+        route.attachmentRepo = { count: vi.fn().mockResolvedValue(0), find: vi.fn().mockResolvedValue([]) };
+        route.aclUtils = { hasPermission: vi.fn().mockResolvedValue(true) };
+        route.blobStore = { put: vi.fn().mockResolvedValue(undefined), delete: vi.fn().mockResolvedValue(undefined) };
+        return route;
+    }
+
+    it.each([
+        ["assembleRaw", (route: any) => route.assembleRaw("m1", rawInput, user)],
+        ["assemble", (route: any) => route.assemble("m1", htmlInput, user)],
+    ])("%s() deletes the body blob it replaces once no message references it", async (_name, run) => {
+        const route = buildRoute("bodies/old");
+        await run(route);
+
+        const newKey: string = route.blobStore.put.mock.calls[0][0];
+        expect(route.messageRepo.update.mock.calls[0][0].bodyBlobKey).toBe(newKey);
+        expect(route.messageRepo.count).toHaveBeenCalledWith({ bodyBlobKey: "eq(bodies/old)" }, { ignoreACL: true, includeDeleted: true });
+        expect(route.blobStore.delete).toHaveBeenCalledWith("bodies/old");
+        expect(route.blobStore.delete).not.toHaveBeenCalledWith(newKey);
+    });
+
+    it("keeps the replaced blob while another message still references it", async () => {
+        const route = buildRoute("bodies/old", { references: 1 });
+        await route.assembleRaw("m1", rawInput, user);
+        expect(route.blobStore.delete).not.toHaveBeenCalled();
+    });
+
+    it("never deletes a replaced blob this compose path didn't create, or when there was none", async () => {
+        for (const key of ["ingest/raw-1", undefined]) {
+            const route = buildRoute(key);
+            await route.assembleRaw("m1", rawInput, user);
+            expect(route.messageRepo.count).not.toHaveBeenCalled();
+            expect(route.blobStore.delete).not.toHaveBeenCalled();
+        }
+    });
+
+    it("deletes the new blob and keeps the old one when the update fails", async () => {
+        const route = buildRoute("bodies/old", { updateError: new Error("version conflict") });
+        await expect(route.assembleRaw("m1", rawInput, user)).rejects.toThrow(/version conflict/);
+        const newKey: string = route.blobStore.put.mock.calls[0][0];
+        expect(route.blobStore.delete).toHaveBeenCalledTimes(1);
+        expect(route.blobStore.delete).toHaveBeenCalledWith(newKey);
+    });
+
+    it("still returns the updated draft when deleting the replaced blob fails", async () => {
+        const route = buildRoute("bodies/old");
+        route.blobStore.delete.mockRejectedValue(new Error("store down"));
+        await expect(route.assembleRaw("m1", rawInput, user)).resolves.toMatchObject({ uid: "m1" });
+    });
+});
+
 describe("assertRawMimeHeadersMatch()", () => {
-    const mailbox = { primarySmtpAddress: "alice@example.com", aliasAddresses: ["al@example.com"] };
+    const mailbox = { primarySmtpAddress: "alice@example.com", aliasAddresses: ["al@example.com"], displayName: "Alice Smith" };
     const to = [{ address: "bob@example.com" }];
     const check = (headers: string[], body: any = { to }) => () => assertRawMimeHeadersMatch(rawMessage(headers), mailbox, body);
 
@@ -213,6 +285,61 @@ describe("assertRawMimeHeadersMatch()", () => {
         expect(check(["To: bob@example.com"])).toThrow(/From header/);
         expect(check(["From: alice@example.com", "From: alice@example.com", "To: bob@example.com"])).toThrow(/From header/);
         expect(check(["From: alice@example.com, al@example.com", "To: bob@example.com"])).toThrow(/From header/);
+    });
+
+    it("accepts no display name or the mailbox's own, including RFC 2047-encoded, on From and Sender", () => {
+        for (const from of [
+            "alice@example.com",
+            "<alice@example.com>",
+            "Alice Smith <alice@example.com>",
+            '"Alice Smith" <alice@example.com>',
+            "=?UTF-8?B?QWxpY2UgU21pdGg=?= <alice@example.com>",
+            "=?utf-8?Q?Alice_Smith?= <al@example.com>",
+        ]) {
+            expect(check([`From: ${from}`, `Sender: ${from}`, "To: bob@example.com"]), from).not.toThrow();
+        }
+    });
+
+    it("rejects any other display name on From or Sender", () => {
+        expect(check(["From: CEO <alice@example.com>", "To: bob@example.com"])).toThrow(/From header/);
+        expect(check(["From: =?UTF-8?B?Q0VP?= <alice@example.com>", "To: bob@example.com"])).toThrow(/From header/);
+        expect(check(["From: alice@example.com", "Sender: Support <al@example.com>", "To: bob@example.com"])).toThrow(/Sender header/);
+    });
+
+    it("rejects From/Sender values with a second address or address-like leftovers", () => {
+        for (const from of [
+            "bob@evil.com <alice@example.com>",
+            "Alice Smith <alice@example.com> <x@evil.com>",
+            "Alice Smith <alice@example.com> bob@evil.com",
+            "alice@example.com (evil@example.net)",
+            "Group: alice@example.com;",
+        ]) {
+            expect(check([`From: ${from}`, "To: bob@example.com"]), from).toThrow(/From header/);
+            expect(check(["From: alice@example.com", `Sender: ${from}`, "To: bob@example.com"]), from).toThrow(/Sender header/);
+        }
+    });
+
+    it("rejects trace and authentication headers a relay or receiver would add", () => {
+        for (const header of [
+            "Authentication-Results: mx.example.com; dkim=pass",
+            "DKIM-Signature: v=1; d=example.com",
+            "Received: from x by y",
+            "Received-SPF: pass",
+            "Return-Path: <ceo@example.com>",
+            "ARC-Seal: i=1",
+            "ARC-Authentication-Results: i=1; mx.example.com",
+            "RapidMX-Key: addr=alice@example.com",
+            "RapidMX-Key-Gossip: addr=bob@example.com",
+            "X-RapidMX-Spam: no",
+        ]) {
+            expect(check(["From: alice@example.com", "To: bob@example.com", header]), header).toThrow(/only a receiving or relaying server/);
+        }
+    });
+
+    it("decodeEncodedWords() joins adjacent encoded-words and leaves invalid ones as-is", () => {
+        expect(decodeEncodedWords("=?UTF-8?B?QWxp?= =?UTF-8?B?Y2U=?=")).toBe("Alice");
+        expect(decodeEncodedWords("=?ISO-8859-1?Q?Andr=E9?= Smith")).toBe("André Smith");
+        expect(decodeEncodedWords("=?x-unknown?B?QQ==?=")).toBe("=?x-unknown?B?QQ==?=");
     });
 
     it("rejects a Sender that isn't the mailbox's", () => {

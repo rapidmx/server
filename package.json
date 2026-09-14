@@ -33,6 +33,7 @@
     "trailingComma": "es5"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.906.0",
     "@rapidmx/react-shared": "^0.4.0",
     "@rapidmx/restapi": "patch:@rapidmx/restapi@npm%3A0.8.0#~/.yarn/patches/@rapidmx-restapi-npm-0.8.0-d588a97668.patch",
     "@rapidmx/web-client": "^0.4.0",

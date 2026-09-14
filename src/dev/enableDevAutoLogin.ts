@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import { AuthMiddleware, RouteUtils, type ObjectFactory, type Server } from "@rapidrest/service-core";
+import { DEVELOPMENT_ENVIRONMENTS } from "../config.defaults.js";
 import { DevAutoAuthStrategy } from "./DevAutoAuthStrategy.js";
 import { DevImpersonationRoute } from "./DevImpersonationRoute.js";
 
@@ -14,13 +15,15 @@ export const DEV_USER_ALIAS = "dev-user";
  * compiled `dist/**\/*.js` run (production) and never a test runner. Mirrors `@rapidrest/react`'s own
  * `hasTsxContext` detection in `ReactRoute.resolveAppFile()` (same signal, same reasoning, already proven to
  * correctly distinguish tsx-run source from compiled output in this exact project): a `.ts`-suffixed entry
- * point is only ever tsx running real source, and the `NODE_ENV`/`VITEST`/`JEST_WORKER_ID` checks rule out
+ * point is only ever tsx running real source, and the `NODE_ENV` (must be dev/development/test)/`VITEST`/`JEST_WORKER_ID` checks rule out
  * the ambiguous cases a bare extension check alone can't (a misconfigured `NODE_ENV` on a real deployment
  * that somehow still ran from `.ts`, or a test runner that happens to import this module).
  */
 export function isRunningUnderYarnDev(): boolean {
     return (
-        process.env.NODE_ENV !== "production" &&
+        // An explicit development NODE_ENV (`rapidrest dev` sets `development`), not merely "not production": a
+        // deployment that forgot to set NODE_ENV at all must never auto-authenticate every request.
+        DEVELOPMENT_ENVIRONMENTS.includes(process.env.NODE_ENV ?? "") &&
         !process.env.VITEST &&
         !process.env.JEST_WORKER_ID &&
         (process.argv[1]?.endsWith(".ts") ?? false)

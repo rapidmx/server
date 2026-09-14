@@ -12,8 +12,8 @@ metadata:
 spec:
   accessModes:
     - {{ .Values.mail.dkim.storage.accessMode }}
-  {{- if ne (tpl .Values.mail.dkim.storage.storageClassName .) "default" }}
-  storageClassName: {{ tpl .Values.mail.dkim.storage.storageClassName . | quote }}
+  {{- with include "server.pvcStorageClass" (dict "name" (printf "%s-dkim-keys" (include "rrst.fullname" .)) "value" .Values.mail.dkim.storage.storageClassName "context" .) }}
+  {{ . }}
   {{- end }}
   resources:
     requests:
@@ -30,8 +30,8 @@ metadata:
 spec:
   accessModes:
     - {{ .Values.mail.blob.storage.accessMode }}
-  {{- if ne (tpl .Values.mail.blob.storage.storageClassName .) "default" }}
-  storageClassName: {{ tpl .Values.mail.blob.storage.storageClassName . | quote }}
+  {{- with include "server.pvcStorageClass" (dict "name" (printf "%s-blob-data" (include "rrst.fullname" .)) "value" .Values.mail.blob.storage.storageClassName "context" .) }}
+  {{ . }}
   {{- end }}
   resources:
     requests:
@@ -49,8 +49,8 @@ metadata:
 spec:
   accessModes:
     - {{ .Values.mail.pki.storage.accessMode }}
-  {{- if ne (tpl .Values.mail.pki.storage.storageClassName .) "default" }}
-  storageClassName: {{ tpl .Values.mail.pki.storage.storageClassName . | quote }}
+  {{- with include "server.pvcStorageClass" (dict "name" (printf "%s-pki-data" (include "rrst.fullname" .)) "value" .Values.mail.pki.storage.storageClassName "context" .) }}
+  {{ . }}
   {{- end }}
   resources:
     requests:

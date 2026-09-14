@@ -5017,3 +5017,91 @@ for mongo(+debug)/sql/openbao. `docker build` succeeded; the image booted on an 
 ports) with Mongo + Redis and real secrets -> `/api/status` 200, `require('pg')` works, no vite/vitest/tsx/nodemon/rapidrest
 in node_modules/.bin, `/var/lib/rapidmx/pki` owned by node, runs as uid 1000; with default secrets it refuses to start.
 Verification image/containers removed afterwards.
+
+## 2026-09-14 — Review round 4 fixes: model registration, k8s mail relay, fresh-install DB creds, Gateway TLS, compose route
+
+Every finding was confirmed against the code before fixing. Nothing committed, no version bumps, `.yarn/patches` untouched.
+
+1. **CRITICAL models** - `src/{mongo,sql}/Models.ts` re-exported 18 of restapi's 42 models; the ClassLoader (and so the
+   ConnectionManager's entity list) only sees what these files export, so 24 SQL entities were missing and 24 Mongo
+   collections got no indexes. Now an explicit full list (not `export *`: `@rapidmx/restapi/{mongo,sql}` also exports
+   routes and jobs, which the server mounts selectively). `test/Models.test.ts` compares each file's exports with every
+   class restapi's entry point exports that carries `rrst:datasource` (and requires the files to export nothing else);
+   verified it fails against the old file. Plugin models are fine: `PluginClassLoader` registers every export of a
+   plugin's `./mongo`/`./sql` entry, and the installed activesync-plugin entries export `DeviceSyncState*` (the activesync
+   repo's source also exports `EasCollectionState*`), which `Server.start()` picks up by datasource metadata.
+2. **HIGH k8s outbound mail** - `command: ["node"]` replaced the image ENTRYPOINT (`scripts/docker-entrypoint.sh`, which
+   writes `~/.msmtprc`). Now `args` only. New values `mail.relay.{host,port,tls,fromAddress}` -> `SENDMAIL_RELAY_*` /
+   `SENDMAIL_FROM_ADDRESS` env; host defaults to `postfix` (the postfix-bridge chart's SMTP Service name), from defaults
+   to `mailer@<mxHostname|host>`.
+3. **HIGH fresh-install DB creds** - service-db-info/db-redis-info read subchart Secrets with `lookup`, empty on a fresh
+   install. Now `"server.datastoreEnv"` (`_helpers.tpl`) renders `secretKeyRef` env from the Bitnami Secrets (name =
+   `auth.existingSecret` or `fullnameOverride`; keys `mongodb-root-password`, `postgres-password`/`secretKeys.adminPasswordKey`,
+   `redis-password`/`existingSecretPasswordKey`); URLs embed the password via `$(RAPIDMX_POSTGRES_PASSWORD)` /
+   `$(RAPIDMX_REDIS_PASSWORD)` expansion (user-set passwords must be URL-safe; buildConnectionUri doesn't encode either).
+   db-redis-info joined checksum/secrets (service-db-info was already in checksum/config via service-config.yaml). The
+   subchart Secrets themselves aren't checksummed: a pod re-reads them at start, the Bitnami password only applies at DB
+   init anyway, and a lookup-based checksum would roll pods once on the first upgrade after install. NOTES.txt's "run
+   helm upgrade after install" note removed. **Not fixed here (other repo):** the auth-server subchart
+   (`charts/auth-server-1.0.0-beta.1.tgz`: 0_config/service-config.yaml, redis.yaml, NOTES.txt) has the identical lookup
+   bug.
+4. **HIGH upgrades** - Recreate now renders `rollingUpdate: null`. PVCs use `"server.pvcStorageClass"`: the live PVC's
+   `spec.storageClassName` wins when the claim exists (covers the round-3 "default" upgrade case and cluster-defaulted
+   classes).
+5. **HIGH S3** - `yarn add @aws-sdk/client-s3@^3.906.0` (restapi's own devDependency range; resolved 3.1132.0). In
+   `dependencies`, so the Dockerfile's `yarn workspaces focus --production` ships it. Image not rebuilt this round.
+6. **HIGH installer TLS** - chart: `server.tlsEnabled` now means "a listener serves HTTPS for host": the chart's own
+   Gateway, or `gateway.httpsListener` set for someone else's. Otherwise routes attach to `http` with no redirect and
+   public URLs are http. With `gateway.httpsListener` and a Gateway in another namespace, tls-certs.yaml renders a
+   ReferenceGrant for `<host>-tls-cert` (plus `<authServer.host>-tls-cert` with `gateway.authHttpsListener`). Installer:
+   HTTPS listener (hostname + certificateRefs to `$NAMESPACE/$DOMAIN-tls-cert`) only when TLS=true and DOMAIN isn't
+   localhost/*.local, passes `gateway.httpsListener`, and the nginx stream block only forwards 443 when that NodePort
+   exists (it would have written `proxy_pass 127.0.0.1:;` otherwise). The ReferenceGrant is in the chart rather than the
+   installer, since it must live in the release namespace, which doesn't exist yet when the installer applies the Gateway.
+7. **MEDIUM SNI** - own Gateway: `https` (hostname host) and `https-auth` (hostname authServer.host), one cert each. The
+   auth-server subchart's HTTPRoute only attaches to `http` (and carries an invalid `tls` field - other repo), so this
+   chart adds `<release>-auth-https` routing `https-auth` to the subchart Service; `mail__auth_server_url` is https only
+   when that listener exists.
+8. **MEDIUM GitOps secrets** - `"server.assertStableSecrets"`: when any of cookies.secret/sessions.secret/
+   mail.escrow.auditHmacKey would be generated and `lookup "v1" "Namespace" "" "default"` is empty, fail via `required`
+   (so `helm lint` still passes). New `secrets.existingSecret` skips the generated Secret. Caveat: a real install whose
+   RBAC forbids reading Namespaces fails the lookup itself.
+9. **MEDIUM orphaned bodies** - `BlobReferenceUtils` exists in restapi but isn't exported from `util/index` (neither the
+   installed 0.8.0 patch nor current restapi source) -> **coordinator: consider exporting it**. `storeBody()` in
+   BaseMailComposeRoute: the new blob is deleted if the update fails; after success the previous key is deleted only if it
+   starts with `bodies/` (this route, EAS ComposeMail/EmailSyncAdapter and MAPI RopSubmitMessage all use that prefix;
+   ingest doesn't) and `count({bodyBlobKey: eq(key)}, {includeDeleted: true})` is 0; delete failures only log.
+10. **MED-LOW raw MIME** - From/Sender: at most one `<`/`>` and exactly one `@` outside quoted strings, one non-group
+    address of the mailbox, display name empty or equal to `mailbox.displayName` (RFC 2047 decoded). Rejected headers:
+    Authentication-Results, DKIM-Signature, Received, Received-SPF, Return-Path, ARC-*, RapidMX-Key*, X-RapidMX-*.
+11. **MED-LOW shutdown hang** - `drainAndStop({release, releaseTimeoutMs = 5 s})` runs `pluginHost.stop({shutdown})` first
+    via `withTimeout()`; `stopServer`'s own `pluginHost.stop()` is bounded the same way in all three workers.
+12. **LOW dev auto-login** - `isRunningUnderYarnDev()` requires NODE_ENV in `DEVELOPMENT_ENVIRONMENTS` (`rapidrest dev`
+    sets `development`).
+13. **LOW `.local`** - `"server.publicHost"`: not `localhost`, `*.localhost`, `*.local` (hasSuffix). The auth listener
+    still mirrors the subchart's own `contains ".local"` check, since the subchart decides whether its cert exists.
+14. **LOW** - `mongodb.create` + `postgresql.create` -> render fails.
+15. **LOW telemetry** - `telemetryTokenRenewIntervalMs()` caps at 2^31-1 ms.
+16. **Contract** - `mail.escrow.auditHmacKey` generated/persisted like the cookie secret as `mail__escrow__audit_hmac_key`
+    in `<release>-service-secrets`; compose `mail__escrow__audit_hmac_key=${ESCROW_AUDIT_HMAC_KEY:-}`; README table.
+    prometheus.io annotations removed (metrics need a bearer token; no ServiceMonitor added).
+
+Also found: with the `authServer` alias the subchart named its resources `rmx-authServer-*` (uppercase, invalid Kubernetes
+names). Fixed with `authServer.nameOverride: auth-server` in values.yaml.
+
+**Coordinator add-on - applySqlDriverColumnTypes**: not in the installed restapi dist yet, so `src/lib/sqlColumnTypes.ts`
+reads it off the `@rapidmx/restapi/sql` namespace (typechecks either way; on mysql/mariadb logs an error while missing).
+It can't run before `server.start()` for plugin models (plugins are imported inside `start()` by the class loader), so
+the new `PluginClassLoader.afterLoad` hook runs it once all classes are loaded and before `Server.start()` connects its
+datastores, with every `rrst:datasource === "sql"` class (restapi's via Models.ts plus plugin models). Wired in
+worker.sql.ts only (worker.ts is Mongo-only). After the patch refresh it can become a direct import.
+
+**Verification**: `npx tsc --noEmit -p .` clean; `yarn lint` clean; full `yarn vitest run` passed (restapi's vitest was
+running concurrently, no port flakiness). Server.sql's `SqliteError: near "EXISTS"` SearchProvider log lines are
+pre-existing (same with the old Models.ts). `helm lint` passes with and without values; `helm template` checked for: no
+generated secrets (fails with the GitOps message), a partial set, secrets.existingSecret, both DBs (fails), postgres +
+redis auth off (env + service-db-info), mongo + redis with existingSecret/key overrides, replicas 2 + s3 + RWX + dev (no
+strategy, `node --inspect` args), a TLS host on the chart's own Gateway (per-host listeners, auth-https route, redirect),
+an external Gateway without/with httpsListener/authHttpsListener (http + no redirect / sectionName + ReferenceGrant),
+localhost, *.cluster.local, *.localhost, *.localdomain.com. Installer: `bash -n`, and the Gateway/nginx snippets rendered
+for a public and a .local domain. `docker compose config -q` for mongo/sql.

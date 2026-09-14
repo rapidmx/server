@@ -13,6 +13,9 @@ than leaving extra pods stuck in ContainerCreating on a Multi-Attach error.
 {{- if ne $.Values.mail.pki.storage.accessMode "ReadWriteMany" }}
 {{- $rwoVolumes = append $rwoVolumes "mail.pki.storage" }}
 {{- end }}
+{{- if and $.Values.mongodb.create $.Values.postgresql.create }}
+{{- fail "mongodb.create and postgresql.create are both true, but the server runs against exactly one database: set one of them to false." }}
+{{- end }}
 {{- if and (gt (int $.Values.service.replicas) 1) $rwoVolumes }}
 {{- fail (printf "service.replicas is %d, but %s use ReadWriteOnce storage, which only one pod can mount. Set their accessMode to ReadWriteMany (with a storage class that supports it) - and mail.blob.backend to \"s3\" instead, if you prefer - or set service.replicas to 1." (int $.Values.service.replicas) (join ", " $rwoVolumes)) }}
 {{- end }}
@@ -32,6 +35,9 @@ spec:
   # rolling update would hang; stop the old pod first.
   strategy:
     type: Recreate
+    # Explicitly cleared: an upgrade from a release that used the default RollingUpdate strategy would otherwise keep
+    # the live object's rollingUpdate settings, which the API server rejects together with Recreate.
+    rollingUpdate: null
   {{- end }}
   selector:
     matchLabels:
@@ -43,11 +49,13 @@ spec:
         app.kubernetes.io/instance: {{ include "rrst.fullname" . }}-services
         environment: {{ $.Values.environment }}
       annotations:
-        prometheus.io/scrape: "true"
-        prometheus.io/port: "3000"
-        # Roll the pods when their configuration or secrets change - they're only read at startup.
+        # No prometheus.io/scrape annotations: /api/metrics requires a token with a trusted role
+        # (service.config.metrics__authRequired), which annotation-based discovery can't send - configure a scrape job
+        # (or ServiceMonitor) with a bearer token for path /api/metrics on port 3000 instead.
+        # Roll the pods when their configuration or secrets change - they're only read at startup. service-config.yaml
+        # includes the service-db-info Secret; the database passwords themselves come from the subcharts' Secrets.
         checksum/config: {{ include (print $.Template.BasePath "/0_config/service-config.yaml") . | sha256sum }}
-        checksum/secrets: {{ print (include (print $.Template.BasePath "/0_config/jwt-auth.yaml") .) (include (print $.Template.BasePath "/0_config/mail-ingest-secret.yaml") .) (include (print $.Template.BasePath "/0_config/service-secrets.yaml") .) | sha256sum }}
+        checksum/secrets: {{ print (include (print $.Template.BasePath "/0_config/jwt-auth.yaml") .) (include (print $.Template.BasePath "/0_config/mail-ingest-secret.yaml") .) (include (print $.Template.BasePath "/0_config/service-secrets.yaml") .) (include (print $.Template.BasePath "/0_config/redis.yaml") .) | sha256sum }}
     spec:
       {{- if $.Values.service.imagePullSecret }}
       imagePullSecrets:
@@ -77,11 +85,14 @@ spec:
           for Postgres - see docker-compose.mongo.yml/sql.yml's own identical fix.
           */}}
           {{- $entrypoint := ternary "dist/src/server.sql.js" "dist/src/server.mongo.js" $.Values.postgresql.create }}
-          command: ["node"]
+          {{- /*
+          `args` only, never `command`: `command` replaces the image's ENTRYPOINT (scripts/docker-entrypoint.sh), which
+          writes the msmtp config PostfixSendmailTransport relays outbound mail through - without it every send fails.
+          */}}
           {{- if ne $.Values.environment "production" }}
-          args: ["--inspect=127.0.0.1:9229", {{ $entrypoint | quote }}]
+          args: ["node", "--inspect=127.0.0.1:9229", {{ $entrypoint | quote }}]
           {{- else }}
-          args: [{{ $entrypoint | quote }}]
+          args: ["node", {{ $entrypoint | quote }}]
           {{- end }}
           {{- with $.Values.service.securityContext }}
           securityContext:
@@ -101,7 +112,18 @@ spec:
             - secretRef:
                 name: {{ include "rrst.fullname" . }}-mail-ingest-secret
             - secretRef:
-                name: {{ include "rrst.fullname" . }}-service-secrets
+                name: {{ .Values.secrets.existingSecret | default (printf "%s-service-secrets" (include "rrst.fullname" .)) }}
+          env:
+            # Outbound relay (scripts/docker-entrypoint.sh writes ~/.msmtprc from these) - see values.yaml's mail.relay.
+            - name: SENDMAIL_RELAY_HOST
+              value: {{ tpl $.Values.mail.relay.host $ | quote }}
+            - name: SENDMAIL_RELAY_PORT
+              value: {{ $.Values.mail.relay.port | toString | quote }}
+            - name: SENDMAIL_RELAY_TLS
+              value: {{ ternary "on" "off" (has (toString $.Values.mail.relay.tls) (list "true" "on")) | quote }}
+            - name: SENDMAIL_FROM_ADDRESS
+              value: {{ tpl $.Values.mail.relay.fromAddress $ | default (printf "mailer@%s" ($.Values.mail.mxHostname | default $.Values.host)) | quote }}
+            {{- include "server.datastoreEnv" . | trim | nindent 12 }}
           ports:
             - containerPort: 3000
           # Plugin changes restart the server process inside the container, one pod at a time (see

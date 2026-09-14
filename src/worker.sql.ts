@@ -37,8 +37,9 @@ import * as fs from "fs";
 import { readFile } from "fs/promises";
 import * as path from "path";
 import { assertProductionSecretsAreSet, DEVELOPMENT_ENVIRONMENTS } from "./config.defaults.js";
-import { configMs, drainAndStop } from "./lib/gracefulShutdown.js";
+import { configMs, DEFAULT_RELEASE_TIMEOUT_MS, drainAndStop, withTimeout } from "./lib/gracefulShutdown.js";
 import { startTelemetryToken } from "./lib/telemetryToken.js";
+import { applySqlColumnTypes } from "./lib/sqlColumnTypes.js";
 import { PluginSQL } from "@rapidmx/restapi/sql";
 import { PluginHost } from "./plugins/PluginHost.js";
 import { notifyListening, restartWorker } from "./plugins/supervisor.js";
@@ -146,6 +147,14 @@ const start = async function (config: any, logger: any) {
     // Create and start the server
     // Install and load this deployment's plugins before the server scans for classes - see plugins/PluginHost.ts.
     pluginHost = await PluginHost.prepare({ config, logger, datastore: "sql", pluginClass: PluginSQL, appRoot: process.cwd() });
+    // MySQL/MariaDB column types for restapi's and the plugins' SQL models, applied once they're all loaded and before
+    // the datastore connects (a no-op on Postgres) - see lib/sqlColumnTypes.ts.
+    pluginHost.classLoader.afterLoad = async (classes) => {
+        const adjusted: number = await applySqlColumnTypes(config.get("datastores:sql:type"), classes.values(), logger);
+        if (adjusted > 0) {
+            logger.info(`Adjusted ${adjusted} SQL columns for ${config.get("datastores:sql:type")}.`);
+        }
+    };
     server = new Server({ config, basePath: config.get("base_path"), logger, objectFactory, classLoader: pluginHost.classLoader });
     await server.start();
     notifyListening();
@@ -161,7 +170,8 @@ void start(config, logger);
 let stopping: Promise<void> | undefined;
 const stopServer = (): Promise<void> =>
     (stopping ??= (async () => {
-        await pluginHost?.stop();
+        // Bounded like shutdown's own release below: with Redis down this would otherwise use up the whole stop timeout.
+        await withTimeout(pluginHost?.stop() ?? Promise.resolve(), DEFAULT_RELEASE_TIMEOUT_MS);
         if (server) {
             await server.stop();
         }
@@ -178,12 +188,12 @@ const shutdown = async (signal: string) => {
     shuttingDown = true;
     logger.info(`Shutting down (${signal})...`);
     telemetry?.stop();
-    // Gives back the plugin restart lock even if this copy was part-way through a plugin restart, which then stops.
-    await pluginHost?.stop({ shutdown: true }).catch(() => undefined);
     // SIGTERM is a container/pod stop: report not ready and let in-flight requests finish before stopping. An
     // interactive Ctrl+C (SIGINT), a vanished supervisor, or a development reload (tsx --watch) stops right away.
     const drain: boolean = signal === "SIGTERM" && !DEVELOPMENT_ENVIRONMENTS.includes(process.env.NODE_ENV ?? "");
     const result = await drainAndStop(stopServer, {
+        // Gives back the plugin restart lock even if this copy was part-way through a plugin restart, which then stops.
+        release: async () => await pluginHost?.stop({ shutdown: true }),
         drainDelayMs: drain ? configMs(config.get("shutdown:drain_delay_ms"), 5_000) : 0,
         timeoutMs: configMs(config.get("shutdown:timeout_ms"), 25_000),
         logger,

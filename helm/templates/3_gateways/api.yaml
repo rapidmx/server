@@ -1,6 +1,10 @@
 {{- /* See auth-server's own 3_gateways/api.yaml doc comment for why this is gated on gateway.create. */}}
 {{- $tls := eq (include "server.tlsEnabled" $) "true" }}
-{{- if and $.Values.gateway.create (eq "api-gateway" (tpl $.Values.gateway.name $)) (eq $.Release.Namespace (tpl $.Values.gateway.namespace $)) }}
+{{- $httpsListener := include "server.httpsListener" $ }}
+{{- $authHost := $.Values.authServer.host }}
+{{- $authHttpsListener := include "server.authHttpsListener" $ }}
+{{- $ownsGateway := eq (include "server.ownsGateway" $) "true" }}
+{{- if $ownsGateway }}
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:
@@ -8,10 +12,9 @@ metadata:
 spec:
   gatewayClassName: nginx
   listeners:
-  # No per-listener `hostname:` restriction - this Gateway is shared with the authServer subchart (see
-  # values.yaml's authServer.host, a distinct auth.<host> subdomain), so hostname-based routing is left
-  # entirely to each HTTPRoute's own `hostnames:` list instead (this chart's own below, and authServer's -
-  # both attach to this same "http"/"https" listener via `sectionName`).
+  # No `hostname:` on the plain HTTP listener - it's shared with the authServer subchart (a distinct auth.<host>
+  # subdomain, see values.yaml's authServer.host), whose HTTPRoute attaches to "http" by name; hostname-based routing is
+  # left to each HTTPRoute's own `hostnames:` list.
   - name: http
     port: 80
     protocol: HTTP
@@ -19,24 +22,36 @@ spec:
       namespaces:
         from: All
   {{- if $tls }}
-  # TLS is terminated on the listener (an HTTPRoute has no `tls` field). The certificates come from tls-certs.yaml's
-  # cert-manager Certificate for `host` and, when the auth-server subchart is installed, its own for authServer.host;
-  # the Gateway picks one by SNI.
+  # TLS is terminated on the listener (an HTTPRoute has no `tls` field), one listener per hostname with that host's own
+  # certificate: several certificateRefs on one listener aren't chosen between by SNI, so every host would be served
+  # the first one. Routes pick their listener with `sectionName`.
   - name: https
     protocol: HTTPS
     port: 443
+    hostname: {{ $.Values.host | quote }}
     tls:
       mode: Terminate
       certificateRefs:
       - kind: Secret
         name: {{ $.Values.host }}-tls-cert
-      {{- if and $.Values.authServer.create (ne $.Values.authServer.host "localhost") (not (contains ".local" $.Values.authServer.host)) }}
-      - kind: Secret
-        name: {{ $.Values.authServer.host }}-tls-cert
-      {{- end }}
     allowedRoutes:
       namespaces:
         from: All
+  {{- if $authHttpsListener }}
+  # authServer.host, with the certificate the auth-server subchart issues (its tls-certs.yaml).
+  - name: https-auth
+    protocol: HTTPS
+    port: 443
+    hostname: {{ $authHost | quote }}
+    tls:
+      mode: Terminate
+      certificateRefs:
+      - kind: Secret
+        name: {{ $authHost }}-tls-cert
+    allowedRoutes:
+      namespaces:
+        from: All
+  {{- end }}
   {{- end }}
 {{- end }}
 ---
@@ -50,7 +65,7 @@ spec:
   parentRefs:
   - name: {{ tpl $.Values.gateway.name $ }}
     namespace: {{ tpl $.Values.gateway.namespace $ }}
-    sectionName: {{ ternary "https" "http" $tls }}
+    sectionName: {{ ternary $httpsListener "http" $tls }}
   hostnames:
   - {{ $.Values.host | quote }}
   rules:
@@ -78,7 +93,8 @@ spec:
     {{- end }}
 {{- if $tls }}
 ---
-# Plain HTTP for `host` only redirects to HTTPS.
+# Plain HTTP for `host` only redirects to HTTPS - rendered only when a listener actually serves HTTPS for it (see
+# server.tlsEnabled), so a Gateway without one never gets a redirect to nowhere.
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
@@ -96,6 +112,32 @@ spec:
       requestRedirect:
         scheme: https
         statusCode: 301
+{{- end }}
+{{- if $authHttpsListener }}
+---
+# The auth-server subchart's own HTTPRoute only attaches to the "http" listener, but mail__auth_server_url sends
+# browsers to https://<authServer.host> once TLS is on - route that listener to its Service too.
+{{- $authName := $.Values.authServer.nameOverride | default "authServer" }}
+{{- $authFullname := ternary $.Release.Name (printf "%s-%s" $.Release.Name $authName) (contains $authName $.Release.Name) | trunc 63 | trimSuffix "-" }}
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ include "rrst.fullname" . }}-auth-https
+spec:
+  parentRefs:
+  - name: {{ tpl $.Values.gateway.name $ }}
+    namespace: {{ tpl $.Values.gateway.namespace $ }}
+    sectionName: {{ $authHttpsListener }}
+  hostnames:
+  - {{ $authHost | quote }}
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /
+    backendRefs:
+    - name: {{ $.Values.authServer.fullnameOverride | default $authFullname }}-services
+      port: 80
 {{- end }}
 {{- if not $.Values.gateway.hsts }}
 ---

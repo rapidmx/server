@@ -315,8 +315,17 @@ else
   echo "nginx-gateway-fabric is running!"
 fi
 
-# Configure a single shared Gateway
-cat << EOF | kubectl apply -f -
+# Configure a single shared Gateway. An HTTPS listener can only serve a host with a certificate, so it's added only when
+# TLS is on and $DOMAIN can get one from Let's Encrypt (not localhost or *.local): it terminates TLS with the
+# "$DOMAIN-tls-cert" Secret the mail-server chart's cert-manager Certificate creates in $NAMESPACE. The chart renders
+# the ReferenceGrant that lets this Gateway (in nginx-gateway) use that Secret, because it's told the listener's name
+# (gateway.httpsListener below); without the listener, the chart serves plain HTTP with no redirect.
+HTTPS_LISTENER=""
+if [[ "$TLS" = "true" && "$DOMAIN" != "localhost" && ! "$DOMAIN" =~ \.(local|localhost)$ ]]; then
+  HTTPS_LISTENER="https"
+fi
+{
+cat << EOF
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:
@@ -331,13 +340,25 @@ spec:
     allowedRoutes:
       namespaces:
         from: All
-  - name: https
+EOF
+if [[ -n "$HTTPS_LISTENER" ]]; then
+cat << EOF
+  - name: $HTTPS_LISTENER
     protocol: HTTPS
     port: 443
+    hostname: "$DOMAIN"
+    tls:
+      mode: Terminate
+      certificateRefs:
+      - kind: Secret
+        name: $DOMAIN-tls-cert
+        namespace: $NAMESPACE
     allowedRoutes:
       namespaces:
         from: All
 EOF
+fi
+} | kubectl apply -f -
 result=`kubectl -n nginx-gateway get svc | grep -E '80:[0-9]{1,5}/TCP(443:[0-9]{1,5}/TCP)?' | wc -l`
 startTime=`date +%s`
 while [[ $running && $result -ne 1 && `expr \`date +%s\` - $startTime` -lt 1800 ]]; do
@@ -379,17 +400,22 @@ if [ `cat /etc/nginx/nginx.conf | grep "proxy_pass 127.0.0.1:30080" | wc -l` -eq
   echo "Backing up nginx.conf..."
   sudo cp /etc/nginx/nginx.conf /etc/nginx/nginx.conf.bak
   echo "Writing nginx configuration..."
+  # Port 443 is only forwarded when the Gateway has an HTTPS listener (see HTTPS_LISTENER above).
+  HTTPS_SERVER=""
+  if [[ -n "$HTTPS_PORT" ]]; then
+    HTTPS_SERVER="
+    server {
+        listen 443;
+        proxy_pass 127.0.0.1:$HTTPS_PORT;
+    }"
+  fi
   cat << EOF >> /etc/nginx/nginx.conf
 
 stream {
     server {
         listen 80;
         proxy_pass 127.0.0.1:$HTTP_PORT;
-    }
-    server {
-        listen 443;
-        proxy_pass 127.0.0.1:$HTTPS_PORT;
-    }
+    }$HTTPS_SERVER
 }
 EOF
   if [[ -f /etc/nginx/sites-enabled/default ]]; then
@@ -486,7 +512,7 @@ MAIL_INGEST_SECRET=${MAIL_INGEST_SECRET:-`openssl rand -hex 32`}
 
 helm upgrade --install --create-namespace --namespace $NAMESPACE $NAMESPACE oci://ghcr.io/rapidrest/charts/mail-server \
   --version $VERSION --set host=$DOMAIN --set gateway.tls=$TLS --set gateway.hsts=$TLS \
-  --set gateway.name=shared-gateway --set gateway.namespace=nginx-gateway \
+  --set gateway.name=shared-gateway --set gateway.namespace=nginx-gateway --set gateway.httpsListener="$HTTPS_LISTENER" \
   --set global.authSecret="$AUTH_SECRET" --set mail.ingestSecret="$MAIL_INGEST_SECRET"
 echo "postfix-bridge must be installed with mail.ingestSecret=$MAIL_INGEST_SECRET"
 

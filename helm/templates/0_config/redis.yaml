@@ -6,22 +6,19 @@ metadata:
     name: db-redis-info
 type: Opaque
 data:
-    {{- $redisPassword := "" }}
-    {{- if $.Values.redis.auth.enabled }}
-    {{- $redisSecret := (lookup "v1" "Secret" $.Release.Namespace $.Values.redis.fullnameOverride) | default dict }}
-    {{- $redisSecretData := (get $redisSecret "data") | default dict }}
-    {{- $redisPassword = (get $redisSecretData "redis-password") | default "" | b64dec }}
-    {{- end }}
-    {{- $redisUrl := tpl $.Values.redis.url . }}
-    {{- if $redisPassword }}
-    {{- $redisUrl = $redisUrl | replace "redis://" (printf "redis://:%s@" $redisPassword) }}
-    {{- end }}
+    {{- /*
+    With auth enabled the URLs carry the password, so they're env vars built from the redis subchart's own Secret in
+    1_deployments/service.yaml ("server.datastoreEnv") - it doesn't exist yet when a fresh install renders this.
+    */}}
     datastores__cache__type: {{ print "redis" | b64enc | quote }}
-    datastores__cache__url: {{ $redisUrl | b64enc | quote }}
     datastores__events__type: {{ print "redis" | b64enc | quote }}
-    datastores__events__url: {{ $redisUrl | b64enc | quote }}
     datastores__events_publish__type: {{ print "redis" | b64enc | quote }}
-    datastores__events_publish__url: {{ $redisUrl | b64enc | quote }}
     datastores__logs__type: {{ print "redis" | b64enc | quote }}
+    {{- if not $.Values.redis.auth.enabled }}
+    {{- $redisUrl := tpl $.Values.redis.url . }}
+    datastores__cache__url: {{ $redisUrl | b64enc | quote }}
+    datastores__events__url: {{ $redisUrl | b64enc | quote }}
+    datastores__events_publish__url: {{ $redisUrl | b64enc | quote }}
     datastores__logs__url: {{ $redisUrl | b64enc | quote }}
+    {{- end }}
 {{- end }}

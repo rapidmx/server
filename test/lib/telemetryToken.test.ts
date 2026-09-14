@@ -3,7 +3,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 import nconf from "nconf";
 import { EventUtils, JWTUtils } from "@rapidrest/core";
-import { createTelemetryToken, startTelemetryToken, telemetryTokenTtlSeconds } from "../../src/lib/telemetryToken.js";
+import { createTelemetryToken, startTelemetryToken, telemetryTokenRenewIntervalMs, telemetryTokenTtlSeconds } from "../../src/lib/telemetryToken.js";
 import mongoConfig from "../../src/config.mongo.js";
 import sqlConfig from "../../src/config.sql.js";
 
@@ -48,6 +48,20 @@ describe("telemetry token", () => {
         expect(telemetryTokenTtlSeconds(config)).toBe(3_600);
         const payload: any = claimsOf(await createTelemetryToken(config));
         expect(profileOf(payload).roles).toEqual(["telemetry"]);
+    });
+
+    it("caps the renewal interval at the largest timer delay, so a very long lifetime doesn't renew every millisecond", async () => {
+        expect(telemetryTokenRenewIntervalMs(testConfig())).toBe(300_000);
+        const config = testConfig({ telemetry_services: { token_ttl_seconds: 10 * 365 * 24 * 3_600 } });
+        expect(telemetryTokenRenewIntervalMs(config)).toBe(2 ** 31 - 1);
+
+        vi.useFakeTimers();
+        const telemetry = await startTelemetryToken(config, { warn: vi.fn() });
+        const first: string = (EventUtils as any).token;
+        vi.setSystemTime(Date.now() + 2_000);
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect((EventUtils as any).token).toBe(first);
+        telemetry.stop();
     });
 
     it("renews the token EventUtils sends with at half its lifetime", async () => {

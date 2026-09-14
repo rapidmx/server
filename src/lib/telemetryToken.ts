@@ -17,6 +17,14 @@ export function telemetryTokenTtlSeconds(config: TelemetryConfig): number {
     return Number.isFinite(ttl) && ttl >= 60 ? Math.floor(ttl) : DEFAULT_TTL_SECONDS;
 }
 
+/** The longest delay `setInterval` accepts; anything larger overflows and fires after 1 ms. */
+const MAX_TIMER_DELAY_MS: number = 2 ** 31 - 1;
+
+/** How often the token is renewed: half its lifetime, capped at the largest timer delay (about 24.8 days). */
+export function telemetryTokenRenewIntervalMs(config: TelemetryConfig): number {
+    return Math.min((telemetryTokenTtlSeconds(config) * 1000) / 2, MAX_TIMER_DELAY_MS);
+}
+
 /**
  * Creates the token this server sends telemetry events with. It expires after `telemetry_services:token_ttl_seconds`
  * and carries only `telemetry_services:token_roles` (default `["telemetry"]`) - never `trusted_roles`, so a leaked
@@ -40,7 +48,7 @@ export async function createTelemetryToken(config: TelemetryConfig): Promise<str
 }
 
 /**
- * Initializes `EventUtils` with a telemetry token and replaces it with a fresh one at half its lifetime, so it never
+ * Initializes `EventUtils` with a telemetry token and replaces it with a fresh one at half its lifetime (see `telemetryTokenRenewIntervalMs()`), so it never
  * expires while the server runs. Call `stop()` on shutdown.
  */
 export async function startTelemetryToken(config: TelemetryConfig, logger: any): Promise<{ stop: () => void }> {
@@ -52,7 +60,7 @@ export async function startTelemetryToken(config: TelemetryConfig, logger: any):
                 (EventUtils as any).token = token;
             })
             .catch((err: any) => logger?.warn?.(`Could not renew the telemetry token: ${err?.message ?? err}`));
-    }, (telemetryTokenTtlSeconds(config) * 1000) / 2);
+    }, telemetryTokenRenewIntervalMs(config));
     timer.unref?.();
     return { stop: () => clearInterval(timer) };
 }

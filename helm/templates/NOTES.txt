@@ -14,7 +14,7 @@ Databases:
     {{- if $mdbPassword }}
     Password: {{ $mdbPassword | b64dec }}
     {{- else }}
-    Password: (Not yet available. Run `helm upgrade` once the mongodb pod is up, then re-run `helm get notes`)
+    Password: stored in the "{{ .Values.mongodb.auth.existingSecret | default .Values.mongodb.fullnameOverride }}" Secret (key mongodb-root-password); run `helm get notes` again once it exists
     {{- end }}
   {{- end }}
   {{- if and .Values.postgresql.create .Values.postgresql.auth.enablePostgresUser }}
@@ -26,7 +26,7 @@ Databases:
     {{- if $pgPassword }}
     Password: {{ $pgPassword | b64dec }}
     {{- else }}
-    Password: (Not yet available. Run `helm upgrade` once the postgresql pod is up, then re-run `helm get notes`)
+    Password: stored in the "{{ .Values.postgresql.auth.existingSecret | default .Values.postgresql.fullnameOverride }}" Secret; run `helm get notes` again once it exists
     {{- end }}
   {{- end }}
 {{- end }}
@@ -38,12 +38,6 @@ JWT Auth:
   Secret: the value you supplied as global.authSecret (or auth.secret), stored in the
   "{{ include "rrst.fullname" . }}-jwt-auth" Secret. Supply it again on every upgrade.
 
-{{- if or (and .Values.mongodb.create .Values.mongodb.auth.enabled) (and .Values.postgresql.create .Values.postgresql.auth.enablePostgresUser) }}
-
-NOTE: After a new install, the app's datastore credentials aren't wired in until a
-follow-up `helm upgrade`. Until then the {{ include "rrst.fullname" . }}-services
-pods will crash-loop on datastore auth failures.
-{{- end }}
 
 Real inbound/outbound mail (Postfix, DKIM signing, postfix-bridge) is a separate chart - install
 https://github.com/rapidmx/postfix-bridge alongside this release, with its `mail.ingestBaseUrl` pointed at

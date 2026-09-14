@@ -15,11 +15,18 @@ auth:
   expiresIn: 1 hour
   secret: '{{ .Values.global.authSecret }}'
 # Cookie and session signing secrets. Leave empty to have one generated on install and kept (in the
-# <release>-service-secrets Secret) across upgrades; an explicit value always wins.
+# <release>-service-secrets Secret) across upgrades; an explicit value always wins. Generating needs cluster access
+# (`lookup`): when the chart is rendered without it - `helm template`, a GitOps controller such as Argo CD, `--dry-run` -
+# every render would produce new values, so the render fails unless these, mail.escrow.auditHmacKey and the rest are set
+# explicitly or secrets.existingSecret is used.
 cookies:
   secret: ''
 sessions:
   secret: ''
+secrets:
+  # An existing Secret holding cookie_secret, session__secret and mail__escrow__audit_hmac_key, used instead of the
+  # generated <release>-service-secrets (e.g. managed by External Secrets or Sealed Secrets in a GitOps setup).
+  existingSecret: ''
 common:
   storageClass: default
   logs:
@@ -30,6 +37,14 @@ gateway:
   namespace: '{{ .Release.Namespace }}'
   hsts: true
   tls: true
+  # Only for a Gateway this chart doesn't create (gateway.name other than api-gateway, gateway.namespace other than the
+  # release namespace, or gateway.create false): the name of that Gateway's HTTPS listener for `host`. It must terminate
+  # TLS with this release's "<host>-tls-cert" Secret (issued by cert-manager; a ReferenceGrant letting a Gateway in
+  # gateway.namespace use it is rendered). Left empty, the routes attach to the Gateway's "http" listener with no HTTPS
+  # redirect, and public URLs use http:// - an HTTPS listener without this release's certificate can't serve `host`.
+  httpsListener: ''
+  # Same for authServer.host, with the auth-server subchart's "<authServer.host>-tls-cert" Secret.
+  authHttpsListener: ''
 redis:
   create: true
   url: redis://db-redis-master
@@ -46,6 +61,7 @@ redis:
   networkPolicy:
     enabled: true
     allowExternal: false
+# Exactly one of mongodb.create and postgresql.create may be true (the render fails otherwise).
 mongodb:
   create: true
   architecture: standalone
@@ -181,6 +197,8 @@ service:
     # system__plugins__defaults: [{ name: "@rapidmx/activesync-plugin", version: "latest", enabled: true }]
 authServer:
   create: true
+  # Kubernetes names must be lowercase; without this the subchart names its resources after the "authServer" alias.
+  nameOverride: auth-server
   host: auth.localhost
   environment: production
   gateway:
@@ -247,6 +265,21 @@ mail:
   # RapidMX-Key headers, read receipt verification, calendar iTIP replies/cancellations, message recalls and
   # ACME email challenges are all ignored. Set it before relying on any of those.
   trustedAuthservId: ''
+  # Where outbound mail is relayed (scripts/docker-entrypoint.sh writes the msmtp config PostfixSendmailTransport sends
+  # through): the Postfix of the separate postfix-bridge chart, whose SMTP Service is named "postfix". Use
+  # "postfix.<namespace>.svc.cluster.local" when postfix-bridge runs in another namespace.
+  relay:
+    host: postfix
+    port: 25
+    # "on" to require TLS on the relay hop; off by default because it stays inside the cluster.
+    tls: 'off'
+    # Default envelope sender for mail msmtp can't attribute to a mailbox. Defaults to mailer@<mxHostname or host>.
+    fromAddress: ''
+  escrow:
+    # mail:escrow:audit_hmac_key - keys the escrow audit log's hash chain, so someone with database write access can't
+    # rewrite it undetectably. Leave empty to have one generated on install and kept (like cookies.secret); it must be
+    # identical on every replica and never change afterwards.
+    auditHmacKey: ''
   dkim:
     selector: mail
     autogenerate: true

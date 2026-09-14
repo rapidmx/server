@@ -58,6 +58,9 @@ export interface ComposeAssembleRawInput {
     rawMime: string;
 }
 
+/** The blob key prefix of a composed draft body. */
+const COMPOSED_BODY_PREFIX = "bodies/";
+
 function toNodemailerAddress(recipient: Recipient): { name?: string; address: string } {
     return { name: recipient.displayName, address: recipient.address };
 }
@@ -107,23 +110,83 @@ function sameAddressSet(a: string[], b: string[]): boolean {
     return left.size === right.size && [...left].every((address) => right.has(address));
 }
 
+/** Decodes RFC 2047 encoded-words (`=?charset?B|Q?...?=`) in a display name; whitespace between two encoded-words is dropped. */
+export function decodeEncodedWords(value: string): string {
+    return value
+        .replace(/(=\?[^?\s]+\?[bBqQ]\?[^?\s]*\?=)\s+(?==\?[^?\s]+\?[bBqQ]\?[^?\s]*\?=)/g, "$1")
+        .replace(/=\?([^?\s]+)\?([bBqQ])\?([^?\s]*)\?=/g, (word, charset: string, encoding: string, text: string) => {
+            try {
+                const bytes: Buffer =
+                    encoding.toUpperCase() === "B"
+                        ? Buffer.from(text, "base64")
+                        : Buffer.from(
+                            text.replace(/_/g, " ").replace(/=([0-9a-fA-F]{2})/g, (_m, hex: string) => String.fromCharCode(parseInt(hex, 16))),
+                            "latin1",
+                        );
+                // RFC 2231 allows a language suffix (`utf-8*en`).
+                return new TextDecoder(charset.split("*")[0], { fatal: true }).decode(bytes);
+            } catch {
+                return word;
+            }
+        });
+}
+
+/**
+ * Trace and authentication headers only a receiving/relaying system may write. A client-composed message carrying one
+ * would be relayed with it, and a downstream system - including this server's own ingest for local recipients - could
+ * trust it: forged `Authentication-Results` would pass DKIM-aligned checks (iTIP, recalls, ACME), a forged
+ * `RapidMX-Key` header would announce a key for the sender, and `X-RapidMX-*` headers are this server's own markers.
+ */
+function isTrustHeader(name: string): boolean {
+    return (
+        ["authentication-results", "dkim-signature", "received", "received-spf", "return-path"].includes(name) ||
+        name.startsWith("arc-") ||
+        name.startsWith("rapidmx-key") ||
+        name.startsWith("x-rapidmx-")
+    );
+}
+
+/**
+ * Checks a raw `From`/`Sender` value is exactly one mailbox of `own`, with no display name other than the mailbox's own.
+ * addressparser is lenient: `bob@evil.com <alice@example.com>` or `Alice <alice@example.com> <x@y.com>` both parse as
+ * alice with the rest folded into the name, which a recipient's client would show. So beyond the parsed result, the raw
+ * value (quoted strings removed) may hold at most one angle-bracket address and exactly one `@`.
+ */
+function isOwnSingleMailbox(values: string[] | undefined, own: Set<string>, displayName: string): boolean {
+    if (values?.length !== 1) {
+        return false;
+    }
+    const unquoted: string = values[0].replace(/"(?:[^"\\]|\\.)*"/g, '""');
+    if ((unquoted.match(/</g) ?? []).length > 1 || (unquoted.match(/>/g) ?? []).length > 1 || (unquoted.match(/@/g) ?? []).length !== 1) {
+        return false;
+    }
+    const parsed = addressparser(values[0]);
+    if (parsed.length !== 1 || (parsed[0] as any).group || !own.has((parsed[0].address ?? "").trim().toLowerCase())) {
+        return false;
+    }
+    const name: string = decodeEncodedWords(parsed[0].name ?? "").trim();
+    return name === "" || name === displayName;
+}
+
 /**
  * Checks a client-composed (signed/encrypted) message's own top-level headers against what the server knows, since the
  * stored bytes are relayed unchanged: `From` must be exactly one of the sending mailbox's own addresses (primary or
- * alias), a `Sender` must be one too, `To`/`Cc` must list exactly the recipients the draft is sent to, and no `Bcc` or
- * `Resent-*` header may be present (Bcc recipients are submitted separately and must never appear in the message).
+ * alias) with no display name or the mailbox's own, a `Sender` likewise, `To`/`Cc` must list exactly the recipients the
+ * draft is sent to, and no `Bcc`, `Resent-*` or trace/authentication header (`isTrustHeader()`) may be present (Bcc
+ * recipients are submitted separately and must never appear in the message).
  *
  * @throws `ApiError` 400 describing the first mismatch.
  */
 export function assertRawMimeHeadersMatch(
     rawMime: string,
-    mailbox: Pick<Mailbox, "primarySmtpAddress" | "aliasAddresses">,
+    mailbox: Pick<Mailbox, "primarySmtpAddress" | "aliasAddresses"> & { displayName?: string },
     body: Pick<ComposeAssembleRawInput, "to" | "cc">,
 ): void {
     const headers: Map<string, string[]> = parseTopLevelHeaders(rawMime);
     const own = new Set(
         [mailbox.primarySmtpAddress, ...(mailbox.aliasAddresses ?? [])].filter(Boolean).map((a) => a.trim().toLowerCase()),
     );
+    const displayName: string = (mailbox.displayName ?? "").trim();
 
     if (headers.has("bcc")) {
         throw invalidRawMime("it must not contain a Bcc header.");
@@ -131,17 +194,15 @@ export function assertRawMimeHeadersMatch(
     if ([...headers.keys()].some((name) => name.startsWith("resent-"))) {
         throw invalidRawMime("it must not contain Resent-* headers.");
     }
-    const fromValues: string[] = headers.get("from") ?? [];
-    const from: string[] = headerAddresses(fromValues);
-    if (fromValues.length !== 1 || from.length !== 1 || !own.has(from[0])) {
-        throw invalidRawMime("its From header must be a single address belonging to this mailbox.");
+    const trustHeader: string | undefined = [...headers.keys()].find(isTrustHeader);
+    if (trustHeader) {
+        throw invalidRawMime(`it must not contain a ${trustHeader} header - only a receiving or relaying server may add one.`);
     }
-    const senderValues: string[] | undefined = headers.get("sender");
-    if (senderValues) {
-        const sender: string[] = headerAddresses(senderValues);
-        if (senderValues.length !== 1 || sender.length !== 1 || !own.has(sender[0])) {
-            throw invalidRawMime("its Sender header must be a single address belonging to this mailbox.");
-        }
+    if (!isOwnSingleMailbox(headers.get("from"), own, displayName)) {
+        throw invalidRawMime("its From header must be a single address belonging to this mailbox, with no display name but the mailbox's own.");
+    }
+    if (headers.has("sender") && !isOwnSingleMailbox(headers.get("sender"), own, displayName)) {
+        throw invalidRawMime("its Sender header must be a single address belonging to this mailbox, with no display name but the mailbox's own.");
     }
     const lower = (recipients?: Recipient[]): string[] => (recipients ?? []).map((r) => r.address.trim().toLowerCase());
     if (!sameAddressSet(headerAddresses(headers.get("to")), lower(body.to))) {
@@ -405,29 +466,60 @@ export abstract class BaseMailComposeRoute<M extends Message, A extends Attachme
             .compile()
             .build();
 
-        const bodyBlobKey = `bodies/${crypto.randomUUID()}`;
-        await this.blobStore.put(bodyBlobKey, raw, { contentType: "message/rfc822" });
-
         const recipients: Recipient[] = [
             ...body.to.map((r) => ({ ...r, type: RecipientType.TO })),
             ...(body.cc ?? []).map((r) => ({ ...r, type: RecipientType.CC })),
             ...(body.bcc ?? []).map((r) => ({ ...r, type: RecipientType.BCC })),
         ];
 
-        return await this.messageRepo!.update(
-            {
-                uid: message.uid,
-                version: (message as any).version,
-                subject: body.subject ?? "",
-                recipients,
-                from: { address: mailbox.primarySmtpAddress, displayName: mailbox.displayName, type: RecipientType.TO },
-                bodyBlobKey,
-                bodyPreview: toPreview(html),
-                hasAttachments: attachmentRecords.length > 0,
-            } as any,
-            message,
-            { user, ignoreACL: true },
-        );
+        return await this.storeBody(message, raw, user, {
+            subject: body.subject ?? "",
+            recipients,
+            from: { address: mailbox.primarySmtpAddress, displayName: mailbox.displayName, type: RecipientType.TO },
+            bodyPreview: toPreview(html),
+            hasAttachments: attachmentRecords.length > 0,
+        });
+    }
+
+    /**
+     * Stores `raw` as a new body blob and points the draft at it. Each assemble writes a new blob (the old key may be
+     * read by a send in progress), so the one it replaces is deleted afterwards - only when this compose path created
+     * it (`bodies/`; an EAS/MAPI send handler uses the same prefix for the same purpose) and no message row, deleted
+     * ones included, still references it. When the update fails (e.g. a concurrent edit's version conflict) the new
+     * blob is deleted instead and the draft keeps its old one.
+     */
+    private async storeBody(message: M, raw: Buffer, user: JWTUser | undefined, patch: Record<string, unknown>): Promise<M> {
+        const previousKey: string | undefined = (message as any).bodyBlobKey;
+        const bodyBlobKey = `${COMPOSED_BODY_PREFIX}${crypto.randomUUID()}`;
+        await this.blobStore!.put(bodyBlobKey, raw, { contentType: "message/rfc822" });
+
+        let updated: M;
+        try {
+            updated = await this.messageRepo!.update(
+                { uid: message.uid, version: (message as any).version, ...patch, bodyBlobKey } as any,
+                message,
+                { user, ignoreACL: true },
+            );
+        } catch (err) {
+            await this.blobStore!.delete(bodyBlobKey).catch(() => undefined);
+            throw err;
+        }
+
+        if (typeof previousKey === "string" && previousKey.startsWith(COMPOSED_BODY_PREFIX) && previousKey !== bodyBlobKey) {
+            try {
+                const references: number = await this.messageRepo!.count(
+                    { bodyBlobKey: `eq(${previousKey})` },
+                    { ignoreACL: true, includeDeleted: true },
+                );
+                if (references === 0) {
+                    await this.blobStore!.delete(previousKey);
+                }
+            } catch (err: any) {
+                // The draft is already updated; a leftover blob is only wasted storage.
+                (this._objectFactory as any)?.logger?.warn?.(`Failed to delete replaced draft body ${previousKey}: ${err?.message ?? err}`);
+            }
+        }
+        return updated;
     }
 
     @Summary("Assemble an already-composed (signed/encrypted) draft")
@@ -503,33 +595,23 @@ export abstract class BaseMailComposeRoute<M extends Message, A extends Attachme
         // what the server would have written itself.
         assertRawMimeHeadersMatch(body.rawMime, mailbox, body);
 
-        const bodyBlobKey = `bodies/${crypto.randomUUID()}`;
-        await this.blobStore.put(bodyBlobKey, rawBytes, { contentType: "message/rfc822" });
-
         const recipients: Recipient[] = [
             ...body.to.map((r) => ({ ...r, type: RecipientType.TO })),
             ...(body.cc ?? []).map((r) => ({ ...r, type: RecipientType.CC })),
             ...(body.bcc ?? []).map((r) => ({ ...r, type: RecipientType.BCC })),
         ];
 
-        return await this.messageRepo!.update(
-            {
-                uid: message.uid,
-                version: (message as any).version,
-                subject: body.subject,
-                recipients,
-                from: { address: mailbox.primarySmtpAddress, displayName: mailbox.displayName, type: RecipientType.TO },
-                bodyBlobKey,
-                // Never derived from the raw MIME itself - this server has no business parsing a
-                // signed/encrypted body's content just to produce a list-view preview string, and for a
-                // genuinely encrypted message it couldn't anyway. `ScanPipeline` (@rapidmx/restapi) is
-                // still what actually detects `encrypted: true` from the stored MIME structure itself,
-                // independent of this preview being empty.
-                bodyPreview: "",
-                hasAttachments: false,
-            } as any,
-            message,
-            { user, ignoreACL: true },
-        );
+        return await this.storeBody(message, rawBytes, user, {
+            subject: body.subject,
+            recipients,
+            from: { address: mailbox.primarySmtpAddress, displayName: mailbox.displayName, type: RecipientType.TO },
+            // Never derived from the raw MIME itself - this server has no business parsing a
+            // signed/encrypted body's content just to produce a list-view preview string, and for a
+            // genuinely encrypted message it couldn't anyway. `ScanPipeline` (@rapidmx/restapi) is
+            // still what actually detects `encrypted: true` from the stored MIME structure itself,
+            // independent of this preview being empty.
+            bodyPreview: "",
+            hasAttachments: false,
+        });
     }
 }

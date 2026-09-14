@@ -62,6 +62,7 @@ otherwise — see `src/config.defaults.ts`; the server refuses to start with tho
 | `AUTH_AUDIENCE` / `AUTH_ISSUER` | JWT `aud`/`iss` claims — must also match `auth-server` |
 | `AUTH_SERVER_PUBLIC_URL` | Browser-facing base URL of `auth-server` (defaults to `http://localhost:3001`, dev/single-host only) |
 | `COOKIE_SECRET` | Shared cookie-signing secret |
+| `ESCROW_AUDIT_HMAC_KEY` | Key for the escrow audit log's HMAC-SHA256 hash chain (`mail:escrow:audit_hmac_key`) — generate once (`openssl rand -hex 32`) and never change it; unset, entries are chained with unkeyed SHA-256 and the server logs an error in production |
 | `MAIL_INGEST_SECRET` | Bearer secret authenticating `postfix-bridge`'s calls to this app's `/internal/mta` routes — must match that repo's own `MTA_INGEST_SECRET` exactly |
 | `PUBLIC_URL` | This deployment's public base URL (defaults to `http://localhost:3000`) — booking email links and the autodiscover plugin (which requires `https://`) |
 | `MX_HOSTNAME` | Public MX hostname (defaults to `localhost`) — outgoing read receipts and domain DNS checks |
@@ -90,7 +91,13 @@ mail transport (Postfix + DKIM signing + postfix-bridge) is a separate chart now
 
 The chart needs two secrets you supply, and refuses to render without them: `global.authSecret` (the JWT secret, shared
 with the bundled auth-server) and `mail.ingestSecret` (must match the `postfix-bridge` chart's). Pass the same values
-again on every upgrade. Cookie and session secrets are generated on install and kept.
+again on every upgrade. Cookie, session and escrow audit (`mail.escrow.auditHmacKey`) secrets are generated on install and
+kept - which needs cluster access, so rendering the chart without it (`helm template`, Argo CD/Flux, `--dry-run`) fails
+until you set `cookies.secret`, `sessions.secret` and `mail.escrow.auditHmacKey` explicitly or point
+`secrets.existingSecret` at a Secret you manage. Outbound mail is relayed to the `postfix-bridge` chart's `postfix`
+Service (`mail.relay.*`). Behind a Gateway this chart doesn't create, set `gateway.httpsListener` to the listener that
+terminates TLS for `host` with the `<host>-tls-cert` Secret, or the site is served over plain HTTP. `/api/metrics`
+requires a token with a trusted role, so scrape it with a bearer token rather than `prometheus.io/*` annotations.
 
 #### From GHCR
 
