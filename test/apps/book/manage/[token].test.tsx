@@ -221,6 +221,69 @@ describe("ManageBookingPage", () => {
         expect(screen.queryByRole("button", { name: "Show later times" })).not.toBeInTheDocument();
     });
 
+    describe("Show later times", () => {
+        const first = { start: "2026-09-11T15:00:00.000Z", end: "2026-09-11T15:30:00.000Z" };
+        const label = (slot: { start: string }) =>
+            new Date(slot.start).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+
+        /** A 90-day booking type whose first slots window has `first`, and whose later windows answer `later()`. */
+        function mockLaterSlots(later: (call: number) => Response) {
+            let calls = 0;
+            mockPage((url) => {
+                if (url === "/api/mail/bookings/manage/tok123") return jsonResponse(200, booking());
+                if (url === "/api/mail/bookings/types/intro-call") return jsonResponse(200, { ...publicBookingType, bookingWindowDays: 90 });
+                if (url.startsWith("/api/mail/bookings/types/intro-call/slots?")) {
+                    calls++;
+                    return calls === 1 ? jsonResponse(200, [first]) : later(calls);
+                }
+                return undefined;
+            });
+            return () => calls;
+        }
+
+        async function openPickerAndShowLater() {
+            const user = userEvent.setup();
+            render(<ManageBookingPage params={{ token: "tok123" }} />);
+            await screen.findByRole("heading", { name: "30 Minute Intro Call" });
+            await user.click(screen.getByRole("button", { name: "Reschedule" }));
+            await user.click(await screen.findByRole("button", { name: "Show later times" }));
+        }
+
+        it("shows the API's error when loading later times fails, keeping the times already offered", async () => {
+            mockLaterSlots(() => jsonResponse(503, { message: "try again soon" }));
+            await openPickerAndShowLater();
+
+            expect(await screen.findByText("try again soon")).toBeInTheDocument();
+            expect(screen.getByRole("button", { name: label(first) })).toBeInTheDocument();
+            expect(screen.getByRole("button", { name: "Show later times" })).toBeEnabled();
+        });
+
+        it("shows a generic error when loading later times fails with a non-API error", async () => {
+            mockLaterSlots(() => {
+                throw new TypeError("network down");
+            });
+            await openPickerAndShowLater();
+
+            expect(await screen.findByText("Could not load more times.")).toBeInTheDocument();
+            expect(screen.getByRole("button", { name: label(first) })).toBeInTheDocument();
+        });
+
+        it("clears a previous error and removes the button once the rest of the window is fully booked", async () => {
+            const calls = mockLaterSlots((call) => (call === 2 ? jsonResponse(503, { message: "try again soon" }) : jsonResponse(200, [])));
+            await openPickerAndShowLater();
+            await screen.findByText("try again soon");
+
+            await userEvent.setup().click(screen.getByRole("button", { name: "Show later times" }));
+
+            await vi.waitFor(() => expect(screen.queryByRole("button", { name: "Show later times" })).not.toBeInTheDocument());
+            expect(screen.queryByText("try again soon")).not.toBeInTheDocument();
+            // Retried from the same cursor: windows 2 and 3 of the 90-day window, both empty.
+            expect(calls()).toBe(4);
+            expect(screen.getByRole("button", { name: label(first) })).toBeInTheDocument();
+            expect(screen.queryByText("No open slots right now.")).not.toBeInTheDocument();
+        });
+    });
+
     it("shows an empty state when there are no slots to reschedule into", async () => {
         mockPage((url) => {
             if (url === "/api/mail/bookings/manage/tok123") return jsonResponse(200, booking());

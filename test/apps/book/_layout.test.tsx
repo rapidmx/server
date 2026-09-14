@@ -34,5 +34,29 @@ describe("Layout", () => {
 
         expect(html).toContain("<title>Acme Mail: Book</title>");
         expect(html).toContain('href="https://cdn.example.com/icon.png"');
+        expect(html).not.toContain('rel="stylesheet"');
+    });
+
+    it("falls back to the company name for the title, and the logo for the icon", () => {
+        const html = renderToStaticMarkup(
+            <Layout branding={{ companyName: "Acme", title: "", logoUrl: "https://cdn.example.com/logo.svg" }}>
+                <p>page content</p>
+            </Layout>,
+        );
+
+        expect(html).toContain("<title>Acme: Book</title>");
+        expect(html).toContain('href="https://cdn.example.com/logo.svg"');
+    });
+
+    it("links the configured custom stylesheet", () => {
+        const html = renderToStaticMarkup(
+            <Layout branding={{ companyName: "", title: "", stylesheetUrl: "https://cdn.example.com/brand.css" }}>
+                <p>page content</p>
+            </Layout>,
+        );
+
+        expect(html).toContain('<link rel="stylesheet" href="https://cdn.example.com/brand.css" id="');
+        expect(html).toContain("<title>RapidMX: Book</title>");
+        expect(html).toContain('href="/images/logo.svg"');
     });
 });

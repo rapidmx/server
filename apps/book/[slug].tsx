@@ -87,14 +87,12 @@ function BookingContent({ slug, logoSrc }: { slug: string; logoSrc: string }) {
             .finally(() => setLoading(false));
     }, [slug]);
 
-    async function handleLoadMore() {
-        if (!nextSlots) {
-            return;
-        }
+    /** Only reachable from the "Show later times" button, which renders only while a `nextSlots` cursor exists. */
+    async function handleLoadMore(cursor: SlotCursor) {
         setLoadingMore(true);
         setMoreError(null);
         try {
-            const page = await fetchSlotPage(slug, nextSlots);
+            const page = await fetchSlotPage(slug, cursor);
             setSlots((current) => appendSlots(current, page.slots));
             setNextSlots(page.next);
         } catch (err) {
@@ -198,7 +196,7 @@ function BookingContent({ slug, logoSrc }: { slug: string; logoSrc: string }) {
                                             className="!w-auto self-start"
                                             loading={loadingMore}
                                             disabled={loadingMore}
-                                            onClick={handleLoadMore}
+                                            onClick={() => handleLoadMore(nextSlots)}
                                         >
                                             Show later times
                                         </Button>

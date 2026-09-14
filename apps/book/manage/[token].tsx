@@ -94,14 +94,12 @@ function ManageBookingContent({ token, logoSrc }: { token: string; logoSrc: stri
         }
     }
 
-    async function handleLoadMore() {
-        if (!nextSlots) {
-            return;
-        }
+    /** Only reachable from the "Show later times" button, which renders only while a `nextSlots` cursor exists. */
+    async function handleLoadMore(cursor: SlotCursor) {
         setLoadingMore(true);
         setActionError(null);
         try {
-            const page = await fetchSlotPage(booking!.bookingTypeSlug, nextSlots);
+            const page = await fetchSlotPage(booking!.bookingTypeSlug, cursor);
             setSlots((current) => appendSlots(current, page.slots));
             setNextSlots(page.next);
         } catch (err) {
@@ -201,7 +199,7 @@ function ManageBookingContent({ token, logoSrc }: { token: string; logoSrc: stri
                                                 className="!w-auto mt-2"
                                                 loading={loadingMore}
                                                 disabled={loadingMore || submittingReschedule}
-                                                onClick={handleLoadMore}
+                                                onClick={() => handleLoadMore(nextSlots)}
                                             >
                                                 Show later times
                                             </Button>

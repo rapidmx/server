@@ -27,6 +27,8 @@ import { TieredRateLimiter } from "../src/lib/TieredRateLimiter.js";
 import { setDraining } from "../src/plugins/readiness.js";
 import { freePort, localRequest } from "./helpers/serverTestUtils.js";
 import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
 import * as sqlite3 from "sqlite3";
 
 const sqlite: sqlite3.Database = new sqlite3.Database(":memory:");
@@ -35,8 +37,13 @@ const sqlite: sqlite3.Database = new sqlite3.Database(":memory:");
 // old `sqlite3`-backed "sqlite" driver) takes an exclusive lock on every write, so two connections
 // sharing one file collide with a "database is locked" error the moment their startup schema syncs
 // overlap. Giving each its own file sidesteps that; ACL and SQL storage don't need to be colocated.
-const SQL_DB_FILE = "rrst-test";
-const ACL_DB_FILE = "rrst-test-acl";
+// Kept out of the repo root: a running `yarn dev` rebuilds the client bundle (rewriting
+// dist/public/.vite/manifest.json) whenever a root-level file changes, and this suite's own ReactRoutes
+// fs.watch() that manifest with no error listener - so every SQLite journal write here used to be able to
+// surface as an uncaught Windows `EPERM: operation not permitted, watch` that fails the whole run.
+const DB_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "rrst-test-"));
+const SQL_DB_FILE = path.join(DB_DIR, "rrst-test");
+const ACL_DB_FILE = path.join(DB_DIR, "rrst-test-acl");
 
 describe("Server Tests", () => {
     const logger = new Logger();
@@ -102,9 +109,7 @@ describe("Server Tests", () => {
                 resolve();
             });
         });
-        for (const file of [SQL_DB_FILE, ACL_DB_FILE]) {
-            await fs.promises.rm(file, { force: true });
-        }
+        await fs.promises.rm(DB_DIR, { recursive: true, force: true });
     });
 
     beforeEach(async () => {

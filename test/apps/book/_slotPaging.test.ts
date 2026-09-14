@@ -81,6 +81,61 @@ describe("_slotPaging", () => {
         expect(page.next).toEqual({ from: lastStart + 1, horizon: NOW + 30 * DAY });
     });
 
+    it("resumes a cut-off response from just after its last slot on the next call", async () => {
+        const full = Array.from({ length: MAX_SLOTS_PER_RESPONSE }, (_v, i) => slotAt(NOW + i * 15 * 60 * 1000));
+        const lastStart = Date.parse(full[full.length - 1].start);
+        const rest = slotAt(lastStart + 15 * 60 * 1000);
+        const requested = mockSlots([full, [rest]]);
+
+        const first = await fetchSlotPage("intro-call", initialSlotCursor(30, NOW));
+        const second = await fetchSlotPage("intro-call", first.next!);
+
+        expect(requested[1]).toEqual({ from: lastStart + 1, to: lastStart + 1 + SLOT_CHUNK_DAYS * DAY });
+        expect(second.slots).toEqual([rest]);
+        // The resumed chunk runs past the 30-day window, so paging ends there.
+        expect(second.next).toBeNull();
+    });
+
+    it("ends a cut-off response's paging when resuming would start past the booking window", async () => {
+        // A 1-day window cut off exactly at its last instant: resuming just after that slot is already outside it.
+        const horizon = NOW + DAY;
+        const full = Array.from({ length: MAX_SLOTS_PER_RESPONSE }, (_v, i) => slotAt(NOW + i));
+        full[full.length - 1] = slotAt(horizon);
+        mockSlots([full]);
+
+        const page = await fetchSlotPage("intro-call", initialSlotCursor(1, NOW));
+        expect(page.slots).toHaveLength(MAX_SLOTS_PER_RESPONSE);
+        expect(page.next).toBeNull();
+    });
+
+    it("never moves backwards when a cut-off response's last slot precedes the requested window", async () => {
+        // A misbehaving/out-of-order response must not rewind the cursor (which could loop forever) - it
+        // falls back to continuing from the end of the requested chunk instead.
+        const full = Array.from({ length: MAX_SLOTS_PER_RESPONSE }, () => slotAt(NOW - DAY));
+        mockSlots([full]);
+
+        const page = await fetchSlotPage("intro-call", initialSlotCursor(90, NOW));
+        expect(page.next).toEqual({ from: NOW + SLOT_CHUNK_DAYS * DAY, horizon: NOW + 90 * DAY });
+    });
+
+    it("never requests past bookingWindowDays when every chunk is fully booked", async () => {
+        const requested = mockSlots([[], [], [], []]);
+        const page = await fetchSlotPage("intro-call", initialSlotCursor(45, NOW));
+
+        // 45 days = one full chunk plus a partial one; nothing is asked for from the horizon onward.
+        expect(requested.map((r) => r.from)).toEqual([NOW, NOW + 30 * DAY]);
+        expect(requested.every((r) => r.from < NOW + 45 * DAY)).toBe(true);
+        expect(page).toEqual({ slots: [], next: null });
+    });
+
+    it("returns an empty, final page without fetching for a cursor already at its horizon", async () => {
+        const requested = mockSlots([[slotAt(NOW)]]);
+        const page = await fetchSlotPage("intro-call", { from: NOW + 30 * DAY, horizon: NOW + 30 * DAY });
+
+        expect(requested).toHaveLength(0);
+        expect(page).toEqual({ slots: [], next: null });
+    });
+
     it("appendSlots() adds only slots it doesn't already have", () => {
         const a = slotAt(NOW);
         const b = slotAt(NOW + DAY);
