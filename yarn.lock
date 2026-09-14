@@ -1810,7 +1810,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@rapidmx/react-shared@npm:^0.4.0":
+"@rapidmx/react-shared@npm:0.4.0":
   version: 0.4.0
   resolution: "@rapidmx/react-shared@npm:0.4.0"
   dependencies:
@@ -1828,6 +1828,27 @@ __metadata:
     react: 19.x
     react-dom: 19.x
   checksum: 10c0/c8807e5d416d8782be69dfd6fd93578e378668144f0a96116613474b9fefe0d87958eba371b22ada69b8bf89b8153e0bda62d84ec4508f509a8953435e43a497
+  languageName: node
+  linkType: hard
+
+"@rapidmx/react-shared@patch:@rapidmx/react-shared@npm%3A0.4.0#~/.yarn/patches/@rapidmx-react-shared-npm-0.4.0-e713beecf2.patch":
+  version: 0.4.0
+  resolution: "@rapidmx/react-shared@patch:@rapidmx/react-shared@npm%3A0.4.0#~/.yarn/patches/@rapidmx-react-shared-npm-0.4.0-e713beecf2.patch::version=0.4.0&hash=c543cd"
+  dependencies:
+    "@emoji-mart/data": "npm:^1.2.1"
+    "@peculiar/x509": "npm:^2.1.0"
+    asn1js: "npm:^3.0.10"
+    date-fns: "npm:^4.4.0"
+    dompurify: "npm:^3.4.15"
+    hash-wasm: "npm:^4.12.0"
+    pkijs: "npm:^3.4.0"
+    react-icons: "npm:^5.7.0"
+    reflect-metadata: "npm:^0.2.2"
+    rrule: "npm:^2.8.1"
+  peerDependencies:
+    react: 19.x
+    react-dom: 19.x
+  checksum: 10c0/e50e95fa01f8af5d81812f4635830906e89a889b0ee14be156981eed13d7e1547ba0a0f58c83dccab30b24b0081fb48282f856359662ef4807a83f9d27b95137
   languageName: node
   linkType: hard
 
@@ -1905,7 +1926,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@rapidmx/web-client@npm:^0.4.0":
+"@rapidmx/web-client@npm:0.4.0":
   version: 0.4.0
   resolution: "@rapidmx/web-client@npm:0.4.0"
   dependencies:
@@ -1935,6 +1956,39 @@ __metadata:
     react: 19.x
     react-dom: 19.x
   checksum: 10c0/3de34ce4d72952f08a4a2b64ec208de28b7d9d9db4b5bfb2c64c0bc8a045d2df16009f59832a5845531ab048584475aaf643380064a7a59edf97d524aa4742dc
+  languageName: node
+  linkType: hard
+
+"@rapidmx/web-client@patch:@rapidmx/web-client@npm%3A0.4.0#~/.yarn/patches/@rapidmx-web-client-npm-0.4.0-bf47c7c6fa.patch":
+  version: 0.4.0
+  resolution: "@rapidmx/web-client@patch:@rapidmx/web-client@npm%3A0.4.0#~/.yarn/patches/@rapidmx-web-client-npm-0.4.0-bf47c7c6fa.patch::version=0.4.0&hash=50779c"
+  dependencies:
+    "@dnd-kit/core": "npm:^6.3.1"
+    "@journeyapps/wa-sqlite": "npm:^2.0.4"
+    "@peculiar/x509": "npm:^2.1.0"
+    "@rapidmx/react-shared": "npm:^0.4.0"
+    "@tiptap/core": "npm:^3.31.3"
+    "@tiptap/extension-highlight": "npm:^3.31.3"
+    "@tiptap/extension-image": "npm:^3.31.3"
+    "@tiptap/extension-placeholder": "npm:^3.31.3"
+    "@tiptap/extension-table": "npm:^3.31.3"
+    "@tiptap/extension-text-align": "npm:^3.31.3"
+    "@tiptap/extension-text-style": "npm:^3.31.3"
+    "@tiptap/extensions": "npm:^3.31.3"
+    "@tiptap/pm": "npm:^3.31.3"
+    "@tiptap/react": "npm:^3.31.3"
+    "@tiptap/starter-kit": "npm:^3.31.3"
+    asn1js: "npm:^3.0.10"
+    date-fns: "npm:^4.4.0"
+    dompurify: "npm:^3.4.15"
+    hash-wasm: "npm:^4.12.0"
+    pkijs: "npm:^3.4.0"
+    react-icons: "npm:^5.7.0"
+    reflect-metadata: "npm:^0.2.2"
+  peerDependencies:
+    react: 19.x
+    react-dom: 19.x
+  checksum: 10c0/107fc89084ef180a2ca3dd597f31930e7e931dcc5e4a0329089cd21b72ef2a9b791c1c64f67e06f8003e3c4113c5b47860ddf46b802bf9c8037ae351f749a59d
   languageName: node
   linkType: hard
 
@@ -9940,9 +9994,9 @@ __metadata:
   resolution: "server@workspace:."
   dependencies:
     "@aws-sdk/client-s3": "npm:^3.906.0"
-    "@rapidmx/react-shared": "npm:^0.4.0"
+    "@rapidmx/react-shared": "patch:@rapidmx/react-shared@npm%3A0.4.0#~/.yarn/patches/@rapidmx-react-shared-npm-0.4.0-e713beecf2.patch"
     "@rapidmx/restapi": "patch:@rapidmx/restapi@npm%3A0.8.0#~/.yarn/patches/@rapidmx-restapi-npm-0.8.0-d588a97668.patch"
-    "@rapidmx/web-client": "npm:^0.4.0"
+    "@rapidmx/web-client": "patch:@rapidmx/web-client@npm%3A0.4.0#~/.yarn/patches/@rapidmx-web-client-npm-0.4.0-bf47c7c6fa.patch"
     "@rapidrest/cli": "npm:^2.0.0"
     "@rapidrest/core": "npm:^5.2.2"
     "@rapidrest/react": "npm:2.0.0-beta.2"
