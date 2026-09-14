@@ -1305,13 +1305,19 @@ index 12ef22eddc03bf22424220e41a0b8267761772a1..157bd67521bfd012386363edb2526fcf
 \ No newline at end of file
 diff --git a/dist/lib/plugins/NpmRegistryClient.js b/dist/lib/plugins/NpmRegistryClient.js
 new file mode 100644
-index 0000000000000000000000000000000000000000..40d2c6e29d4e79ba03680193e8948b74ed7cbf85
+index 0000000000000000000000000000000000000000..d938ce8bad3bbef508e0ea05bfe7434f70d43033
 --- /dev/null
 +++ b/dist/lib/plugins/NpmRegistryClient.js
-@@ -0,0 +1,77 @@
+@@ -0,0 +1,111 @@
 +import { parsePluginManifest } from "./PluginUtils.js";
 +/** The npm registry used when `system:plugins:registry` isn't configured. */
 +export const DEFAULT_PLUGIN_REGISTRY = "https://registry.npmjs.org";
++/** The naming convention a plugin package follows, which registry search relies on. */
++export const PLUGIN_PACKAGE_SUFFIX = "-plugin";
++/** Registry search pages this many results at a time (npm's own maximum). */
++const SEARCH_PAGE_SIZE = 250;
++/** Stops paging after this many results, so a misbehaving registry can't make a search run forever. */
++const SEARCH_MAX_RESULTS = 1000;
 +/** Thrown when the registry can't answer - `status` is the HTTP status, or `undefined` for a network error. */
 +export class RegistryRequestError extends Error {
 +    constructor(message, status) {
@@ -1362,9 +1368,37 @@ index 0000000000000000000000000000000000000000..40d2c6e29d4e79ba03680193e8948b74
 +            manifest: parsePluginManifest(pkg),
 +        };
 +    }
++    /**
++     * Every package in `namespace` (an npm scope such as `@rapidmx`) whose name ends in `-plugin`, sorted by name.
++     * Uses the registry's search API (`/-/v1/search`, which npm and Verdaccio both serve); a name match only - whether a
++     * package really is a plugin is still checked from its manifest when it's added.
++     */
++    async searchPlugins(namespace) {
++        const scope = namespace.replace(/^@/, "");
++        const results = new Map();
++        for (let from = 0; from < SEARCH_MAX_RESULTS; from += SEARCH_PAGE_SIZE) {
++            const query = new URLSearchParams({ text: `scope:${scope}`, size: String(SEARCH_PAGE_SIZE), from: String(from) });
++            const page = await this.request(`/-/v1/search?${query.toString()}`);
++            const objects = Array.isArray(page?.objects) ? page.objects : [];
++            for (const object of objects) {
++                const pkg = object?.package;
++                if (typeof pkg?.name === "string" && pkg.name.startsWith(`@${scope}/`) && pkg.name.endsWith(PLUGIN_PACKAGE_SUFFIX)) {
++                    results.set(pkg.name, { name: pkg.name, version: pkg.version, description: pkg.description, date: pkg.date });
++                }
++            }
++            if (objects.length < SEARCH_PAGE_SIZE) {
++                break;
++            }
++        }
++        return [...results.values()].sort((a, b) => a.name.localeCompare(b.name));
++    }
 +    async fetchPackument(name) {
 +        // Scoped names keep their `@` but encode the `/`, per the registry API.
-+        const url = `${this.registryUrl.replace(/\/+$/, "")}/${name.replace("/", "%2f")}`;
++        return this.request(`/${name.replace("/", "%2f")}`);
++    }
++    /** GETs `path` from the registry as JSON. Resolves `undefined` for a 404. */
++    async request(path) {
++        const url = `${this.registryUrl.replace(/\/+$/, "")}${path}`;
 +        const headers = { Accept: "application/json" };
 +        if (this.authToken) {
 +            headers.Authorization = `Bearer ${this.authToken}`;
@@ -1389,11 +1423,11 @@ index 0000000000000000000000000000000000000000..40d2c6e29d4e79ba03680193e8948b74
 \ No newline at end of file
 diff --git a/dist/lib/plugins/NpmRegistryClient.js.map b/dist/lib/plugins/NpmRegistryClient.js.map
 new file mode 100644
-index 0000000000000000000000000000000000000000..8f4de7e67493150197bef70583f48131d2a4e0fa
+index 0000000000000000000000000000000000000000..20ef20ef1dfdcf6995435143d3ac4e3eb0ebc1a3
 --- /dev/null
 +++ b/dist/lib/plugins/NpmRegistryClient.js.map
 @@ -0,0 +1 @@
-+{"version":3,"file":"NpmRegistryClient.js","sourceRoot":"","sources":["../../../src/plugins/NpmRegistryClient.ts"],"names":[],"mappings":"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"}
++{"version":3,"file":"NpmRegistryClient.js","sourceRoot":"","sources":["../../../src/plugins/NpmRegistryClient.ts"],"names":[],"mappings":"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"}
 \ No newline at end of file
 diff --git a/dist/lib/plugins/PluginRegistry.js b/dist/lib/plugins/PluginRegistry.js
 new file mode 100644
@@ -1455,10 +1489,10 @@ index 0000000000000000000000000000000000000000..555994a1f4664ce589d40fc77faeec79
 \ No newline at end of file
 diff --git a/dist/lib/plugins/PluginUtils.js b/dist/lib/plugins/PluginUtils.js
 new file mode 100644
-index 0000000000000000000000000000000000000000..65d517bc9cc052d46ca0a528d138b4d7b0f2d0d8
+index 0000000000000000000000000000000000000000..d605bfb5794c30ab6f2ee726101255e08c3c0b35
 --- /dev/null
 +++ b/dist/lib/plugins/PluginUtils.js
-@@ -0,0 +1,161 @@
+@@ -0,0 +1,226 @@
 +///////////////////////////////////////////////////////////////////////////////
 +// Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 +// SPDX-License-Identifier: MPL-2.0
@@ -1477,8 +1511,73 @@ index 0000000000000000000000000000000000000000..65d517bc9cc052d46ca0a528d138b4d7
 +export const PLUGIN_STATUS_KEY = "plugins:status";
 +/** How old a `PluginInstanceStatus` may be before it's treated as a server copy that no longer exists. */
 +export const PLUGIN_STATUS_MAX_AGE_MS = 2 * 60 * 1000;
-+/** The package allow-list used when `system:plugins:allowed_packages` isn't configured. */
++/** The package allow-list used when `system:plugins:allowed_packages` isn't configured. Packages in a configured
++ * namespace (`system:plugins:namespaces`) are allowed as well. */
 +export const DEFAULT_ALLOWED_PLUGIN_PACKAGES = ["@rapidmx/*"];
++/** The namespaces searched for plugins when `system:plugins:namespaces` isn't configured. */
++export const DEFAULT_PLUGIN_NAMESPACES = ["@rapidmx"];
++/** Normalizes the `system:plugins:namespaces` config (strings and/or objects) into `PluginNamespace`s, dropping
++ * anything that isn't a usable scope and de-duplicating by name (the first entry wins). */
++export function normalizePluginNamespaces(value) {
++    const entries = Array.isArray(value) ? value : [];
++    const result = new Map();
++    for (const entry of entries) {
++        const raw = typeof entry === "string" ? { name: entry } : entry;
++        const scope = typeof raw?.name === "string" ? raw.name.trim() : "";
++        if (!/^@?[a-z0-9][a-z0-9._~-]*$/.test(scope)) {
++            continue;
++        }
++        const name = scope.startsWith("@") ? scope : `@${scope}`;
++        if (!result.has(name)) {
++            result.set(name, {
++                name,
++                registry: typeof raw.registry === "string" && raw.registry ? raw.registry : undefined,
++                token: typeof raw.token === "string" && raw.token ? raw.token : undefined,
++            });
++        }
++    }
++    return [...result.values()];
++}
++/** The configured namespace a package (e.g. `@my-company/foo-plugin`) belongs to, if any. */
++export function findPluginNamespace(packageName, namespaces) {
++    return namespaces.find((namespace) => packageName.startsWith(`${namespace.name}/`));
++}
++/**
++ * Whether version `candidate` is newer than `current`, comparing `major.minor.patch` numerically and treating a
++ * prerelease (`1.0.0-beta.2`) as older than its release (`1.0.0`), with prerelease identifiers compared numerically
++ * where both are numbers. Anything that isn't a version compares as not newer.
++ */
++export function isNewerVersion(candidate, current) {
++    const parse = (version) => {
++        const match = /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+.*)?$/.exec(version.trim());
++        return match ? { core: [Number(match[1]), Number(match[2]), Number(match[3])], pre: match[4]?.split(".") ?? [] } : undefined;
++    };
++    const a = parse(candidate);
++    const b = parse(current);
++    if (!a || !b) {
++        return false;
++    }
++    for (let i = 0; i < 3; i++) {
++        if (a.core[i] !== b.core[i]) {
++            return a.core[i] > b.core[i];
++        }
++    }
++    if (a.pre.length === 0 || b.pre.length === 0) {
++        return a.pre.length === 0 && b.pre.length > 0;
++    }
++    for (let i = 0; i < Math.max(a.pre.length, b.pre.length); i++) {
++        const x = a.pre[i];
++        const y = b.pre[i];
++        if (x === undefined || y === undefined) {
++            return x !== undefined;
++        }
++        if (x !== y) {
++            const bothNumeric = /^\d+$/.test(x) && /^\d+$/.test(y);
++            return bothNumeric ? Number(x) > Number(y) : x > y;
++        }
++    }
++    return false;
++}
 +/** Extracts and validates the `rapidmx.plugin` block of a package's `package.json`. Returns an error message
 + * instead of a manifest when the package isn't a loadable plugin. */
 +export function parsePluginManifest(pkg) {
@@ -1623,11 +1722,11 @@ index 0000000000000000000000000000000000000000..65d517bc9cc052d46ca0a528d138b4d7
 \ No newline at end of file
 diff --git a/dist/lib/plugins/PluginUtils.js.map b/dist/lib/plugins/PluginUtils.js.map
 new file mode 100644
-index 0000000000000000000000000000000000000000..af26f749c1e34976a0f8d88395183effb2a514bf
+index 0000000000000000000000000000000000000000..f92628c93b7f2f07714311d889957f70d09a2b9b
 --- /dev/null
 +++ b/dist/lib/plugins/PluginUtils.js.map
 @@ -0,0 +1 @@
-+{"version":3,"file":"PluginUtils.js","sourceRoot":"","sources":["../../../src/plugins/PluginUtils.ts"],"names":[],"mappings":"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"}
++{"version":3,"file":"PluginUtils.js","sourceRoot":"","sources":["../../../src/plugins/PluginUtils.ts"],"names":[],"mappings":"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"}
 \ No newline at end of file
 diff --git a/dist/lib/plugins/index.js b/dist/lib/plugins/index.js
 new file mode 100644
@@ -2126,10 +2225,10 @@ index 8ccba734758c90b4e76d039c01b8426bd848a196..30f6b4a1dcf20d419184dab78ac68a3f
 \ No newline at end of file
 diff --git a/dist/lib/routes/BasePluginRoute.js b/dist/lib/routes/BasePluginRoute.js
 new file mode 100644
-index 0000000000000000000000000000000000000000..67d1dd6d18930b8b98f94136e89b6afc336762c3
+index 0000000000000000000000000000000000000000..aca8e635933d002f2f005e99d5bd3f1c9926c3e5
 --- /dev/null
 +++ b/dist/lib/routes/BasePluginRoute.js
-@@ -0,0 +1,336 @@
+@@ -0,0 +1,433 @@
 +var __decorate = (this && this.__decorate) || function (decorators, target, key, desc) {
 +    var c = arguments.length, r = c < 3 ? target : desc === null ? desc = Object.getOwnPropertyDescriptor(target, key) : desc, d;
 +    if (typeof Reflect === "object" && typeof Reflect.decorate === "function") r = Reflect.decorate(decorators, target, key, desc);
@@ -2152,7 +2251,7 @@ index 0000000000000000000000000000000000000000..67d1dd6d18930b8b98f94136e89b6afc
 +import { recordAuditLog } from "../util/AuditLogUtils.js";
 +import { AuditAction } from "../models/types.js";
 +import { DEFAULT_PLUGIN_REGISTRY, NpmRegistryClient, RegistryRequestError, } from "../plugins/NpmRegistryClient.js";
-+import { computePluginStateHash, DEFAULT_ALLOWED_PLUGIN_PACKAGES, defaultPluginSettings, matchesAllowedPackage, PLUGIN_CHANGED_EVENT, PLUGIN_EVENTS_CHANNEL, PLUGIN_STATUS_KEY, PLUGIN_STATUS_MAX_AGE_MS, validatePluginSettings, } from "../plugins/PluginUtils.js";
++import { computePluginStateHash, DEFAULT_ALLOWED_PLUGIN_PACKAGES, DEFAULT_PLUGIN_NAMESPACES, findPluginNamespace, isNewerVersion, normalizePluginNamespaces, defaultPluginSettings, matchesAllowedPackage, PLUGIN_CHANGED_EVENT, PLUGIN_EVENTS_CHANNEL, PLUGIN_STATUS_KEY, PLUGIN_STATUS_MAX_AGE_MS, validatePluginSettings, } from "../plugins/PluginUtils.js";
 +const { Config, Logger } = ObjectDecorators;
 +const { Delete, Get, Param, Post, Put, Query, Request, RequiresTrustedRole, User: AuthUser } = RouteDecorators;
 +/**
@@ -2169,7 +2268,8 @@ index 0000000000000000000000000000000000000000..67d1dd6d18930b8b98f94136e89b6afc
 +    constructor() {
 +        this.registryUrl = DEFAULT_PLUGIN_REGISTRY;
 +        this.registryToken = "";
-+        this.allowedPackages = DEFAULT_ALLOWED_PLUGIN_PACKAGES;
++        this.allowedPackagesConfig = DEFAULT_ALLOWED_PLUGIN_PACKAGES;
++        this.namespacesConfig = DEFAULT_PLUGIN_NAMESPACES;
 +    }
 +    async init() {
 +        if (!this.pluginRepo) {
@@ -2179,9 +2279,41 @@ index 0000000000000000000000000000000000000000..67d1dd6d18930b8b98f94136e89b6afc
 +            });
 +        }
 +    }
-+    /** The registry client - overridable so tests can answer without a network. */
-+    createRegistryClient() {
-+        return new NpmRegistryClient(this.registryUrl, this.registryToken || undefined);
++    /** The configured plugin namespaces (`system:plugins:namespaces`). */
++    get namespaces() {
++        return normalizePluginNamespaces(this.namespacesConfig);
++    }
++    /** `system:plugins:allowed_packages` plus every package in a configured namespace. */
++    get allowedPackages() {
++        return [...this.allowedPackagesConfig, ...this.namespaces.map((namespace) => `${namespace.name}/*`)];
++    }
++    /**
++     * The registry client for a package or namespace: the registry configured for its namespace, else the default
++     * registry. Overridable so tests can answer without a network.
++     */
++    createRegistryClient(packageOrNamespace) {
++        const namespace = packageOrNamespace
++            ? this.namespaces.find((ns) => ns.name === packageOrNamespace) ?? findPluginNamespace(packageOrNamespace, this.namespaces)
++            : undefined;
++        return namespace?.registry
++            ? new NpmRegistryClient(namespace.registry, namespace.token)
++            : new NpmRegistryClient(this.registryUrl, this.registryToken || undefined);
++    }
++    /** Runs a registry call, turning a registry failure into a `502`. */
++    async registryCall(call) {
++        try {
++            return await call();
++        }
++        catch (err) {
++            if (err instanceof RegistryRequestError) {
++                throw new ApiError(ApiErrors.INTERNAL_ERROR, 502, err.message);
++            }
++            throw err;
++        }
++    }
++    async installedPlugins() {
++        await this.init();
++        return (await this.pluginRepo.find({}, { ignoreACL: true })).filter((plugin) => !plugin.removed);
 +    }
 +    /** Announces a change to every server copy. A deployment without `datastores:events` has a single copy
 +     * whose own periodic check picks the change up, so a missing config (or a Redis error) is logged, not
@@ -2237,16 +2369,7 @@ index 0000000000000000000000000000000000000000..67d1dd6d18930b8b98f94136e89b6afc
 +    }
 +    /** Resolves a package version from the registry, turning its failure modes into API errors. */
 +    async lookupVersion(name, packageVersion) {
-+        let found;
-+        try {
-+            found = await this.createRegistryClient().getVersion(name, packageVersion || "latest");
-+        }
-+        catch (err) {
-+            if (err instanceof RegistryRequestError) {
-+                throw new ApiError(ApiErrors.INTERNAL_ERROR, 502, err.message);
-+            }
-+            throw err;
-+        }
++        const found = await this.registryCall(() => this.createRegistryClient(name).getVersion(name, packageVersion || "latest"));
 +        if (!found) {
 +            throw new ApiError(ApiErrors.NOT_FOUND, 404, packageVersion ? `'${name}@${packageVersion}' was not found in the plugin registry.` : `'${name}' was not found in the plugin registry.`);
 +        }
@@ -2282,10 +2405,57 @@ index 0000000000000000000000000000000000000000..67d1dd6d18930b8b98f94136e89b6afc
 +            .sort((a, b) => a.instance.localeCompare(b.instance));
 +        return { hash: computePluginStateHash(plugins), instances };
 +    }
++    /** The configured plugin namespaces, without their registry tokens. */
++    listNamespaces() {
++        return this.namespaces.map(({ name, registry }) => ({ name, registry }));
++    }
++    /** Plugin packages (names ending in `-plugin`) published under `namespace`, e.g. `@rapidmx`, each with its latest
++     * version and marked with whether it may be added, whether it's installed, and whether that install is outdated. */
++    async search(namespace) {
++        let scopes;
++        if (namespace === undefined || namespace.trim() === "") {
++            scopes = this.namespaces.map((ns) => ns.name);
++        }
++        else {
++            const [requested] = normalizePluginNamespaces([namespace]);
++            if (!requested) {
++                throw new ApiError(ApiErrors.INVALID_REQUEST, 400, "'namespace' must be an npm scope, for example @rapidmx.");
++            }
++            scopes = [requested.name];
++        }
++        const pages = await this.registryCall(() => Promise.all(scopes.map((scope) => this.createRegistryClient(scope).searchPlugins(scope))));
++        const found = pages.flat().sort((a, b) => a.name.localeCompare(b.name));
++        const installed = new Map((await this.installedPlugins()).map((plugin) => [plugin.name, plugin]));
++        return found.map((result) => {
++            const plugin = installed.get(result.name);
++            return {
++                ...result,
++                allowed: matchesAllowedPackage(result.name, this.allowedPackages),
++                installedUid: plugin?.uid,
++                installedVersion: plugin?.packageVersion,
++                updateAvailable: !!plugin && isNewerVersion(result.version, plugin.packageVersion),
++            };
++        });
++    }
++    /** For each installed plugin, the registry's latest version and whether it's newer than the installed one. A plugin
++     * the registry can't be checked for reports an `error` rather than failing the whole request. */
++    async updates() {
++        const plugins = (await this.installedPlugins()).sort((a, b) => a.name.localeCompare(b.name));
++        return Promise.all(plugins.map(async (plugin) => {
++            const base = { uid: plugin.uid, name: plugin.name, installedVersion: plugin.packageVersion };
++            try {
++                const latestVersion = (await this.createRegistryClient(plugin.name).getPackage(plugin.name))?.latest;
++                return { ...base, latestVersion, updateAvailable: !!latestVersion && isNewerVersion(latestVersion, plugin.packageVersion) };
++            }
++            catch (err) {
++                return { ...base, updateAvailable: false, error: err.message };
++            }
++        }));
++    }
 +    async lookup(name, packageVersion) {
 +        this.assertAllowed(name);
 +        const selected = await this.lookupVersion(name, packageVersion);
-+        const pkg = await this.createRegistryClient().getPackage(name);
++        const pkg = await this.createRegistryClient(name).getPackage(name);
 +        return { package: pkg, selected };
 +    }
 +    async add(obj, req, user) {
@@ -2400,7 +2570,11 @@ index 0000000000000000000000000000000000000000..67d1dd6d18930b8b98f94136e89b6afc
 +__decorate([
 +    Config("system:plugins:allowed_packages", DEFAULT_ALLOWED_PLUGIN_PACKAGES),
 +    __metadata("design:type", Array)
-+], BasePluginRoute.prototype, "allowedPackages", void 0);
++], BasePluginRoute.prototype, "allowedPackagesConfig", void 0);
++__decorate([
++    Config("system:plugins:namespaces", DEFAULT_PLUGIN_NAMESPACES),
++    __metadata("design:type", Object)
++], BasePluginRoute.prototype, "namespacesConfig", void 0);
 +__decorate([
 +    Config("datastores:events", null),
 +    __metadata("design:type", Object)
@@ -2427,6 +2601,28 @@ index 0000000000000000000000000000000000000000..67d1dd6d18930b8b98f94136e89b6afc
 +    __metadata("design:paramtypes", []),
 +    __metadata("design:returntype", Promise)
 +], BasePluginRoute.prototype, "status", null);
++__decorate([
++    RequiresTrustedRole(),
++    Get("/namespaces"),
++    __metadata("design:type", Function),
++    __metadata("design:paramtypes", []),
++    __metadata("design:returntype", Array)
++], BasePluginRoute.prototype, "listNamespaces", null);
++__decorate([
++    RequiresTrustedRole(),
++    Get("/search"),
++    __param(0, Query("namespace")),
++    __metadata("design:type", Function),
++    __metadata("design:paramtypes", [String]),
++    __metadata("design:returntype", Promise)
++], BasePluginRoute.prototype, "search", null);
++__decorate([
++    RequiresTrustedRole(),
++    Get("/updates"),
++    __metadata("design:type", Function),
++    __metadata("design:paramtypes", []),
++    __metadata("design:returntype", Promise)
++], BasePluginRoute.prototype, "updates", null);
 +__decorate([
 +    RequiresTrustedRole(),
 +    Get("/registry/:name"),
@@ -2469,11 +2665,11 @@ index 0000000000000000000000000000000000000000..67d1dd6d18930b8b98f94136e89b6afc
 \ No newline at end of file
 diff --git a/dist/lib/routes/BasePluginRoute.js.map b/dist/lib/routes/BasePluginRoute.js.map
 new file mode 100644
-index 0000000000000000000000000000000000000000..f571e64ebfe26eea8cabcfbff47118620e4db53a
+index 0000000000000000000000000000000000000000..e88dc1ce9390fb46ffdfdde40f81fa778f5a921e
 --- /dev/null
 +++ b/dist/lib/routes/BasePluginRoute.js.map
 @@ -0,0 +1 @@
-+{"version":3,"file":"BasePluginRoute.js","sourceRoot":"","sources":["../../../src/routes/BasePluginRoute.ts"],"names":[],"mappings":"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"}
++{"version":3,"file":"BasePluginRoute.js","sourceRoot":"","sources":["../../../src/routes/BasePluginRoute.ts"],"names":[],"mappings":"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"}
 \ No newline at end of file
 diff --git a/dist/lib/routes/BaseSetupRoute.js b/dist/lib/routes/BaseSetupRoute.js
 new file mode 100644
@@ -3655,10 +3851,10 @@ index c7d6bb7aa4ad5930c6918f1820ba33553af5e286..419198c111ec94d0f93899ac8fe75e96
 +}
 diff --git a/dist/types/plugins/NpmRegistryClient.d.ts b/dist/types/plugins/NpmRegistryClient.d.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..cd8f6be7f5873292e015f2ae1a9eafda46411014
+index 0000000000000000000000000000000000000000..6dbabf86f142b8865b10fb4a7e24593c48a48b4a
 --- /dev/null
 +++ b/dist/types/plugins/NpmRegistryClient.d.ts
-@@ -0,0 +1,42 @@
+@@ -0,0 +1,61 @@
 +import { PluginManifest } from "../models/types.js";
 +/** The npm registry used when `system:plugins:registry` isn't configured. */
 +export declare const DEFAULT_PLUGIN_REGISTRY = "https://registry.npmjs.org";
@@ -3679,6 +3875,17 @@ index 0000000000000000000000000000000000000000..cd8f6be7f5873292e015f2ae1a9eafda
 +    latest?: string;
 +    versions: string[];
 +}
++/** A package found by `NpmRegistryClient.searchPlugins()`. */
++export interface RegistrySearchResult {
++    name: string;
++    /** The latest published version. */
++    version: string;
++    description?: string;
++    /** When `version` was published (ISO 8601), if the registry reports it. */
++    date?: string;
++}
++/** The naming convention a plugin package follows, which registry search relies on. */
++export declare const PLUGIN_PACKAGE_SUFFIX = "-plugin";
 +/** Thrown when the registry can't answer - `status` is the HTTP status, or `undefined` for a network error. */
 +export declare class RegistryRequestError extends Error {
 +    readonly status?: number | undefined;
@@ -3699,7 +3906,15 @@ index 0000000000000000000000000000000000000000..cd8f6be7f5873292e015f2ae1a9eafda
 +    /** One version of the package - `version` may be an exact version or a dist-tag such as `latest`.
 +     * Resolves `undefined` when the package or version doesn't exist. */
 +    getVersion(name: string, version?: string): Promise<RegistryPackageVersion | undefined>;
++    /**
++     * Every package in `namespace` (an npm scope such as `@rapidmx`) whose name ends in `-plugin`, sorted by name.
++     * Uses the registry's search API (`/-/v1/search`, which npm and Verdaccio both serve); a name match only - whether a
++     * package really is a plugin is still checked from its manifest when it's added.
++     */
++    searchPlugins(namespace: string): Promise<RegistrySearchResult[]>;
 +    private fetchPackument;
++    /** GETs `path` from the registry as JSON. Resolves `undefined` for a 404. */
++    private request;
 +}
 diff --git a/dist/types/plugins/PluginRegistry.d.ts b/dist/types/plugins/PluginRegistry.d.ts
 new file mode 100644
@@ -3739,10 +3954,10 @@ index 0000000000000000000000000000000000000000..349f5815bf4f34754525d0afdc4b38b8
 +export declare function isMailboxScopedData(clazz: any): boolean;
 diff --git a/dist/types/plugins/PluginUtils.d.ts b/dist/types/plugins/PluginUtils.d.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..a5936d4d28547ec3031de0ad345da907aca8e321
+index 0000000000000000000000000000000000000000..8b863c14367b916a7de89cf13536858c6b285208
 --- /dev/null
 +++ b/dist/types/plugins/PluginUtils.d.ts
-@@ -0,0 +1,55 @@
+@@ -0,0 +1,80 @@
 +import { Plugin, PluginManifest } from "../models/types.js";
 +/** The plugin contract version this library implements. A plugin whose manifest declares any other
 + * `apiVersion` is refused, both when an administrator adds it and when a server copy loads it. */
@@ -3757,8 +3972,33 @@ index 0000000000000000000000000000000000000000..a5936d4d28547ec3031de0ad345da907
 +export declare const PLUGIN_STATUS_KEY = "plugins:status";
 +/** How old a `PluginInstanceStatus` may be before it's treated as a server copy that no longer exists. */
 +export declare const PLUGIN_STATUS_MAX_AGE_MS: number;
-+/** The package allow-list used when `system:plugins:allowed_packages` isn't configured. */
++/** The package allow-list used when `system:plugins:allowed_packages` isn't configured. Packages in a configured
++ * namespace (`system:plugins:namespaces`) are allowed as well. */
 +export declare const DEFAULT_ALLOWED_PLUGIN_PACKAGES: string[];
++/** The namespaces searched for plugins when `system:plugins:namespaces` isn't configured. */
++export declare const DEFAULT_PLUGIN_NAMESPACES: string[];
++/**
++ * An npm scope plugins are published under, as configured in `system:plugins:namespaces`. Either a bare scope
++ * (`"@my-company"`) using the default registry, or an object naming the registry (and optional auth token) that scope
++ * is published to - the same idea as an `.npmrc` `@scope:registry=` line.
++ */
++export interface PluginNamespace {
++    /** The scope, always with its leading `@`. */
++    name: string;
++    registry?: string;
++    token?: string;
++}
++/** Normalizes the `system:plugins:namespaces` config (strings and/or objects) into `PluginNamespace`s, dropping
++ * anything that isn't a usable scope and de-duplicating by name (the first entry wins). */
++export declare function normalizePluginNamespaces(value: unknown): PluginNamespace[];
++/** The configured namespace a package (e.g. `@my-company/foo-plugin`) belongs to, if any. */
++export declare function findPluginNamespace(packageName: string, namespaces: PluginNamespace[]): PluginNamespace | undefined;
++/**
++ * Whether version `candidate` is newer than `current`, comparing `major.minor.patch` numerically and treating a
++ * prerelease (`1.0.0-beta.2`) as older than its release (`1.0.0`), with prerelease identifiers compared numerically
++ * where both are numbers. Anything that isn't a version compares as not newer.
++ */
++export declare function isNewerVersion(candidate: string, current: string): boolean;
 +/** What one server copy reports about the plugins it loaded. */
 +export interface PluginInstanceStatus {
 +    /** The server copy's identity (its hostname). */
@@ -3989,15 +4229,15 @@ index 9884235f0aeda2b66de498ba3586ee52e532a8e8..4940c065b3e6e5077a627affcbdd781f
      private escrowScopeRepo?;
 diff --git a/dist/types/routes/BasePluginRoute.d.ts b/dist/types/routes/BasePluginRoute.d.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..604eb3850daa917f182b05f8e9a91f40202b0401
+index 0000000000000000000000000000000000000000..40d669ef1c9096c01cd4e24f70758197b6fc7d48
 --- /dev/null
 +++ b/dist/types/routes/BasePluginRoute.d.ts
-@@ -0,0 +1,71 @@
+@@ -0,0 +1,115 @@
 +import { type JWTUser } from "@rapidrest/core";
 +import { HttpRequest } from "@rapidrest/service-core";
 +import { Plugin } from "../models/types.js";
-+import { NpmRegistryClient, RegistryPackage, RegistryPackageVersion } from "../plugins/NpmRegistryClient.js";
-+import { PluginInstanceStatus } from "../plugins/PluginUtils.js";
++import { NpmRegistryClient, RegistryPackage, RegistryPackageVersion, RegistrySearchResult } from "../plugins/NpmRegistryClient.js";
++import { PluginNamespace, PluginInstanceStatus } from "../plugins/PluginUtils.js";
 +/** The body of `POST /` - `packageVersion` defaults to the registry's `latest`. */
 +export interface AddPluginRequest {
 +    name?: string;
@@ -4014,6 +4254,28 @@ index 0000000000000000000000000000000000000000..604eb3850daa917f182b05f8e9a91f40
 +export interface PluginRegistryLookup {
 +    package: RegistryPackage;
 +    selected: RegistryPackageVersion;
++}
++/** One result of `GET /search`. `version` is the latest published version. */
++export interface PluginSearchResult extends RegistrySearchResult {
++    /** Whether `system:plugins:allowed_packages` lets an administrator add this package. */
++    allowed: boolean;
++    /** The installed row's uid, when this package is already installed. */
++    installedUid?: string;
++    /** The installed version, when this package is already installed. */
++    installedVersion?: string;
++    /** Whether a newer version than the installed one is published. */
++    updateAvailable: boolean;
++}
++/** One entry of `GET /updates`. */
++export interface PluginUpdateInfo {
++    uid: string;
++    name: string;
++    installedVersion: string;
++    /** The registry's `latest` version, or `undefined` if the registry doesn't know the package. */
++    latestVersion?: string;
++    updateAvailable: boolean;
++    /** Why the registry couldn't be checked for this plugin, if it couldn't. */
++    error?: string;
 +}
 +/** `GET /status` - the hash every server copy should reach, and what each copy last reported. */
 +export interface PluginStatusResponse {
@@ -4038,13 +4300,24 @@ index 0000000000000000000000000000000000000000..604eb3850daa917f182b05f8e9a91f40
 +    private config;
 +    private registryUrl;
 +    private registryToken;
-+    private allowedPackages;
++    private allowedPackagesConfig;
++    private namespacesConfig;
 +    private eventsConfig;
 +    private cacheConfig;
 +    private logger;
 +    private init;
-+    /** The registry client - overridable so tests can answer without a network. */
-+    protected createRegistryClient(): NpmRegistryClient;
++    /** The configured plugin namespaces (`system:plugins:namespaces`). */
++    protected get namespaces(): PluginNamespace[];
++    /** `system:plugins:allowed_packages` plus every package in a configured namespace. */
++    protected get allowedPackages(): string[];
++    /**
++     * The registry client for a package or namespace: the registry configured for its namespace, else the default
++     * registry. Overridable so tests can answer without a network.
++     */
++    protected createRegistryClient(packageOrNamespace?: string): NpmRegistryClient;
++    /** Runs a registry call, turning a registry failure into a `502`. */
++    private registryCall;
++    private installedPlugins;
 +    /** Announces a change to every server copy. A deployment without `datastores:events` has a single copy
 +     * whose own periodic check picks the change up, so a missing config (or a Redis error) is logged, not
 +     * thrown - the change itself is already saved. */
@@ -4059,6 +4332,17 @@ index 0000000000000000000000000000000000000000..604eb3850daa917f182b05f8e9a91f40
 +    private announce;
 +    list(): Promise<T[]>;
 +    status(): Promise<PluginStatusResponse>;
++    /** The configured plugin namespaces, without their registry tokens. */
++    listNamespaces(): {
++        name: string;
++        registry?: string;
++    }[];
++    /** Plugin packages (names ending in `-plugin`) published under `namespace`, e.g. `@rapidmx`, each with its latest
++     * version and marked with whether it may be added, whether it's installed, and whether that install is outdated. */
++    search(namespace?: string): Promise<PluginSearchResult[]>;
++    /** For each installed plugin, the registry's latest version and whether it's newer than the installed one. A plugin
++     * the registry can't be checked for reports an `error` rather than failing the whole request. */
++    updates(): Promise<PluginUpdateInfo[]>;
 +    lookup(name: string, packageVersion?: string): Promise<PluginRegistryLookup>;
 +    add(obj: AddPluginRequest | undefined, req: HttpRequest, user?: JWTUser): Promise<T>;
 +    update(id: string, obj: UpdatePluginRequest | undefined, req: HttpRequest, user?: JWTUser): Promise<T>;

@@ -18,6 +18,9 @@ export interface DefaultPlugin {
     name: string;
     /** An exact version or dist-tag; defaults to `latest`. */
     version?: string;
+    /** Whether the plugin starts out enabled; defaults to `true`. Only applies when the plugin is first added - after
+     * that, administrators turn it on and off in the admin console. */
+    enabled?: boolean;
 }
 
 /** The repository operations this store needs - the subset the Mongo and TypeORM SQL repositories share. */
@@ -93,7 +96,11 @@ export class PluginStateStore {
      * administrator removed keeps its (removed) row, so it stays removed; a default added in a later release is
      * still seeded into an existing deployment.
      */
-    public async loadAndSeed(defaults: DefaultPlugin[], registry: NpmRegistryClient, sources: Record<string, string>): Promise<Plugin[]> {
+    public async loadAndSeed(
+        defaults: DefaultPlugin[],
+        registryFor: (packageName: string) => NpmRegistryClient,
+        sources: Record<string, string>,
+    ): Promise<Plugin[]> {
         return this.withRepository(async (repo) => {
             let rows: Plugin[] = await findAllPlugins(repo);
             const known: Set<string> = new Set(rows.map((row) => row.name));
@@ -102,7 +109,7 @@ export class PluginStateStore {
                     continue;
                 }
                 try {
-                    const seeded: any = await this.describeDefault(plugin, registry, sources);
+                    const seeded: any = await this.describeDefault(plugin, registryFor, sources);
                     await repo.save(new this.pluginClass(seeded));
                     known.add(plugin.name);
                     this.logger?.info(`Added default plugin ${plugin.name}@${seeded.packageVersion}.`);
@@ -116,7 +123,11 @@ export class PluginStateStore {
         });
     }
 
-    private async describeDefault(plugin: DefaultPlugin, registry: NpmRegistryClient, sources: Record<string, string>): Promise<Partial<Plugin>> {
+    private async describeDefault(
+        plugin: DefaultPlugin,
+        registryFor: (packageName: string) => NpmRegistryClient,
+        sources: Record<string, string>,
+    ): Promise<Partial<Plugin>> {
         let packageVersion: string;
         let integrity: string | undefined;
         let manifest: PluginManifest | string;
@@ -125,7 +136,7 @@ export class PluginStateStore {
             packageVersion = pkg.version;
             manifest = parsePluginManifest(pkg);
         } else {
-            const found = await registry.getVersion(plugin.name, plugin.version || "latest");
+            const found = await registryFor(plugin.name).getVersion(plugin.name, plugin.version || "latest");
             if (!found) {
                 throw new Error(`${plugin.name}@${plugin.version || "latest"} was not found in the plugin registry.`);
             }
@@ -140,7 +151,7 @@ export class PluginStateStore {
             name: plugin.name,
             packageVersion,
             integrity,
-            enabled: true,
+            enabled: plugin.enabled ?? true,
             removed: false,
             settings: defaultPluginSettings(manifest),
             manifest,

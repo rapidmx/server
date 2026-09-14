@@ -5,7 +5,17 @@
 import os from "os";
 import path from "path";
 import { ConnectionManager, ObjectFactory } from "@rapidrest/service-core";
-import { computePluginStateHash, DEFAULT_PLUGIN_REGISTRY, NpmRegistryClient, PluginRegistry, type Plugin } from "@rapidmx/restapi";
+import {
+    computePluginStateHash,
+    DEFAULT_PLUGIN_NAMESPACES,
+    DEFAULT_PLUGIN_REGISTRY,
+    findPluginNamespace,
+    normalizePluginNamespaces,
+    NpmRegistryClient,
+    PluginRegistry,
+    type Plugin,
+    type PluginNamespace,
+} from "@rapidmx/restapi";
 import { PluginClassLoader } from "./PluginClassLoader.js";
 import { PluginInstaller, type PluginInstallResult } from "./PluginInstaller.js";
 import { findAllPlugins, PluginStateStore, type DefaultPlugin } from "./PluginStateStore.js";
@@ -62,6 +72,15 @@ export class PluginHost {
         const registryToken: string | undefined = config.get("system:plugins:registry_token") || undefined;
         const sources: Record<string, string> = config.get("system:plugins:sources") || {};
         const defaults: DefaultPlugin[] = config.get("system:plugins:defaults") || [];
+        const namespaces: PluginNamespace[] = normalizePluginNamespaces(config.get("system:plugins:namespaces") ?? DEFAULT_PLUGIN_NAMESPACES);
+        // A package in a namespace with its own registry is read from that registry, like npm's scoped registries.
+        const registryFor = (packageName: string): NpmRegistryClient => {
+            if (options.registry) {
+                return options.registry;
+            }
+            const namespace: PluginNamespace | undefined = findPluginNamespace(packageName, namespaces);
+            return namespace?.registry ? new NpmRegistryClient(namespace.registry, namespace.token) : new NpmRegistryClient(registryUrl, registryToken);
+        };
         const safeMode: boolean = process.env[PLUGIN_SAFE_MODE_ENV] === "1";
         const errors: { name: string; message: string }[] = [];
 
@@ -71,7 +90,7 @@ export class PluginHost {
         } else {
             const store: PluginStateStore = options.store ?? new PluginStateStore(config, logger, datastore, options.pluginClass);
             try {
-                rows = await store.loadAndSeed(defaults, options.registry ?? new NpmRegistryClient(registryUrl, registryToken), sources);
+                rows = await store.loadAndSeed(defaults, registryFor, sources);
             } catch (err: any) {
                 logger.error(`Could not read the plugin list, so no plugins were loaded: ${err.message}`);
                 errors.push({ name: "*", message: `Could not read the plugin list: ${err.message}` });
@@ -86,6 +105,7 @@ export class PluginHost {
                 appRoot,
                 registry: registryUrl,
                 registryToken,
+                namespaces,
                 sources,
                 datastore,
                 logger,

@@ -109,8 +109,9 @@ service:
     # Plugins (see src/config.mongo.ts's `system.plugins` block for every key). Uncomment to change the registry plugins
     # come from, the packages an administrator may add, or the plugins a fresh install starts with.
     # system__plugins__registry: https://registry.npmjs.org
+    # system__plugins__namespaces: ["@rapidmx", { name: "@my-company", registry: "https://npm.my-company.com" }]
     # system__plugins__allowed_packages: ["@rapidmx/*"]
-    # system__plugins__defaults: [{ name: "@rapidmx/activesync", version: "latest" }]
+    # system__plugins__defaults: [{ name: "@rapidmx/activesync-plugin", version: "latest", enabled: true }]
 authServer:
   create: true
   host: auth.localhost

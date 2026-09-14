@@ -64,11 +64,18 @@ describe("PluginStateStore", () => {
     it("seeds defaults that have never had a row, leaving removed ones removed", async () => {
         const store = new MemoryStore([row("@rapidmx/mapi", { removed: true, enabled: false })]);
         const rows = await store.loadAndSeed(
-            [{ name: "@rapidmx/activesync" }, { name: "@rapidmx/mapi" }, { name: "@rapidmx/missing" }, { name: "@rapidmx/bad", version: "1.0.0" }],
-            registry,
+            [
+                { name: "@rapidmx/activesync" },
+                { name: "@rapidmx/mapi" },
+                { name: "@rapidmx/missing" },
+                { name: "@rapidmx/bad", version: "1.0.0" },
+                { name: "@rapidmx/off", enabled: false },
+            ],
+            () => registry,
             {},
         );
-        expect(rows.map((r) => r.name)).toEqual(["@rapidmx/mapi", "@rapidmx/activesync"]);
+        expect(rows.map((r) => r.name)).toEqual(["@rapidmx/mapi", "@rapidmx/activesync", "@rapidmx/off"]);
+        expect(rows[2]).toEqual(expect.objectContaining({ enabled: false, removed: false }));
         expect(rows[1]).toEqual(
             expect.objectContaining({ packageVersion: "2.0.0", integrity: "sha512-x", enabled: true, removed: false, settings: { "mail:eas:sync_window_size": 100 } }),
         );
@@ -81,7 +88,7 @@ describe("PluginStateStore", () => {
         tarball(file, { "README.md": "x".repeat(700), "package.json": JSON.stringify({ name: "@rapidmx/activesync", version: "3.0.0", rapidmx: { plugin: MANIFEST } }) });
         try {
             const store = new MemoryStore([]);
-            const rows = await store.loadAndSeed([{ name: "@rapidmx/activesync" }], registry, { "@rapidmx/activesync": file });
+            const rows = await store.loadAndSeed([{ name: "@rapidmx/activesync" }], () => registry, { "@rapidmx/activesync": file });
             expect(rows[0]).toEqual(expect.objectContaining({ packageVersion: "3.0.0", integrity: undefined }));
         } finally {
             fs.rmSync(file, { force: true });
@@ -140,6 +147,31 @@ describe("PluginHost", () => {
         // No entry point was actually imported, so nothing counts as loaded once the server has started.
         expect(PluginRegistry.list()).toEqual([]);
         await host.stop();
+    });
+
+    it("reads a default plugin from its namespace's own registry, and everything else from the default registry", async () => {
+        const requested: string[] = [];
+        const store: any = {
+            loadAndSeed: vi.fn(async (defaults: any[], registryFor: (name: string) => any) => {
+                for (const plugin of defaults) {
+                    const client = registryFor(plugin.name);
+                    requested.push(`${plugin.name} -> ${client.registryUrl} ${client.authToken ?? "-"}`);
+                }
+                return [];
+            }),
+        };
+        const installer: any = { install: vi.fn(async () => ({ installed: [], errors: [] })) };
+        const config = configWith({
+            system: {
+                plugins: {
+                    registry: "https://registry.default.test",
+                    namespaces: ["@rapidmx", { name: "@acme", registry: "https://npm.acme.test", token: "secret" }],
+                    defaults: [{ name: "@acme/crm-plugin" }, { name: "@rapidmx/mapi-plugin" }],
+                },
+            },
+        });
+        await PluginHost.prepare({ config, logger, datastore: "mongo", pluginClass: class {}, appRoot: process.cwd(), store, installer });
+        expect(requested).toEqual(["@acme/crm-plugin -> https://npm.acme.test secret", "@rapidmx/mapi-plugin -> https://registry.default.test -"]);
     });
 
     it("loads no plugins in safe mode", async () => {

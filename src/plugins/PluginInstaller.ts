@@ -7,7 +7,7 @@ import crypto from "crypto";
 import fs from "fs";
 import path from "path";
 import { pathToFileURL } from "url";
-import { parsePluginManifest, type PluginManifest } from "@rapidmx/restapi";
+import { parsePluginManifest, type PluginManifest, type PluginNamespace } from "@rapidmx/restapi";
 
 /** The packages a plugin must share with the server rather than bring its own copy of: a second copy of any of
  * them breaks decorator metadata and `instanceof` checks, so its routes, models and jobs silently never load. */
@@ -43,6 +43,8 @@ export interface PluginInstallerOptions {
     appRoot: string;
     registry: string;
     registryToken?: string;
+    /** Plugin namespaces; any with their own registry are installed from it (an `.npmrc` `@scope:registry=` line). */
+    namespaces?: PluginNamespace[];
     /** Package name to local `.tgz` path, installed instead of the registry version (development and tests). */
     sources?: Record<string, string>;
     /** Which entry point to load: `mongo` or `sql`. */
@@ -119,7 +121,7 @@ export class PluginInstaller {
             dependencies[plugin.name] = source ? `file:${path.resolve(source)}` : plugin.packageVersion;
         }
         const manifest = { name: "rapidmx-plugins", private: true, dependencies };
-        const stamp: string = crypto.createHash("sha256").update(JSON.stringify([manifest, this.options.registry])).digest("hex");
+        const stamp: string = crypto.createHash("sha256").update(JSON.stringify([manifest, this.options.registry, this.scopedRegistries()])).digest("hex");
         const stampFile: string = path.join(dir, ".install-stamp");
 
         const upToDate: boolean =
@@ -167,14 +169,35 @@ export class PluginInstaller {
         return { installed, errors };
     }
 
+    /** Namespaces installed from their own registry, as `[scope, registry]` pairs. */
+    private scopedRegistries(): [string, string][] {
+        return (this.options.namespaces ?? []).filter((ns) => ns.registry).map((ns) => [ns.name, ns.registry!]);
+    }
+
+    /** The `.npmrc` line holding `token` for `registry`. */
+    private static authLine(registry: string, token: string): string {
+        return `${registry.replace(/^https?:/, "").replace(/\/?$/, "/")}:_authToken=${token}`;
+    }
+
     private writeNpmrc(): void {
         const npmrc: string = path.join(this.options.dir, ".npmrc");
-        if (!this.options.registryToken) {
+        const lines: string[] = [];
+        if (this.options.registryToken) {
+            lines.push(PluginInstaller.authLine(this.options.registry, this.options.registryToken));
+        }
+        for (const namespace of this.options.namespaces ?? []) {
+            if (namespace.registry) {
+                lines.push(`${namespace.name}:registry=${namespace.registry}`);
+                if (namespace.token) {
+                    lines.push(PluginInstaller.authLine(namespace.registry, namespace.token));
+                }
+            }
+        }
+        if (lines.length === 0) {
             fs.rmSync(npmrc, { force: true });
             return;
         }
-        const host: string = this.options.registry.replace(/^https?:/, "").replace(/\/?$/, "/");
-        fs.writeFileSync(npmrc, `${host}:_authToken=${this.options.registryToken}\n`, { mode: 0o600 });
+        fs.writeFileSync(npmrc, `${lines.join("\n")}\n`, { mode: 0o600 });
     }
 
     private readLock(): any {

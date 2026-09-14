@@ -158,6 +158,23 @@ describe("PluginInstaller", () => {
         expect(fs.existsSync(path.join(dir, ".npmrc"))).toBe(false);
     });
 
+    it("points namespaces with their own registry at it in .npmrc, with their tokens, and reinstalls when that changes", async () => {
+        const npm = fakeNpm({ "@acme/crm-plugin": {} });
+        const namespaces = [
+            { name: "@rapidmx" },
+            { name: "@acme", registry: "https://npm.acme.test/", token: "acme-token" },
+            { name: "@open", registry: "https://npm.open.test" },
+        ];
+        await installer(npm, { namespaces }).install([{ name: "@acme/crm-plugin", packageVersion: "1.0.0" }]);
+        expect(fs.readFileSync(path.join(dir, ".npmrc"), "utf8")).toBe(
+            "@acme:registry=https://npm.acme.test/\n//npm.acme.test/:_authToken=acme-token\n@open:registry=https://npm.open.test\n",
+        );
+
+        await installer(npm, { namespaces: namespaces.slice(0, 2) }).install([{ name: "@acme/crm-plugin", packageVersion: "1.0.0" }]);
+        expect(npm).toHaveBeenCalledTimes(2);
+        expect(fs.readFileSync(path.join(dir, ".npmrc"), "utf8")).not.toContain("@open");
+    });
+
     it("removes installed plugins when none are enabled, without running npm", async () => {
         await installer(fakeNpm({ "@rapidmx/one": {} })).install([{ name: "@rapidmx/one", packageVersion: "1.0.0" }]);
         const npm = vi.fn();

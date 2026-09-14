@@ -294,19 +294,24 @@ conf.defaults({
         // console; every server copy installs the enabled ones with npm at startup and restarts itself (one copy at a
         // time) when they change.
         plugins: {
-            // Installed and enabled the first time a server starts against a database that has never had them. A
-            // default an administrator later removes stays removed; a default added in a later release is still added
+            // Installed the first time a server starts against a database that has never had them. `enabled` (default
+            // true) is only the initial state - administrators turn plugins on and off in the admin console after that.
+            // A default an administrator later removes stays removed; a default added in a later release is still added
             // to an existing deployment.
             defaults: [
-                { name: "@rapidmx/activesync", version: "latest" },
-                { name: "@rapidmx/mapi", version: "latest" },
-                { name: "@rapidmx/autodiscover", version: "latest" },
+                { name: "@rapidmx/activesync-plugin", version: "latest" },
+                { name: "@rapidmx/mapi-plugin", version: "latest" },
+                { name: "@rapidmx/autodiscover-plugin", version: "latest" },
             ],
             // The npm registry plugins are downloaded from, and an optional auth token for a private one.
             registry: "https://registry.npmjs.org",
             registry_token: "",
-            // Which packages an administrator may add. Only this config can widen it - a plugin runs with the server's
-            // full privileges.
+            // The npm scopes the admin console searches for plugins (packages named `*-plugin`). Packages in these
+            // namespaces may be added. An entry can also name its own registry and token, for a private scope:
+            // { name: "@my-company", registry: "https://npm.my-company.com", token: "..." }.
+            namespaces: ["@rapidmx"],
+            // Other packages an administrator may add, beyond the namespaces above. Only this config can widen what's
+            // allowed - a plugin runs with the server's full privileges.
             allowed_packages: ["@rapidmx/*"],
             // Where plugins are installed. Must be inside the server's directory so plugins share its packages.
             dir: join(process.cwd(), "plugins"),
