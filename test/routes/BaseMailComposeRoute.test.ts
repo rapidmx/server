@@ -461,6 +461,8 @@ describe("safeFromDisplayName()", () => {
     it("keeps an ordinary name, trimmed, and drops address-like, multi-line or empty ones", () => {
         expect(safeFromDisplayName("  Alice Smith ")).toBe("Alice Smith");
         expect(safeFromDisplayName("bob@example.com")).toBeUndefined();
+        expect(safeFromDisplayName("bob＠example.com")).toBeUndefined();
+        expect(safeFromDisplayName("bob﹫example.com")).toBeUndefined();
         expect(safeFromDisplayName("Bob\r\nX: y")).toBeUndefined();
         expect(safeFromDisplayName("   ")).toBeUndefined();
         expect(safeFromDisplayName(undefined)).toBeUndefined();

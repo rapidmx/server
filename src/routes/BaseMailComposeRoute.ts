@@ -89,7 +89,8 @@ function toNodemailerAddress(recipient: Recipient): { name?: string; address: st
  */
 export function safeFromDisplayName(displayName: string | undefined): string | undefined {
     const name: string = (displayName ?? "").trim();
-    return name && !/[@\r\n]/.test(name) ? name : undefined;
+    // Includes the fullwidth and small look-alike @ signs restapi's send path also treats as an address.
+    return name && !/[@＠﹫\r\n]/.test(name) ? name : undefined;
 }
 
 function isRecipientList(value: unknown): value is Recipient[] | undefined {
