@@ -1,10 +1,7 @@
 ---
-# See values.yaml's mail.dkim.storage doc comment for the ReadWriteOnce/ReadWriteMany tradeoff. Written by
-# the main service Deployment (1_deployments/service.yaml, FsDkimKeyProvider) and read by rspamd's
-# dkim_signing module inside the separate `postfix-bridge` chart's own Postfix Deployment - since that's
-# now a different Helm release, this PVC is only ever mounted by this chart's own Deployment; point
-# postfix-bridge's own `mail.dkim.storage` at the same underlying storage (e.g. an existing PVC/NFS-backed
-# volume) for DKIM signing to actually see what FsDkimKeyProvider writes here.
+# DKIM keys written by the main service Deployment (1_deployments/service.yaml, FsDkimKeyProvider). The bundled
+# postfixBridge's Postfix signs from this same claim (its dkim.storage.existingClaim); a postfix-bridge installed as its
+# own release needs dkim.storage.existingClaim set to it too.
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:

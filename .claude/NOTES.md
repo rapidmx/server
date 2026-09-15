@@ -5638,3 +5638,106 @@ web-client). Before the fix (dev): 422 with the two scan-failed errors. After (d
 recipient's Inbox via ScanQueueJob, one bypass warning per engine plus one no-sendmail warning, a second send logged no
 new warnings, an external-only send 502 with "Not delivered ... someone@external.test". NODE_ENV=production: all three
 sends 422, no `[dev]` lines. `yarn tsc --noEmit`, `yarn lint`, `yarn test` 356/356 (src/dev 100% lines).
+
+## 2026-09-15 — postfix-bridge bundled as the `postfixBridge` dependency
+
+- **Chart.yaml:** `postfix-bridge` 1.0.0 from `oci://ghcr.io/rapidmx/charts`, alias `postfixBridge`, condition
+  `postfixBridge.create` (default true), `nameOverride: postfix-bridge` (the alias would otherwise name resources).
+  Chart.lock NOT regenerated: `helm dependency update ./helm` needs a GHCR login while the package is private (see below).
+  The local chart version in postfix-bridge's Chart.yaml is 0.1.0; CI packages it with the tag version.
+- **Secret:** new `global.mailIngestSecret`; `mail.ingestSecret` defaults to `'{{ .Values.global.mailIngestSecret }}'`
+  and `postfixBridge.ingestSecret` is `{{ required ... .Values.global.mailIngestSecret }}` (subchart tpl's it in its own
+  context, where `global` is visible). An explicit `mail.ingestSecret` without the global fails in the subchart.
+- **ingestBaseUrl:** `http://{{ ternary .Release.Name (printf "%s-server" .Release.Name) (contains "server" .Release.Name) }}-services/internal/mta`
+  (mirrors rrst.fullname; fullnameOverride/nameOverride not followed).
+- **DKIM:** with the subchart the server mounts `<postfixBridge fullname>-dkim-keys` (`server.dkimKeysClaim`,
+  `server.postfixBridgeFullname`) and doesn't create its own `-dkim-keys` PVC (an upgraded release loses the old PVC and
+  its keys). RWO check uses `postfixBridge.dkim.storage.accessMode`. Server and postfix pods must share a node with RWO.
+- **postfix-bridge chart bugs worked around from the parent:** `dkim.storage.storageClassName` default
+  `'{{ .Values.common.storageClass }}'` is compared raw against "default", so it always renders `storageClassName:
+  "default"` (no such class on k3s → PVCs Pending); parent sets the literal `default`. Not fixed upstream: its
+  `mail-tls-certs.yaml` always requests a letsencrypt-prod Certificate for a public hostname (no opt-out), so the
+  installer refuses `--tls false` with a public domain. Its `hostname`/`domains` aren't tpl'd, so the parent can't derive
+  them: `server.assertPostfixBridge` fails a public `host` while they're `mail.localhost`/`example.com`.
+- **No authserv-id:** nothing in postfix-bridge stamps Authentication-Results, so `mail.trustedAuthservId` still has no
+  value to be set to (NOTES.txt warning stays).
+- **NOTES.txt:** bundled vs `create=false` paragraphs (`dig` for postfix.serviceType - a stripped copy without the
+  dependency nil-pointered on `.Values.postfixBridge.postfix`).
+- **Installer:** values file carries `global.mailIngestSecret`, `postfixBridge.hostname` (= --domain) and
+  `postfixBridge.domains` (new `--mail-domains`, default --domain; values file because --set splits commas); opens
+  25/tcp; final message about MX records and both secrets. Port 25 reaches Postfix via k3s ServiceLB (LoadBalancer);
+  whether ufw's routed (FORWARD) policy interferes with ServiceLB traffic wasn't verified.
+- **GHCR visibility (blocker):** anonymous token requests return 401 for `rapidmx/server`, `rapidmx/postfix-bridge`,
+  `rapidmx/charts/server`, `rapidmx/charts/postfix-bridge`; 200 for `rapidrest/auth-server` and
+  `rapidrest/charts/auth-server`. Installer and helm pulls fail on a fresh machine until they're public. The CI step
+  "Make chart public" PATCHes `/orgs/<owner>/packages/helm/<name>/visibility`, which isn't a GitHub REST endpoint
+  (package types are container/npm/...; visibility is set in the package settings UI).
+- **values.yaml comments:** commit e62272d (1.0.0-beta.3) removed all 129 comment lines from helm/values.yaml, and the
+  README's `127.0.0.1` became `1.0.0-beta.3.1` - flagged to the user, not restored.
+
+Verified: `helm lint`; `helm template` of a scratch copy with auth-server 1.0.0-beta.2 (pulled) and postfix-bridge packaged
+from the local v1.0.0 checkout: public host fails without hostname/domains, missing ingest secret fails, localhost and
+`create=false` render (own dkim PVC), full public render has equal MTA_INGEST_SECRET/mail__transport__ingest__secret,
+the right base URL for `rapidmx-server` and `mx` releases, both pods on the subchart's dkim PVC, storageClassName
+omitted; NOTES text for both modes. Installer harness: captured values file renders against that chart; ufw gets 25/tcp;
+`--tls false` with a public domain exits with the message; shellcheck clean.
+
+## 2026-09-15 — postfix-bridge chart fixed upstream (`../postfix-bridge`, uncommitted, needs a 1.1.0 release)
+
+GHCR packages were made public by the user (the server chart and images now pull anonymously).
+
+**postfix-bridge chart**
+- `postfixBridge.storageClassName` helper renders the class before comparing: "default"/empty omit `storageClassName`
+  (both PVCs). Previously always `storageClassName: "default"`.
+- `dkim.storage.existingClaim` (tpl'd): mount that claim and don't create the chart's `-dkim-keys` PVC.
+- `tls.existingSecret` (tpl'd) and `tls.certManager.{enabled,issuerName,issuerKind}`. A Certificate only for a public
+  hostname with cert-manager enabled; otherwise a self-signed Secret (10 years) reused via `lookup` while its
+  `postfix-bridge.rapidmx.dev/self-signed-for` annotation matches the hostname (regenerated on a hostname change or when
+  replacing a cert-manager-written Secret). Previously regenerated on every upgrade.
+- `hostname`, `domains` (and NOTES) tpl'd. `ingestSecret` default `''` with `required` (so `helm lint` passes) and the
+  `ChangeMeIngestSecret` placeholder refused.
+- NOTES.txt/README use the real value names (`ingestSecret`, not `mail.ingestSecret`) and describe the standalone setup.
+- Not changed: `boky/postfix:latest` image tag; literal `postfix`/`postfix-bridge` Deployment/Service names; nothing
+  stamps Authentication-Results (so no authserv-id for the server's `mail.trustedAuthservId`). CHANGELOG is generated
+  from commits, left alone.
+
+**Server chart, replacing the earlier workaround**
+- Dependency `postfix-bridge` 1.1.0 (not yet published; Chart.lock still needs `helm dependency update ./helm`).
+- The server keeps its own `-dkim-keys` PVC again (no data loss on upgrade; `server.dkimKeysClaim`/`postfixBridgeFullname`
+  helpers removed); `postfixBridge.dkim.storage.existingClaim` is the server's claim (release-name ternary like
+  `ingestBaseUrl`). The literal storageClassName override is gone.
+- `postfixBridge.tls.certManager.enabled` documented in values; the installer writes it as `$TLS` and no longer refuses
+  `--tls false` with a public domain (Postfix self-signs).
+
+Verified: postfix-bridge `helm lint`; `helm template` defaults (no storageClassName, self-signed), public hostname
+(Certificate, letsencrypt-prod), cert-manager off (self-signed), existingSecret + templated existingClaim/hostname/
+domains/ingestSecret + custom class/issuer via a values file, empty and placeholder secret failures; certificate reuse
+with `lookup` stubbed (same host reused, changed host and unannotated Secret regenerated). Server: scratch chart with
+postfix-bridge packaged as 1.1.0 - lint; installer harness for `--tls true/false` with the captured values file and the
+exact helm --set args: renders, 3 Certificates vs self-signed, both pods on `rapidmx-server-dkim-keys`, no subchart
+dkim PVC; `postfixBridge.create=false` renders nothing from the subchart; shellcheck clean.
+
+## 2026-09-15 — postfix-bridge 1.1.0 published; Chart.lock refreshed
+
+- `helm dependency update ./helm`: Chart.lock now pins postfix-bridge 1.1.0 (and auth-server 1.0.0-beta.2). The published
+  1.1.0 templates equal postfix-bridge commit 5e3baf6 apart from line endings; values equal ignoring comments.
+- Verified against the downloaded dependencies: `helm lint`; the installer's captured values for `--tls true` (3
+  Certificates) and `--tls false` (self-signed Postfix certificate) render, one `rapidmx-server-dkim-keys` PVC mounted by
+  both pods, no storageClassName, ingest URL `http://rapidmx-server-services/internal/mta`; `postfixBridge.create=false`
+  renders nothing from the subchart.
+- The installer's `VERSION` (1.0.0-beta.3) is a server chart without the postfixBridge dependency: a new server release
+  is needed before the script installs Postfix without `CHART=./helm`.
+- **Release tool root cause** (`D:/github/RapidREST/cli` `src/lib/release.ts` `updateHelmVersion`, not changed):
+  values.yaml/Chart.yaml go through js-yaml `load`/`dump`, which drops every comment (server e62272d, postfix-bridge
+  00f4d3c); README.md gets every semver-looking string replaced (`/\b\d+\.\d+\.\d+.../g`), which turned `127.0.0.1` into
+  `1.0.0-beta.3.1` and would rewrite any other pinned version in a README.
+
+## 2026-09-15 — values.yaml comments restored after the release tool stripped them
+
+The `@rapidrest/cli` release command dropped every values.yaml comment (js-yaml load/dump); fixed in
+`D:/github/RapidREST/cli` (uncommitted, needs a cli release before the next release here). Restored in the working tree,
+not committed:
+- helm/values.yaml: three-way merge (base e62272d, ours = working tree, theirs = e62272d^), tag kept at 1.0.0-beta.3,
+  the one conflict (mail.ingestSecret) resolved to the global.mailIngestSecret default with a rewritten comment, and the
+  mail.relay comment updated for the bundled postfixBridge. js-yaml data identical to before; helm template output
+  identical apart from the randomly generated Bitnami passwords. README `1.0.0-beta.3.1` back to `127.0.0.1`.

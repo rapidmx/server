@@ -27,13 +27,22 @@ JWT Auth:
   "{{ include "rrst.fullname" . }}-jwt-auth" Secret. Supply it again on every upgrade.
 
 
-Real inbound/outbound mail (Postfix, DKIM signing, postfix-bridge) is a separate chart - install
-https://github.com/rapidmx/postfix-bridge alongside this release, with its `mail.ingestBaseUrl` pointed at
-this release's own "{{ include "rrst.fullname" . }}-services" Service and its `mail.ingestSecret` set to
+{{- if .Values.postfixBridge.create }}
+
+Mail transport: Postfix and postfix-bridge are installed with this release. Postfix listens on port 25 of the "postfix"
+Service ({{ dig "postfix" "serviceType" "LoadBalancer" .Values.postfixBridge }}) as {{ .Values.postfixBridge.hostname }} and sends mail for {{ .Values.postfixBridge.domains }} (postfixBridge.domains).
+It receives mail for the domains added in the admin console once their MX records point at it. Supply
+global.mailIngestSecret again on every upgrade.
+{{- else }}
+
+Real inbound/outbound mail (Postfix, DKIM signing, postfix-bridge) isn't installed (postfixBridge.create=false) - install
+https://github.com/rapidmx/postfix-bridge as its own release, with its `ingestBaseUrl` pointed at
+this release's own "{{ include "rrst.fullname" . }}-services" Service and its `ingestSecret` set to
 the exact same value as this release's own `mail.ingestSecret` (stored in the
 "{{ include "rrst.fullname" . }}-mail-ingest-secret" Secret), or postfix-bridge's calls to /internal/mta will fail
 authorization. /internal/* is not routed through the Gateway; postfix-bridge must call the Service directly. Read it with:
   kubectl -n {{ .Release.Namespace }} get secret {{ include "rrst.fullname" . }}-mail-ingest-secret -o jsonpath='{.data.mail__transport__ingest__secret}' | base64 -d
+{{- end }}
 {{- $config := .Values.service.config | default dict }}
 {{- if not (or .Values.mail.trustedAuthservId (get $config "mail__security__trusted_authserv_id")) }}
 

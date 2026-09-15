@@ -14,6 +14,8 @@ GATEWAY_NAMESPACE=envoy-gateway-system
 GATEWAY_NAME=shared-gateway
 # Let's Encrypt account email for the ClusterIssuer. Defaults to admin@<domain> (a bare host name isn't a valid domain).
 ACME_EMAIL=${ACME_EMAIL:-}
+# Comma-separated domains Postfix accepts outbound mail from (postfixBridge.domains). Defaults to --domain.
+MAIL_DOMAINS=""
 UNINSTALL=false
 SKIP_K3S=false
 # The user the kubeconfig is installed for: the one who ran `sudo ./single_node_install.sh`, or the current user.
@@ -409,7 +411,7 @@ function uninstall() {
   echo "Uninstall complete! $USER_KUBECONFIG was left in place; delete it if it only held this cluster."
 }
 
-GETOPT=$(getopt -o h --long domain:,version:,tls:,email:,uninstall,install-cert-manager,skip-k3s,help -- "$@")
+GETOPT=$(getopt -o h --long domain:,mail-domains:,version:,tls:,email:,uninstall,install-cert-manager,skip-k3s,help -- "$@")
 if [ $? -ne 0 ]; then
   exit 1
 fi
@@ -418,6 +420,7 @@ while true
 do
     case "$1" in
         --domain) DOMAIN=$2; shift 2;;
+        --mail-domains) MAIL_DOMAINS=$2; shift 2;;
         --version) VERSION=$2; shift 2;;
         --tls) TLS=$2; shift 2;;
         --email) ACME_EMAIL=$2; shift 2;;
@@ -432,9 +435,11 @@ do
           echo -e "\tenvoy-gateway - Gateway API implementation routing traffic to the services"
           echo -e "\tnginx - Nginx to forward ports 80 and 443 to envoy-gateway"
           echo -e "\tcert-manager - Let's Encrypt certificates (with --tls true)"
+          echo -e "\tRapidMX server - with auth-server, Postfix and postfix-bridge (SMTP on port 25)"
 
           echo "Usage:"
-          echo -e "\t--domain <domain>\t\tThe domain name to use for the deployment of mail-server"
+          echo -e "\t--domain <domain>\t\tThe server's host name (also Postfix's MX host name); auth-server is auth.<domain>"
+          echo -e "\t--mail-domains <domains>\tComma-separated domains Postfix sends mail for (default <domain>)"
           echo -e "\t--version <version>\t\tThe version of mail-server to deploy"
           echo -e "\t--tls <true|false>\t\tInstalls cert manager and enables TLS ingress support (uses Let's Encrypt)"
           echo -e "\t--email <email>\t\tThe Let's Encrypt account email (default admin@<domain>)"
@@ -454,6 +459,7 @@ if [[ "$TLS" != "true" && "$TLS" != "false" ]]; then
   exit 1
 fi
 ACME_EMAIL=${ACME_EMAIL:-admin@$DOMAIN}
+MAIL_DOMAINS=${MAIL_DOMAINS:-$DOMAIN}
 if [[ "$TLS" = "false" ]]; then
   # No cert-manager step.
   total_steps=$(( total_steps - 1 ))
@@ -778,7 +784,9 @@ else
 fi
 
 if [[ -n "`activeFirewall`" ]]; then
-  echo "Opening HTTP${HTTPS_LISTENER:+ and HTTPS} in `activeFirewall`..."
+  echo "Opening SMTP, HTTP${HTTPS_LISTENER:+ and HTTPS} in `activeFirewall`..."
+  # Port 25 reaches Postfix through k3s' ServiceLB (the chart's "postfix" LoadBalancer Service).
+  firewallOpenPort 25/tcp
   firewallOpenPort 80/tcp
   if [[ -n "$HTTPS_LISTENER" ]]; then
     firewallOpenPort 443/tcp
@@ -936,7 +944,7 @@ if [[ -d "$CHART" ]]; then
   fi
 fi
 
-# The chart requires the JWT secret (shared with auth-server) and the postfix-bridge ingest secret. Reuse the ones from
+# The chart requires the JWT secret (shared with auth-server) and the ingest secret (shared with postfix-bridge). Reuse the ones from
 # an existing install, so re-running this script doesn't rotate them; otherwise generate new ones.
 function existingSecret() {
   for name in "$NAMESPACE-$1" "$NAMESPACE-server-$1"; do
@@ -958,7 +966,11 @@ VALUES_FILE=`mktemp "${TMPDIR:-/tmp}/mail-server-values.XXXXXX"`
 chmod 600 "$VALUES_FILE"
 {
   printf 'global:\n  authSecret: %s\n' "`yamlQuote "$AUTH_SECRET"`"
-  printf 'mail:\n  ingestSecret: %s\n' "`yamlQuote "$MAIL_INGEST_SECRET"`"
+  printf '  mailIngestSecret: %s\n' "`yamlQuote "$MAIL_INGEST_SECRET"`"
+  # In the values file rather than --set, which would split the domain list on its commas.
+  printf 'postfixBridge:\n  hostname: %s\n  domains: %s\n' "`yamlQuote "$DOMAIN"`" "`yamlQuote "$MAIL_DOMAINS"`"
+  # Without cert-manager (--tls false) Postfix gets a self-signed certificate.
+  printf '  tls:\n    certManager:\n      enabled: %s\n' "$TLS"
 } > "$VALUES_FILE"
 
 # gateway.tls only when the Gateway has an HTTPS listener for $DOMAIN: the chart refuses TLS on a Gateway it doesn't own
@@ -1002,10 +1014,12 @@ if [[ "$NAMESPACE" != *server* ]]; then
   FULLNAME="$NAMESPACE-server"
 fi
 echo "Installation complete."
-echo "postfix-bridge must be installed with mail.ingestSecret set to this release's ingest secret. Read it with:"
-echo "  kubectl -n $NAMESPACE get secret $FULLNAME-mail-ingest-secret -o jsonpath='{.data.mail__transport__ingest__secret}' | base64 -d"
-echo "Keep the JWT secret for upgrades (pass it as global.authSecret):"
+echo "Postfix listens on port 25 as $DOMAIN and sends mail for $MAIL_DOMAINS. Add each domain in the admin console and"
+echo "point its MX record at $DOMAIN to receive mail for it."
+echo "Re-running this script reuses the release's secrets. To upgrade with helm yourself, pass them again as"
+echo "global.authSecret and global.mailIngestSecret:"
 echo "  kubectl -n $NAMESPACE get secret $FULLNAME-jwt-auth -o jsonpath='{.data.auth__secret}' | base64 -d"
+echo "  kubectl -n $NAMESPACE get secret $FULLNAME-mail-ingest-secret -o jsonpath='{.data.mail__transport__ingest__secret}' | base64 -d"
 
 if [[ $DOMAIN =~ \.local(host)?$ || $DOMAIN = "localhost" ]]; then
   echo "Please update the hosts file to resolve the following:"

@@ -52,7 +52,7 @@ docker compose -f docker-compose.mongo.yml up -d --build
 `auth-server`'s image (`ghcr.io/rapidrest/auth-server`) is pulled from GHCR, not built locally.
 
 These compose files are for local evaluation: they run with `NODE_ENV=dev` and publish every port on the host's
-loopback address (`1.0.0-beta.3.1`) only. For anything beyond that, set `NODE_ENV=production` and override these in a
+loopback address (`127.0.0.1`) only. For anything beyond that, set `NODE_ENV=production` and override these in a
 `.env` file next to the compose files (every secret defaults to an insecure, publicly-known placeholder value
 otherwise — see `src/config.defaults.ts`; the server refuses to start with those unless `NODE_ENV` is `dev`,
 `development` or `test`):
@@ -86,16 +86,21 @@ compose network.
 
 A complete Helm chart is included for convenience to deploy and run on a Kubernetes cluster. Deployment to Kubernetes
 is easy using either the published helm chart in GitHub or install from the helm chart locally. Real inbound/outbound
-mail transport (Postfix + DKIM signing + postfix-bridge) is a separate chart now — install
-[`postfix-bridge`](https://github.com/rapidmx/postfix-bridge) alongside this one; see its own README and this chart's
-`helm get notes` output for how the two are wired together (`mail.ingestSecret` must match on both sides).
+mail transport (Postfix, DKIM signing and [`postfix-bridge`](https://github.com/rapidmx/postfix-bridge)) is the
+`postfixBridge` dependency, installed with the chart. With a public `host`, set `postfixBridge.hostname` (Postfix's MX
+host name, which gets a Let's Encrypt certificate from cert-manager's `letsencrypt-prod` ClusterIssuer) and
+`postfixBridge.domains` (the comma-separated domains it sends mail for); the render fails while they're the
+placeholders. Without cert-manager, set `postfixBridge.tls.certManager.enabled=false` for a self-signed certificate, or
+`postfixBridge.tls.existingSecret` to your own. Postfix signs mail with the DKIM keys the server writes to its
+`mail.dkim.storage` volume, so with the default `ReadWriteOnce` both pods must run on the same node. Set `postfixBridge.create=false` to install postfix-bridge as its
+own release instead; the release notes (`helm get notes`) then say how to connect it.
 
 The chart needs two secrets you supply, and refuses to render without them: `global.authSecret` (the JWT secret, shared
-with the bundled auth-server) and `mail.ingestSecret` (must match the `postfix-bridge` chart's). Pass the same values
+with the bundled auth-server) and `global.mailIngestSecret` (shared with postfix-bridge). Pass the same values
 again on every upgrade. Cookie, session and escrow audit (`mail.escrow.auditHmacKey`) secrets are generated on install and
 kept - which needs cluster access, so rendering the chart without it (`helm template`, Argo CD/Flux, `--dry-run`) fails
 until you set `cookies.secret`, `sessions.secret` and `mail.escrow.auditHmacKey` explicitly or point
-`secrets.existingSecret` at a Secret you manage. Outbound mail is relayed to the `postfix-bridge` chart's `postfix`
+`secrets.existingSecret` at a Secret you manage. Outbound mail is relayed to postfix-bridge's `postfix`
 Service (`mail.relay.*`). Behind a Gateway this chart doesn't create, set `gateway.httpsListener` to the listener that
 terminates TLS for `host` with the `<host>-tls-cert` Secret (the render fails without it while `gateway.tls` is
 true; set `gateway.tls=false` to serve plain HTTP). With a public `host`, set `authServer.host` (e.g. `auth.<host>`),
@@ -109,7 +114,7 @@ requires a token with a trusted role, so scrape it with a bearer token rather th
 #### From GHCR
 
 ```bash
-helm install --create-namespace --namespace mail-server mail-server oci://ghcr.io/rapidmx/charts/server --version 1.0.0-beta.3   --set global.authSecret="$(openssl rand -hex 32)" --set mail.ingestSecret="$(openssl rand -hex 32)"
+helm install --create-namespace --namespace mail-server mail-server oci://ghcr.io/rapidmx/charts/server --version 1.0.0-beta.3   --set global.authSecret="$(openssl rand -hex 32)" --set global.mailIngestSecret="$(openssl rand -hex 32)"   --set host=mail.example.com --set authServer.host=auth.mail.example.com   --set postfixBridge.hostname=mail.example.com --set postfixBridge.domains=example.com
 ```
 
 #### From Local
@@ -117,7 +122,7 @@ helm install --create-namespace --namespace mail-server mail-server oci://ghcr.i
 ```bash
 helm repo add bitnami https://charts.bitnami.com/bitnami
 helm dep up ./helm
-helm install --create-namespace --namespace mail-server mail-server ./helm   --set global.authSecret="$(openssl rand -hex 32)" --set mail.ingestSecret="$(openssl rand -hex 32)"
+helm install --create-namespace --namespace mail-server mail-server ./helm   --set global.authSecret="$(openssl rand -hex 32)" --set global.mailIngestSecret="$(openssl rand -hex 32)"
 ```
 
 The chart runs one replica by default, because its message, DKIM and PKI volumes are `ReadWriteOnce`. To run more,
@@ -173,9 +178,11 @@ environment, including ingress with TLS support. Simply run the script from any 
 It installs k3s, helm, [Envoy Gateway](https://gateway.envoyproxy.io/) (a shared Gateway `envoy-gateway-system/shared-gateway`
 whose Service is only reachable inside the cluster), nginx on the host forwarding ports 80 and 443 to that Gateway with
 the PROXY protocol (so the server sees real client addresses), cert-manager with a Let's Encrypt `letsencrypt-prod`
-ClusterIssuer, and this chart with `authServer.host` set to `auth.<domain>`. Both `<domain>` and `auth.<domain>` must
-resolve to the machine. When a host firewall is active (ufw on Ubuntu/Debian, firewalld on RHEL/Fedora) it opens
-HTTP/HTTPS and allows k3s' pod and service networks; under SELinux it also allows nginx to relay. Set `CHART=./helm` to install the chart from a checkout instead of the published one, and
+ClusterIssuer, and this chart with `authServer.host` set to `auth.<domain>` and Postfix on port 25 (through k3s'
+ServiceLB) as `<domain>`, sending mail for `--mail-domains` (default `<domain>`). Both `<domain>` and `auth.<domain>`
+must resolve to the machine; point your mail domains' MX records at `<domain>`. With `--tls false` Postfix gets a
+self-signed certificate. When a host firewall is active (ufw
+on Ubuntu/Debian, firewalld on RHEL/Fedora) it opens SMTP/HTTP/HTTPS and allows k3s' pod and service networks; under SELinux it also allows nginx to relay. Set `CHART=./helm` to install the chart from a checkout instead of the published one, and
 `ENVOY_GATEWAY_VERSION` to pick another Envoy Gateway release. `--uninstall` removes only what the script installed.
 
 ## Local Development

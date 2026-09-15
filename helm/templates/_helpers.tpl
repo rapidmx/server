@@ -207,6 +207,21 @@ parent chart can't pass down - they must be set under authServer too:
 {{- end -}}
 
 {{/*
+Fails the render when the bundled postfix-bridge would run with its placeholder identity on a public deployment: Postfix
+would HELO as mail.localhost with a self-signed certificate, and only accept outbound mail from example.com.
+*/}}
+{{- define "server.assertPostfixBridge" -}}
+{{- if and .Values.postfixBridge.create (eq (include "server.publicHost" .Values.host) "true") -}}
+{{- if eq (include "server.publicHost" .Values.postfixBridge.hostname) "" -}}
+{{- fail (printf "host %q is public but postfixBridge.hostname is %q. Set it to Postfix's public MX host name, e.g. --set postfixBridge.hostname=%s." .Values.host .Values.postfixBridge.hostname (.Values.mail.mxHostname | default .Values.host)) -}}
+{{- end -}}
+{{- if eq (toString .Values.postfixBridge.domains) "example.com" -}}
+{{- fail "postfixBridge.domains is still example.com. Set it to the comma-separated domains this deployment sends mail from, e.g. --set postfixBridge.domains=example.com\\,example.org." -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
 "true" when the site is served over HTTPS: a certificate is issued for `host` and a Gateway listener terminates TLS with
 it. Empty otherwise - the routes then attach to the plain HTTP listener, with no redirect, and public URLs use http.
 */}}

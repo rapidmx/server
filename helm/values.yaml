@@ -1,17 +1,34 @@
 host: localhost
+# NODE_ENV. With anything but dev/development/test the server refuses to start while a secret is empty or still a
+# publicly-known development default, and no Node inspector is started. Only use dev for a throwaway local cluster.
 environment: production
 global:
+  # The JWT secret shared by this server (auth.secret) and the bundled auth-server (authServer.auth.secret), which
+  # must be identical - both default to this. Required unless you set both of those explicitly:
+  #   helm install ... --set global.authSecret="$(openssl rand -hex 32)"
+  # Always rendered from the value you supply (a previously stored one never wins), so pass it again on every
+  # upgrade (e.g. keep it in your values file or use --reuse-values).
   authSecret: ''
+  # Bearer secret postfix-bridge authenticates to the server's /internal/mta routes with. Required: it's both the server's
+  # mail.ingestSecret and the postfixBridge subchart's ingestSecret, so the two always agree.
+  mailIngestSecret: ''
 auth:
   audience: mail-server-api
   issuer: mail-server-api
   expiresIn: 1 hour
   secret: '{{ .Values.global.authSecret }}'
+# Cookie and session signing secrets. Leave empty to have one generated on install and kept (in the
+# <release>-service-secrets Secret) across upgrades; an explicit value always wins. Generating needs cluster access
+# (`lookup`): when the chart is rendered without it - `helm template`, a GitOps controller such as Argo CD, `--dry-run` -
+# every render would produce new values, so the render fails unless these, mail.escrow.auditHmacKey and the rest are set
+# explicitly or secrets.existingSecret is used.
 cookies:
   secret: ''
 sessions:
   secret: ''
 secrets:
+  # An existing Secret holding cookie_secret, session__secret and mail__escrow__audit_hmac_key, used instead of the
+  # generated <release>-service-secrets (e.g. managed by External Secrets or Sealed Secrets in a GitOps setup).
   existingSecret: ''
 common:
   storageClass: default
@@ -21,10 +38,20 @@ gateway:
   create: true
   name: api-gateway
   namespace: '{{ .Release.Namespace }}'
+  # The GatewayClass of the Gateway this chart creates (gateway.create): "envoy" is the class single_node_install.sh sets
+  # up for Envoy Gateway. Use your cluster's class otherwise (e.g. "nginx" for nginx-gateway-fabric).
   className: envoy
+  # false strips the Strict-Transport-Security response header (a standard ResponseHeaderModifier filter).
   hsts: true
   tls: true
+  # Only for a Gateway this chart doesn't create (gateway.name other than api-gateway, gateway.namespace other than the
+  # release namespace, or gateway.create false): the name of that Gateway's HTTPS listener for `host`. It must terminate
+  # TLS with this release's "<host>-tls-cert" Secret (issued by cert-manager; a ReferenceGrant letting a Gateway in
+  # gateway.namespace use it is rendered). Required while gateway.tls is true and `host` can get a certificate (the render
+  # fails otherwise, rather than silently serving plain HTTP); set gateway.tls=false to attach to the "http" listener with
+  # no HTTPS redirect and http:// public URLs instead.
   httpsListener: ''
+  # Same for authServer.host, with the auth-server subchart's "<authServer.host>-tls-cert" Secret.
   authHttpsListener: ''
 redis:
   create: true
@@ -39,6 +66,10 @@ redis:
   replica:
     persistence:
       enabled: false
+  # Only pods labelled "db-redis-client: true" (<fullnameOverride>-client) reach Redis: the server's pods carry that label
+  # (1_deployments/service.yaml). The bundled auth-server shares this Redis but its chart can't set pod labels, so it's
+  # admitted by its own `app` label below (the auth-server subchart's name, authServer.nameOverride - keep them in sync).
+  # Give any other workload that needs Redis the client label.
   networkPolicy:
     enabled: true
     allowExternal: false
@@ -49,6 +80,7 @@ redis:
           - podSelector:
               matchLabels:
                 app: auth-server
+# Exactly one of mongodb.create and postgresql.create may be true (the render fails otherwise).
 mongodb:
   create: true
   architecture: standalone
@@ -67,14 +99,30 @@ service:
     registry: ghcr.io
     repository: rapidmx/server
     tag: 1.0.0-beta.3
+  # 1 by default, because the server's volumes default to ReadWriteOnce (mail.blob.storage, mail.dkim.storage,
+  # mail.pki.storage), which only one pod can mount; the chart refuses to render more replicas while any of them is
+  # ReadWriteOnce, and uses the Recreate update strategy (brief downtime on upgrades and plugin changes).
+  #
+  # More than one replica is still recommended for production: a single pod is a single point of failure against the
+  # memory-exhaustion risk documented below - readBody() runs before ANY middleware (including auth), so an
+  # unauthenticated caller opening a handful of concurrent connections against any POST/PUT/PATCH endpoint can approach
+  # the memory limit, with no per-IP/global concurrency cap anywhere in this stack (a @rapidrest/service-core design
+  # characteristic, plus restapi export jobs without size caps in some paths). To run 2+, set mail.blob.backend to
+  # "s3" (or mail.blob.storage.accessMode to ReadWriteMany) and mail.dkim.storage/mail.pki.storage accessMode to
+  # ReadWriteMany, with a storage class that supports it.
   replicas: 1
+  # Pod shutdown: Kubernetes runs the preStop sleep (so the pod leaves the Service/Gateway before it stops accepting
+  # requests), then sends SIGTERM; the server reports not ready for shutdown.drain_delay_ms (5s) and stops within
+  # shutdown.timeout_ms (25s). Keep the sum below terminationGracePeriodSeconds.
   terminationGracePeriodSeconds: 60
   preStopSleepSeconds: 10
   podSecurityContext:
     runAsNonRoot: true
+    # The image's `node` user. Numeric, so Kubernetes can verify runAsNonRoot.
     runAsUser: 1000
     runAsGroup: 1000
     fsGroup: 1000
+    # Only chown volumes whose root doesn't already match, instead of every file of the message store on each mount.
     fsGroupChangePolicy: OnRootMismatch
     seccompProfile:
       type: RuntimeDefault
@@ -83,12 +131,16 @@ service:
     capabilities:
       drop:
         - ALL
+  # Startup installs the deployment's plugins with npm (up to system.plugins.npm_timeout_ms, 10 minutes) and builds their
+  # UI when they ship any (see resources below), so give it up to 15 minutes before liveness applies.
   startupProbe:
     httpGet:
       path: /api/status
       port: 3000
     periodSeconds: 10
     failureThreshold: 90
+  # Restarts a hung server. Deliberately slow to give up (11 minutes): /api/status also fails while a copy drains and
+  # reinstalls plugins during a plugin restart, which runs npm (and the plugin UI build) again inside the same container.
   livenessProbe:
     httpGet:
       path: /api/status
@@ -97,12 +149,41 @@ service:
     timeoutSeconds: 5
     failureThreshold: 22
   datastores:
+    # Whether the server creates and updates its database schema (collections/indexes, or SQL tables/columns) from its
+    # models every time it starts (datastores.*.synchronize). There are no migrations, so a fresh install needs this,
+    # and it's how an upgrade adds new tables/columns. Risk: on SQL, TypeORM may drop and recreate a column whose type
+    # changed between releases, losing that column's data. Back up the database before every upgrade; set to false only
+    # if you manage schema changes yourself.
     synchronize: true
+  # Proxies whose X-Forwarded-For header is trusted for the client's address (config `trusted_proxies`; exact
+  # addresses or CIDR ranges). Every request reaches the server through the Gateway, so with an empty list every
+  # client shares the Gateway pod's address and one caller can use up the anonymous per-IP rate limits (booking, key
+  # discovery) for everyone. The default trusts the private ranges the Gateway pods run in. Narrow it to your cluster's
+  # pod CIDR if other workloads in those ranges can reach this Service directly (they could otherwise claim any address),
+  # and make sure the Gateway itself sees real client addresses (e.g. its LoadBalancer Service uses
+  # `externalTrafficPolicy: Local`, or the load balancer in front uses PROXY protocol) - otherwise it forwards a node's
+  # address, which is also in these ranges, and the client-supplied part of X-Forwarded-For would be used instead.
+  # single_node_install.sh does this: its nginx sends the PROXY protocol to Envoy Gateway, which is only reachable that way.
+  # Set to [] when not running behind the Gateway.
   trustedProxies:
     - 10.0.0.0/8
     - 172.16.0.0/12
     - 192.168.0.0/16
     - fc00::/7
+  # Sized for mail:max_body_size's 100 MiB cap (config.defaults.ts's DEFAULT_MAX_BODY_SIZE_BYTES): the
+  # framework's readBody() buffers a whole request body in memory with no per-route override, and briefly
+  # holds ~2x a request's own body size during assembly (an accumulating chunks array plus the final
+  # Buffer.concat), with the ~1x result then persisting on req.rawBody for the rest of that request's
+  # handling. Two ordinary, non-malicious concurrent uploads at the new cap (e.g. two mailbox-import
+  # requests from different users, or the same user in two tabs) could otherwise approach ~500 MiB in body
+  # buffers alone on top of baseline Node/DB-client overhead - comfortably over the previous 512Mi limit
+  # on this single-replica deployment, which would OOM-kill the whole pod rather than fail just those two
+  # requests. Raised with margin for that scenario rather than only the single-request case. This bound
+  # is still per-pod, not global - see the replicas comment above for the remaining gap this doesn't close.
+  # When enabled plugins ship UI, the server also builds the browser bundles with Vite at startup, in the same process
+  # (src/plugins/PluginUiBuilder.ts), after a plugin with UI is added, changed, enabled or disabled, and on every new pod
+  # (the plugins volume is an emptyDir). A build takes seconds on a typical node and up to about a minute on a small CPU
+  # limit, and adds a few hundred MiB while it runs; the request and limit below leave room for that.
   resources:
     requests:
       cpu: 100m
@@ -124,27 +205,41 @@ service:
       name: rapidmx_server
       host: ''
   config:
+    # Not `metrics: true`: an env var named `metrics` replaces the whole `metrics` config object, which turned off
+    # authentication for /api/metrics. Prometheus scrapes then need a token with a trusted role.
     metrics__authRequired: true
     mail__dkim__key_dir: /var/lib/rspamd/dkim
     mail__dkim__selector: mail
     mail__scan__spam__rspamd__url: http://rspamd:11333
     mail__scan__av__clamav__host: clamav
     mail__scan__av__clamav__port: 3310
+    # Plugins (see src/config.mongo.ts's `system.plugins` block for every key). Uncomment to change the registry plugins
+    # come from, the packages an administrator may add, or the plugins a fresh install starts with.
+    # system__plugins__registry: https://registry.npmjs.org
+    # system__plugins__namespaces: ["@rapidmx", { name: "@my-company", registry: "https://npm.my-company.com" }]
+    # system__plugins__allowed_packages: ["@rapidmx/*"]
+    # system__plugins__defaults: [{ name: "@rapidmx/activesync-plugin", version: "latest", enabled: true }]
 authServer:
   create: true
+  # Kubernetes names must be lowercase; without this the subchart names its resources after the "authServer" alias.
   nameOverride: auth-server
+  # The auth-server's public host name: sign-in redirects browsers here (mail__auth_server_url). Set it (e.g.
+  # auth.<host>) whenever `host` is public - the render fails while it's still a localhost name.
   host: auth.localhost
   environment: production
   gateway:
     create: false
+    # The subchart routes authServer.host on its own gateway.name/gateway.namespace (default: this chart's api-gateway in
+    # the release namespace). When the server attaches to a Gateway this chart doesn't own, set both to that Gateway's
+    # name and namespace (the render fails otherwise), and gateway.authHttpsListener for HTTPS.
+    # name: shared-gateway
+    # namespace: gateway-namespace
   auth:
     audience: mail-server-api
     issuer: mail-server-api
     expiresIn: 1 hour
-    secret: >-
-      {{ required "global.authSecret is required (or set both auth.secret and
-      authServer.auth.secret to the same unique value)"
-      .Values.global.authSecret }}
+    # Must equal auth.secret. Evaluated inside the auth-server subchart, where only `global` is shared with this chart.
+    secret: '{{ required "global.authSecret is required (or set both auth.secret and authServer.auth.secret to the same unique value)" .Values.global.authSecret }}'
   mongodb:
     create: false
     fullnameOverride: mongodb
@@ -184,17 +279,73 @@ authServer:
         name: rapidmx_auth
         host: ''
     config:
+      # See service.config.metrics__authRequired above.
       metrics__authRequired: true
+# The MTA: Postfix plus postfix-bridge, which backs Postfix's recipient lookups and final delivery with the server's
+# /internal/mta routes. Its "postfix" Service (port 25) is what mail.relay.host relays outbound mail to. Set create to
+# false to install the postfix-bridge chart as its own release instead (then give it this release's ingest secret and
+# point its ingestBaseUrl at this release's "-services" Service).
+postfixBridge:
+  create: true
+  # Kubernetes names must be lowercase; without this the subchart names its resources after the "postfixBridge" alias.
+  nameOverride: postfix-bridge
+  ingestSecret: >-
+    {{ required "global.mailIngestSecret is required: set it to a unique, secret value (it's shared by the server and
+    postfix-bridge)" .Values.global.mailIngestSecret }}
+  # The server's Service. Mirrors this chart's resource names: the release name, suffixed with "-server" unless it
+  # already contains "server" (set it yourself when using fullnameOverride/nameOverride).
+  ingestBaseUrl: >-
+    http://{{ ternary .Release.Name (printf "%s-server" .Release.Name) (contains "server" .Release.Name) }}-services/internal/mta
+  # Postfix's public MX host name (HELO name and SMTP certificate). Required with a public `host`.
+  hostname: mail.localhost
+  # Comma-separated domains Postfix accepts outbound mail from. Required with a public `host`.
+  domains: example.com
+  tls:
+    certManager:
+      # Postfix's certificate for a public hostname comes from cert-manager's letsencrypt-prod ClusterIssuer; false
+      # self-signs it instead (tls.existingSecret takes your own).
+      enabled: true
+  dkim:
+    storage:
+      # Postfix signs with the keys FsDkimKeyProvider writes to this release's DKIM volume (mail.dkim.storage), so with
+      # ReadWriteOnce the server and postfix pods must run on the same node. Mirrors the server's resource names like
+      # ingestBaseUrl.
+      existingClaim: >-
+        {{ ternary .Release.Name (printf "%s-server" .Release.Name) (contains "server" .Release.Name) }}-dkim-keys
 mail:
-  ingestSecret: ''
+  # Bearer secret postfix-bridge's calls to /internal/mta authenticate with. Defaults to global.mailIngestSecret, which the
+  # bundled postfixBridge uses too; a postfix-bridge installed as its own release must be given the same value. Required:
+  # the render fails while it's empty (or the old ChangeMeIngestSecret placeholder).
+  ingestSecret: '{{ .Values.global.mailIngestSecret }}'
+  # This deployment's public MX hostname (the Reporting-UA of outgoing read receipts, and what domain DNS checks
+  # expect MX records to point at) - normally postfixBridge.hostname. Defaults to `host`.
   mxHostname: ''
+  # The exact authserv-id your inbound MTA/DKIM verifier (postfix-bridge's milter) stamps on Authentication-Results
+  # (mail__security__trusted_authserv_id). Left empty, every Authentication-Results header is untrusted (fail closed),
+  # so no sender is ever DKIM-verified:
+  #   - every message to a distribution list that only lets members send is dropped;
+  #   - distribution list relay copies and mail filter forward-rule copies go out with From rewritten to the list or
+  #     the forwarding mailbox;
+  #   - forwarded or list-relayed calendar invites are refused;
+  #   - published-key discovery via RapidMX-Key headers, read receipt verification, calendar iTIP
+  #     replies/cancellations, message recalls and ACME email challenges are ignored.
+  # The server logs a warning at startup and NOTES.txt repeats it while this is empty. Set it for any real mail
+  # deployment.
   trustedAuthservId: ''
+  # Where outbound mail is relayed (scripts/docker-entrypoint.sh writes the msmtp config PostfixSendmailTransport sends
+  # through): postfixBridge's Postfix, whose SMTP Service is named "postfix". Use "postfix.<namespace>.svc.cluster.local"
+  # when postfix-bridge runs as its own release in another namespace.
   relay:
     host: postfix
     port: 25
+    # "on" to require TLS on the relay hop; off by default because it stays inside the cluster.
     tls: 'off'
+    # Default envelope sender for mail msmtp can't attribute to a mailbox. Defaults to mailer@<mxHostname or host>.
     fromAddress: ''
   escrow:
+    # mail:escrow:audit_hmac_key - keys the escrow audit log's hash chain, so someone with database write access can't
+    # rewrite it undetectably. Leave empty to have one generated on install and kept (like cookies.secret); it must be
+    # identical on every replica and never change afterwards.
     auditHmacKey: ''
   dkim:
     selector: mail
@@ -204,11 +355,15 @@ mail:
       accessMode: ReadWriteOnce
       size: 1Gi
   blob:
+    # Where message sources, attachments and contact photos are stored (mail:blob:backend): "local" - the blob-data
+    # volume below - or "s3", configured through service.config (mail__blob__s3__bucket, mail__blob__s3__region, ...),
+    # which needs no volume and allows several replicas.
     backend: local
     storage:
       storageClassName: '{{ .Values.common.storageClass }}'
       accessMode: ReadWriteOnce
       size: 20Gi
+  # Local encryption CA key/certificate and signing-certificate enrollment state (/var/lib/rapidmx/pki).
   pki:
     storage:
       storageClassName: '{{ .Values.common.storageClass }}'
@@ -218,6 +373,7 @@ mail:
     image:
       registry: docker.io
       repository: rspamd/rspamd
+      # Pinned, so a pod reschedule doesn't silently pull a new major version.
       tag: 4.1.5
     resources:
       requests:

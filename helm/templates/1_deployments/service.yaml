@@ -10,6 +10,7 @@ than leaving extra pods stuck in ContainerCreating on a Multi-Attach error.
 {{- if ne $.Values.mail.dkim.storage.accessMode "ReadWriteMany" }}
 {{- $rwoVolumes = append $rwoVolumes "mail.dkim.storage" }}
 {{- end }}
+{{- include "server.assertPostfixBridge" $ }}
 {{- if ne $.Values.mail.pki.storage.accessMode "ReadWriteMany" }}
 {{- $rwoVolumes = append $rwoVolumes "mail.pki.storage" }}
 {{- end }}
@@ -168,12 +169,8 @@ spec:
           resources:
             {{- toYaml $.Values.service.resources | nindent 12 }}
           volumeMounts:
-            # FsDkimKeyProvider (mail__dkim__key_dir) writes here. The separate `postfix-bridge` chart's
-            # own Postfix Deployment mounts its own PVC at the exact same path for rspamd's dkim_signing
-            # module to read from - since that's a different Helm release, share the underlying storage
-            # between the two charts (see mail-storage.yaml's own doc comment) rather than relying on one
-            # PVC - see values.yaml's mail.dkim.storage doc comment for the ReadWriteOnce/ReadWriteMany
-            # tradeoff.
+            # FsDkimKeyProvider (mail__dkim__key_dir) writes here; Postfix's rspamd dkim_signing module reads the
+            # same claim at the same path (see mail-storage.yaml).
             - name: dkim-keys
               mountPath: /var/lib/rspamd/dkim
             {{- if eq $.Values.mail.blob.backend "local" }}
