@@ -5331,3 +5331,26 @@ Verified: production run after the fix - `/`, `/admin`, `/escrow`, `/escrow/audi
 the props script and module bundle injected, and every same-origin bundle and stylesheet URL 200. `yarn tsc --noEmit`,
 `yarn lint`, `yarn test` 343/343 (31 files, exit 0). `tsc -p tsconfig.test.json` still reports its 36 pre-existing
 errors, none in the new test.
+
+## 2026-09-15 — restapi patch refreshed to 3196232 (0.11.0 plus the plugin manifest `ui` contract)
+
+- **Patch:** `.yarn/patches/@rapidmx-restapi-npm-0.8.0-d588a97668.patch` now carries restapi 3196232's `dist` (built with
+  its `yarn build`) and its `package.json` with the version kept at 0.8.0 (adds `semver` to dependencies and the
+  `^2.1.0` service-core peer range; exports are unchanged). yarn keeps the lockfile entry's dependency list, so `semver`
+  still resolves through the server's own copy. Previous refresh was a662869, so this adds 0.10.0's release commit,
+  0.11.0 (key trust `POST /mail/mailboxes/:id/keys/trust`, key rotation continuity and `POST .../keys/resolve`, the
+  `PUT /mail/messages/:id/verification-seal` endpoint) and the Unreleased plugin `ui` contract (`PluginUi*` types,
+  `parsePluginUi`, `findPluginUiMountConflicts`, `pluginUiMountsOverlap`, `RESERVED_PLUGIN_UI_MOUNTS`).
+- **Breaking changes needed no server code:** `BaseMessageRoute.keyVaultClass` and `BaseKeyLookupRoute.auditLogClass` are
+  set by restapi's `MessageRouteMongo/SQL` and `KeyLookupRouteMongo/SQL`, which the server's routes extend, and the new
+  handlers are inherited at `/api/mail/mailboxes/:id/keys/{trust,resolve}` and `/api/mail/messages/:id/verification-seal`.
+  No new models (`Models.test.ts` still matches). `test/routes/RestapiRouteSurface.test.ts` pins the paths and the two
+  abstract fields for both backends.
+- **`diff -rq` against restapi's dist:** one difference, `search/PostgresFullTextSearchProvider.js`. Its SQL template
+  literal has CRLF line breaks in restapi's build, and the yarn patch stores LF; the query text differs only by `\r`.
+- **Test gotcha (not a regression):** running vitest from Git Bash (`cd /d/github/...`) resolves test-file imports as
+  `d:/...` while the runner is `D:/...`, giving two vitest instances: every file that imports from `"vitest"` fails with
+  "Vitest failed to find the current suite" or "reading 'config'", and the Server suites time out. Run `yarn test` from
+  PowerShell in `d:\github\rapidmx\server` (or any shell whose cwd uses the same drive-letter case as the runner).
+
+Verified: `yarn tsc --noEmit`, `yarn lint`, `yarn test` 347/347 (32 files, exit 0).
