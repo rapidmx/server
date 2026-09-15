@@ -112,7 +112,9 @@ export class PluginUiBuilder {
         const failed: PluginUiBuildResult["failed"] = [];
         let candidates: InstalledPlugin[] = PluginUiBuilder.uiPlugins(plugins);
         if (candidates.length === 0) {
-            this.prune();
+            // Earlier builds stay, so re-enabling the same plugins serves their build straight away; the next build
+            // removes them.
+            this.prune(undefined, undefined, true);
             return { built: [], failed };
         }
 
@@ -297,8 +299,9 @@ export class PluginUiBuilder {
         }
     }
 
-    /** Removes builds other than `keep`, failure records other than `keepRecord`'s, and temporary folders left by dead starts. */
-    private prune(keep?: string, keepRecord?: string): void {
+    /** Removes builds other than `keep` (none with `keepBuilds`), failure records other than `keepRecord`'s, and temporary
+     * folders left by dead starts. */
+    private prune(keep?: string, keepRecord?: string, keepBuilds: boolean = false): void {
         let entries: string[];
         try {
             entries = fs.readdirSync(this.buildRoot);
@@ -309,7 +312,7 @@ export class PluginUiBuilder {
             const full: string = path.join(this.buildRoot, entry);
             try {
                 const record: RegExpExecArray | null = FAILURE_RECORD.exec(entry);
-                if ((HASH_NAME.test(entry) && entry !== keep) || (record && record[1] !== keepRecord)) {
+                if ((HASH_NAME.test(entry) && entry !== keep && !keepBuilds) || (record && record[1] !== keepRecord)) {
                     fs.rmSync(full, { recursive: true, force: true });
                 } else if (entry.startsWith(".tmp-") && Date.now() - fs.statSync(full).mtimeMs > STALE_TEMP_MS) {
                     fs.rmSync(full, { recursive: true, force: true });

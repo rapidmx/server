@@ -6,14 +6,13 @@ import path from "path";
 
 /**
  * The server's own browser apps, relative to the server's directory: the web client's www, admin and escrow consoles
- * (built from `@rapidmx/web-client`'s TSX sources, never its compiled `dist/apps` mirror) and the repo-local booking
- * pages. Every page under these gets a client hydration entry.
+ * (built from `@rapidmx/web-client`'s TSX sources, never its compiled `dist/apps` mirror). Every page under these gets a
+ * client hydration entry. Plugin apps (such as the booking pages) are added by `PluginUiBuilder` at startup.
  */
 export const CORE_APP_DIRS: readonly string[] = [
     "node_modules/@rapidmx/web-client/apps/www",
     "node_modules/@rapidmx/web-client/apps/admin",
     "node_modules/@rapidmx/web-client/apps/escrow",
-    "apps/book",
 ];
 
 /** The web client's Tailwind entry point: its design tokens and the `@source` lines for its own and react-shared's classes. */
@@ -42,7 +41,7 @@ export interface ServerViteConfigOptions {
 /**
  * A Vite plugin that makes each page of an app directory import a stylesheet from its hydration entry, so the page's
  * manifest entry lists that stylesheet and the server links it. Pages that already reach a stylesheet through a shell
- * component keep it; this is for apps whose pages don't (the booking pages, plugin apps).
+ * component keep it; this is for apps whose pages don't (plugin apps).
  */
 export function appStylesheetPlugin(stylesheets: AppStylesheet[]): any {
     const rules = stylesheets.map(({ appDir, css }) => ({
@@ -68,15 +67,17 @@ export function appStylesheetPlugin(stylesheets: AppStylesheet[]): any {
  *
  * `resolve.dedupe` forces every import of react/react-dom onto one physical copy, so hooks from `@rapidmx/react-shared`
  * (and from plugins) share the server's React instance instead of failing with "Invalid hook call".
+ *
+ * `resolve.alias` sends package imports of the web client (`@rapidmx/web-client/<path>.js`, the plugin UI surface) to
+ * its TSX sources, the same modules the core pages are built from. Its package exports point at the compiled
+ * `dist/apps` mirror, which is for server-side rendering: it still names the search index worker by its source file
+ * (`new URL("./localIndexWorker.ts", import.meta.url)`), which only exists in `apps`, so a browser build through the
+ * mirror fails, and it would bundle a second copy of every web client module a plugin page uses.
  */
 export async function createServerViteConfig(options: ServerViteConfigOptions = {}): Promise<any> {
     const { createViteConfig } = await import("@rapidrest/react/vite");
     const { default: tailwindcss } = await import("@tailwindcss/vite");
-    const stylesheets: AppStylesheet[] = [
-        // The booking pages import no shell that brings the web client's stylesheet, so they get it here.
-        { appDir: "apps/book", css: WEB_CLIENT_APP_CSS },
-        ...(options.stylesheets ?? []),
-    ];
+    const stylesheets: AppStylesheet[] = options.stylesheets ?? [];
     const config: any = await createViteConfig({
         appDir: [...CORE_APP_DIRS, ...(options.extraAppDirs ?? [])],
         ...(options.outDir ? { outDir: options.outDir } : {}),
@@ -86,7 +87,17 @@ export async function createServerViteConfig(options: ServerViteConfigOptions = 
         ...config,
         resolve: {
             ...config.resolve,
+            alias: [webClientSourceAlias()],
             dedupe: ["react", "react-dom"],
         },
     };
+}
+
+/** The web client's app sources, relative to the server's directory. */
+export const WEB_CLIENT_APPS = "node_modules/@rapidmx/web-client/apps";
+
+/** The Vite alias that resolves `@rapidmx/web-client/<path>.js` to `<path>` under the web client's app sources, where
+ * Vite then finds the `.ts` or `.tsx` file. */
+export function webClientSourceAlias(): { find: RegExp; replacement: string } {
+    return { find: /^@rapidmx\/web-client\/(.+)\.js$/, replacement: `${path.resolve(WEB_CLIENT_APPS).replace(/\\/g, "/")}/$1` };
 }

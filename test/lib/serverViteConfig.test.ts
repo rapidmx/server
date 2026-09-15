@@ -1,9 +1,9 @@
 ///////////////////////////////////////////////////////////////////////////////
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
-import path from "path";
 import viteConfig from "../../vite.config.js";
-import { appStylesheetPlugin, CORE_APP_DIRS, createServerViteConfig, WEB_CLIENT_APP_CSS } from "../../src/lib/serverViteConfig.js";
+import fs from "fs";
+import { appStylesheetPlugin, CORE_APP_DIRS, createServerViteConfig, webClientSourceAlias } from "../../src/lib/serverViteConfig.js";
 
 /** The hydration entry inputs a config's `rapidrest-hydration` plugin discovers. */
 function hydrationInputs(config: any): string[] {
@@ -12,17 +12,19 @@ function hydrationInputs(config: any): string[] {
 }
 
 describe("serverViteConfig", () => {
-    it("builds the core apps for the image, deduping React and adding the web client's stylesheet to the booking pages", async () => {
+    it("builds the core apps for the image, deduping React and adding no stylesheets of its own", async () => {
         const config = await viteConfig();
         expect(config.resolve.dedupe).toEqual(["react", "react-dom"]);
+        expect(config.resolve.alias).toEqual([webClientSourceAlias()]);
         expect(config.build.outDir).toBe("dist/public");
         const inputs = hydrationInputs(config);
         for (const dir of CORE_APP_DIRS) {
             expect(inputs.some((input) => input.startsWith(`${dir}/`)), dir).toBe(true);
         }
         const stylesheets = config.plugins.flat().find((candidate: any) => candidate?.name === "rapidmx-app-stylesheets");
-        const result = stylesheets.transform("hydrate();", "\0rapidrest-entry:apps/book/index.tsx");
-        expect(result.code).toBe(`import ${JSON.stringify(path.resolve(WEB_CLIENT_APP_CSS).replace(/\\/g, "/"))};\nhydrate();`);
+        expect(stylesheets.transform("hydrate();", "\0rapidrest-entry:node_modules/@rapidmx/web-client/apps/www/index.tsx")).toBeUndefined();
+        // Booking pages moved to @rapidmx/booking-plugin, so the image builds no repo-local apps.
+        expect(inputs.filter((input) => input.startsWith("apps/"))).toEqual([]);
     });
 
     it("adds extra app directories, their stylesheets and the output directory", async () => {
@@ -35,6 +37,14 @@ describe("serverViteConfig", () => {
         expect(hydrationInputs(config)).toContain("test/fixtures/ui-plugin/apps/hello/index.tsx");
         const plugin = config.plugins.flat().find((candidate: any) => candidate?.name === "rapidmx-app-stylesheets");
         expect(plugin.transform("x", "\0rapidrest-entry:test/fixtures/ui-plugin/apps/hello/index.tsx").code).toMatch(/plugin\.css";\nx$/);
+    });
+
+    it("resolves the web client's package exports to its app sources, leaving its stylesheet export alone", () => {
+        const { find, replacement } = webClientSourceAlias();
+        const resolved = "@rapidmx/web-client/shared/components/settings/layout/SettingsShell.js".replace(find, replacement);
+        expect(fs.existsSync(`${resolved}.tsx`)).toBe(true);
+        expect(find.test("@rapidmx/web-client/shared/styles/app.css")).toBe(false);
+        expect(find.test("@rapidmx/react-shared/util/api.js")).toBe(false);
     });
 
     it("only adds stylesheets to hydration entries of their own app directory", () => {

@@ -76,13 +76,20 @@ describe("PluginUiBuilder", () => {
         return new PluginUiBuilder({ pluginsDir, appRoot, logger, coreAppDirs: ["core/www"], createConfig, build, ...extra });
     }
 
-    it("keeps the prebuilt bundles and builds nothing without plugin UI, removing old builds", async () => {
+    it("keeps the prebuilt bundles and builds nothing without plugin UI, keeping old builds for when plugins return", async () => {
         write(path.join(buildRoot, "a".repeat(64), ".vite", "manifest.json"), "{}");
+        write(path.join(buildRoot, `failed-${"c".repeat(64)}.json`), "{}");
+        const staleTemp = path.join(buildRoot, ".tmp-stale");
+        fs.mkdirSync(staleTemp, { recursive: true });
+        const longAgo = new Date(Date.now() - 2 * 60 * 60_000);
+        fs.utimesSync(staleTemp, longAgo, longAgo);
         const build = fakeBuild();
         const result = await builder(build).build([plugin("@x/backend-only", { ui: false })]);
         expect(result).toEqual({ built: [], failed: [] });
         expect(build).not.toHaveBeenCalled();
-        expect(fs.existsSync(path.join(buildRoot, "a".repeat(64)))).toBe(false);
+        expect(fs.existsSync(path.join(buildRoot, "a".repeat(64)))).toBe(true);
+        expect(fs.existsSync(path.join(buildRoot, `failed-${"c".repeat(64)}.json`))).toBe(false);
+        expect(fs.existsSync(staleTemp)).toBe(false);
     });
 
     it("hashes the same inputs the same way, and differently when a version, integrity, app or patch changes", () => {
@@ -313,5 +320,30 @@ describe("PluginUiBuilder with Vite", () => {
         expect(byName("node_modules/@rapidmx/web-client/apps/www/index.tsx")).toBeDefined();
         expect(fs.existsSync(path.join(outDir, "favicon.ico"))).toBe(true);
         expect(fs.readdirSync(path.join(pluginsDir, ".ui-build")).filter((entry) => entry.startsWith(".tmp-"))).toEqual([]);
+    }, 120_000);
+
+    it("builds plugin pages that import the web client through its package exports from the web client's sources", async () => {
+        // The compiled dist/apps mirror names the search index worker by its .ts source, so building through it fails.
+        pluginsDir = path.join(process.cwd(), `tmp-ui-vite-${uuid.v4()}`);
+        const packageDir = path.join(pluginsDir, "node_modules", "@rapidmx-test", "web-client-importer");
+        const manifest = { apiVersion: 1, ui: { apps: [{ id: "shell", host: "www", mount: "/settings/shell", dir: "apps/shell" }] } };
+        write(path.join(packageDir, "package.json"), JSON.stringify({ name: "@rapidmx-test/web-client-importer", version: "1.0.0", rapidmx: { plugin: manifest } }));
+        write(path.join(packageDir, "apps", "shell", "_layout.tsx"), 'export default function Layout({ children }: any) { return <html><body>{children}</body></html>; }\n');
+        write(
+            path.join(packageDir, "apps", "shell", "index.tsx"),
+            [
+                'import { initLocalIndex } from "@rapidmx/web-client/shared/search/localIndexRpcClient.js";',
+                "export default function Shell() { return <p className=\"text-[#246813]\">{typeof initLocalIndex}</p>; }",
+                "",
+            ].join("\n"),
+        );
+        const plugin: InstalledPlugin = { name: "@rapidmx-test/web-client-importer", version: "1.0.0", manifest: manifest as any, entryUrl: "", packageDir, uiApps: resolvePluginUiApps(packageDir, manifest as any) };
+
+        const result = await new PluginUiBuilder({ pluginsDir, appRoot: process.cwd(), logger }).build([plugin]);
+        expect(result.failed).toEqual([]);
+        expect(result.built).toEqual([plugin.name]);
+        const outDir = path.dirname(path.dirname(result.manifestPath!));
+        expect(fs.readdirSync(path.join(outDir, "assets")).some((file) => /^localIndexWorker-.*\.js$/.test(file))).toBe(true);
+        expect(fs.readFileSync(result.manifestPath!, "utf8")).not.toContain("web-client/dist/apps");
     }, 120_000);
 });

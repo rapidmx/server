@@ -5426,3 +5426,69 @@ on `/greet`, `/escrow`, `/book`, and book pages now with a stylesheet. Second st
 Without the plugin: `/settings/hello` and `/greet` 404, empty `pluginNav`, prebuilt bundles, old build pruned.
 `yarn tsc --noEmit`, `yarn lint`, `yarn test` 381/381 (35 files). `helm lint` and `helm template` (1536Mi limit rendered).
 Docker image not built (no Docker daemon here).
+
+## 2026-09-15 — Booking removed from core: patches refreshed, `@rapidmx/booking-plugin` as a default (plan phase 6)
+
+- **Patch refresh** (same file names, versions kept at 0.8.0/0.4.0/0.4.0): `@rapidmx/restapi` → restapi 31007c9 (dist,
+  README, package.json with version 0.8.0), `@rapidmx/react-shared` → 720279d (dist), `@rapidmx/web-client` → a639fc0
+  (dist plus `git ls-files apps`). Each built with its own `yarn build`; the patch folders' `dist`/`apps` were replaced
+  wholesale, so deletions are recorded. `diff -rq` against the siblings: only the known CRLF difference in restapi's
+  `PostgresFullTextSearchProvider.js`, the web-client `apps` files differing only by CRLF (identical with
+  `--strip-trailing-cr`), and empty `booking`/`booking-types` directories left behind in `node_modules` (yarn applies a
+  deleted file but not its directory; no files in them). `semver` moved from devDependencies to dependencies (restapi
+  imports it at runtime).
+- **Removed:** `BookRoute`, `BookingRoute`, `BookingTypeRoute` (both backends), `Booking*`/`BookingType*` in `Models.ts`
+  (restapi no longer exports them; `Models.test.ts` floor 42 → 40), `apps/book` and `test/apps` (setup/testUtils only
+  served the book page tests), `tsconfig.client.json` (nothing left under `apps`; `rapidrest build` skips the client tsc
+  when it's absent), `./apps` from lint/eslint project/tsconfig.test/vitest coverage (and the 97% `apps/**` threshold),
+  `COPY apps` in the Dockerfile and the `./apps` volume in docker-compose.debug.yml. `PublicPageRoute` stays as the
+  public plugin host base. `CORE_APP_DIRS` is the three web-client apps; the core build adds no stylesheets.
+- **Defaults:** `{ name: "@rapidmx/booking-plugin", version: "latest" }` in both configs' `system.plugins.defaults`
+  (helm doesn't render defaults; its values.yaml example is only a comment). Unpublished package: `describeDefault()`
+  gets no version from the registry and throws, `loadAndSeed` logs "Could not add default plugin ..." and retries next
+  start; no row is written, so npm never sees the package and the other plugins install normally (covered by the
+  existing `@rapidmx/missing` seeding test). Startup isn't affected.
+- **`mail:booking:public_url`:** the plugin reads it with `@Config`. Seeding stores the manifest default (`""`) in the
+  plugin row's settings, which `PluginHost.prepare` `config.set`s, but that only lands in nconf's memory store: argv/env
+  are read first, so the chart's `mail__booking__public_url` env still wins (checked with the server's nconf setup). An
+  admin-console edit is overridden by that env var too; documented in README and the chart comment.
+- **Found by the production check, fixed here:**
+  1. **Plugin pages importing the web client couldn't build.** `@rapidmx/web-client/<path>.js` resolves through its
+     package exports to `dist/apps`, whose compiled `localIndexRpcClient.js` still has
+     `new URL("./localIndexWorker.ts", import.meta.url)` (no such file in `dist`): Vite's worker bundling failed with
+     UNRESOLVED_ENTRY, unattributable to a plugin, so no plugin UI was served at all. `createServerViteConfig` now adds
+     `resolve.alias` (`webClientSourceAlias()`: `^@rapidmx/web-client/(.+)\.js$` → `<cwd>/node_modules/@rapidmx/web-client/apps/$1`),
+     so plugin pages bundle the same TSX sources as the core pages (one copy of each module). SSR still imports `dist`.
+     Test: a real Vite build of a plugin page importing `localIndexRpcClient.js` (fails without the alias). The web
+     client's dist mirror naming a `.ts` worker is a web-client issue worth fixing there too.
+  2. **Plugins never loaded on SQL.** `PluginStateStore.withRepository` chose `getMongoRepository` when the connection
+     *had* that method, and every TypeORM DataSource has it (it throws for non-Mongo): "Could not read the plugin list,
+     so no plugins were loaded: You can use getMongoRepository only for MongoDB connections" on every SQL start,
+     Postgres included. Now keyed on `connection.options.type === "mongodb"`. Test: `loadAndSeed` against a real
+     better-sqlite3 `PluginSQL` table (fails without the fix).
+  3. **Re-enabling rebuilt the UI.** A start without plugin UI pruned every build, so turning the same plugins back on
+     rebuilt. It now keeps builds in that case (still removes failure records and stale `.tmp-*`); the next build
+     prunes as before.
+- **Booking plugin tarball:** `npm pack` of booking b14674a keeps `devDependencies` (portal specs) and `resolutions`
+  (portals) in the packed package.json; the installer runs npm with `--omit=dev --omit=peer --legacy-peer-deps`, and npm
+  ignores `resolutions`, so neither mattered. Its peers (`@rapidmx/restapi >=0.12.0`, react-shared/web-client
+  `>=0.6.0`) don't match the server's patched 0.8.0/0.4.0/0.4.0; not checked at install (legacy peer deps). Only
+  `nodemailer` was installed alongside it.
+
+Verified: `yarn tsc --noEmit`, `yarn lint`, `yarn test` 320/320 (27 files, exit 0, coverage gates pass),
+`tsc -p tsconfig.test.json` still 36 pre-existing errors; `helm lint` and `helm template` (default and public host:
+`mail__booking__public_url` renders `http://localhost/book` / `https://mail.example.com/book`). Production check
+(scratchpad `prodcheck-booking.mjs`: `yarn build`, in-memory Mongo 38476/Redis 38477, server on 38475, tarball via
+`system__plugins__sources` + `defaults`, `NODE_ENV=production node dist/src/server.js`), one database across five starts:
+no plugin (`/book/x`, `/settings/booking-types`, `/api/mail/bookings/types/x` 404; `/`, `/admin`, `/escrow` hydrated;
+the booking-only Tailwind classes `max-w-lg`/`py-10`/`max-h-96` absent from the prebuilt css) → booking rows inserted
+straight into `booking_type_mongo`/`booking_mongo` → plugin added as a default, UI built in 1s: public type and manage
+APIs return the inserted rows, `/book`, `/book/<slug>`, `/book/manage/<token>` 200 with props, module bundle, all assets
+200 and those classes in their stylesheet, `/settings/booking-types` 200, Booking Links in `pluginNav.settingsSections`
+on `/`, `/settings/auto-reply` and `/settings/booking-types`, `/admin` and `/escrow` still hydrated → same again
+("Using the plugin UI build") → row disabled: book pages, settings page and API 404, nav entry gone, build kept →
+re-enabled: "Using the plugin UI build", everything back. Not confirmed: the authenticated `/api/mail/booking-types`
+list (an admin JWT got `[]`/404 for rows whose mailbox doesn't exist; not pursued). SQL production check
+(`prodcheck-booking-sql.mjs`, better-sqlite3 files) got as far as the plugin loading, the UI build and `/book` rendering
+after fix 2; the data half didn't run because in that harness the SQL worker doesn't create the core or plugin tables
+("No metadata for MatterExportRequestSQL" also without plugins), which wasn't investigated. Docker image not built.

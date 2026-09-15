@@ -25,7 +25,7 @@ describe("Models", () => {
     ])("src/%s/Models.ts re-exports every model class restapi exports", (_name, restapi, server) => {
         const expected: string[] = modelNames(restapi);
         // Sanity check that the detection itself works, so an empty-vs-empty comparison can't pass.
-        expect(expected.length).toBeGreaterThanOrEqual(42);
+        expect(expected.length).toBeGreaterThanOrEqual(40);
         expect(modelNames(server)).toEqual(expected);
         // Nothing but models in these files - they are scanned for classes, so anything else would be registered too.
         expect(Object.keys(server).sort()).toEqual(expected);

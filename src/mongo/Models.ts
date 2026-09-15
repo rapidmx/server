@@ -10,8 +10,6 @@
 export {
     AttachmentMongo,
     AuditLogEntryMongo,
-    BookingMongo,
-    BookingTypeMongo,
     BrandingMongo,
     CalendarEventMongo,
     CalendarShareLinkMongo,

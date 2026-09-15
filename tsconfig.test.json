@@ -9,5 +9,5 @@
         "types": ["vitest/globals"],
         "rootDir": "."
     },
-    "include": ["src", "test", "apps"]
+    "include": ["src", "test"]
 }

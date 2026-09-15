@@ -79,8 +79,10 @@ export class PluginStateStore {
             await connectionManager.connect({ [this.datastore]: this.config.get(`datastores:${this.datastore}`) }, models);
             try {
                 const connection: any = connectionManager.connections.get(this.datastore);
+                // Every TypeORM DataSource has getMongoRepository(), which throws on any other database, so this goes
+                // by the connection's type.
                 const repo: PluginRepository =
-                    typeof connection.getMongoRepository === "function"
+                    connection.options?.type === "mongodb"
                         ? connection.getMongoRepository(this.pluginClass)
                         : connection.getRepository(this.pluginClass);
                 return await work(repo);

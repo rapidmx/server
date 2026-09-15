@@ -13,7 +13,7 @@
     "build": "rapidrest build",
     "debug": "rapidrest dev --inspect",
     "dev": "rapidrest dev",
-    "lint": "eslint ./apps ./src ./test",
+    "lint": "eslint ./src ./test",
     "local-audit": "yarn install && yarn npm audit -A -R \"$@\"",
     "checkup": "yarn dlx @yarnpkg/doctor \"$@\"",
     "dependency-check": "yarn dlx depcheck \"$@\"",

@@ -12,6 +12,7 @@ A reference implementation of a RapidMX mail server, providing a complete, deplo
 * Exchange ActiveSync
 * MAPI over HTTP
 * Autodiscover
+* Booking pages
 
 ## Getting Started
 
@@ -64,7 +65,7 @@ otherwise — see `src/config.defaults.ts`; the server refuses to start with tho
 | `COOKIE_SECRET` | Shared cookie-signing secret |
 | `ESCROW_AUDIT_HMAC_KEY` | Key for the escrow audit log's HMAC-SHA256 hash chain (`mail:escrow:audit_hmac_key`) — generate once (`openssl rand -hex 32`) and never change it; unset, entries are chained with unkeyed SHA-256 and the server logs an error in production |
 | `MAIL_INGEST_SECRET` | Bearer secret authenticating `postfix-bridge`'s calls to this app's `/internal/mta` routes — must match that repo's own `MTA_INGEST_SECRET` exactly |
-| `PUBLIC_URL` | This deployment's public base URL (defaults to `http://localhost:3000`) — booking email links and the autodiscover plugin (which requires `https://`) |
+| `PUBLIC_URL` | This deployment's public base URL (defaults to `http://localhost:3000`) — the booking plugin's email links and the autodiscover plugin (which requires `https://`) |
 | `MX_HOSTNAME` | Public MX hostname (defaults to `localhost`) — outgoing read receipts and domain DNS checks |
 | `SENDMAIL_RELAY_HOST` / `_PORT` / `_TLS` | Where `PostfixSendmailTransport` relays outbound mail — defaults to `host.docker.internal:25` (TLS off), i.e. wherever the separate `postfix-bridge` stack publishes its own Postfix on the host's `localhost:25`; override for anything beyond local, single-host evaluation |
 
@@ -131,13 +132,24 @@ collections, tables and columns, but on PostgreSQL TypeORM may drop and recreate
 releases, losing that column's data. **Back up the database before upgrading.** If you manage schema changes yourself,
 set `datastores__acl__synchronize` and `datastores__sql__synchronize` (or `datastores__mongo__synchronize`) to `false`.
 
+**Booking pages moved to a plugin.** The public booking pages (`/book`), Settings → Booking Links and the
+`/api/mail/booking-types` and `/api/mail/bookings` APIs are now `@rapidmx/booking-plugin`, one of the default plugins
+(`system:plugins:defaults`). An upgraded deployment adds it at its next start, and its existing booking types and
+bookings show up again unchanged, since the plugin uses the same collections and tables. `mail:booking:public_url` (the
+chart's `mail__booking__public_url`) still sets the address in booking emails; it's also the plugin's setting in the
+admin console, and an environment variable wins over the saved value. Until `@rapidmx/booking-plugin` is published to
+npm, adding it logs "Could not add default plugin @rapidmx/booking-plugin" at each start, the other plugins install and
+load as usual, and booking stays unavailable. To use a local build before then, point `system__plugins__sources` at its
+`npm pack` tarball.
+
 #### Plugin UI
 
-Plugins can ship pages (for example the booking pages) and navigation entries along with their API routes. They ship
-those pages as TSX sources, so when enabled plugins have UI the server builds the browser bundles with Vite as it starts,
-together with its own apps, before it starts serving. The build is kept in `system:plugins:dir`'s `.ui-build` folder
-(`/app/plugins/.ui-build` in the image) and reused until the plugins with UI, their versions, or the server's web client
-change. Without plugin UI nothing is built and the bundles in the image are served.
+Plugins can ship pages (for example `@rapidmx/booking-plugin`'s booking pages) and navigation entries along with their
+API routes. They ship those pages as TSX sources, so when enabled plugins have UI the server builds the browser bundles
+with Vite as it starts, together with its own apps, before it starts serving. The build is kept in
+`system:plugins:dir`'s `.ui-build` folder (`/app/plugins/.ui-build` in the image) and reused until the plugins with UI,
+their versions, or the server's web client change. Without plugin UI nothing is built and the bundles in the image are
+served; the last build is kept, so turning the same plugins back on reuses it.
 
 - **Build time:** the first start after a plugin with UI is added, upgraded, enabled or disabled takes longer, from a few
   seconds on a typical node to about a minute on a small CPU limit. On Kubernetes the plugins volume is per pod, so every

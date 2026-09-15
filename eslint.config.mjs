@@ -10,7 +10,7 @@ export default [
             ecmaVersion: 2020,
             parser: typescriptParser,
             parserOptions: {
-                project: ["tsconfig.json", "./tsconfig.eslint.json", "./tsconfig.client.json"],
+                project: ["tsconfig.json", "./tsconfig.eslint.json"],
                 sourceType: "module",
                 ecmaFeatures: {
                     jsx: true,

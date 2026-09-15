@@ -10,8 +10,6 @@
 export {
     AttachmentSQL,
     AuditLogEntrySQL,
-    BookingSQL,
-    BookingTypeSQL,
     BrandingSQL,
     CalendarEventSQL,
     CalendarShareLinkSQL,

@@ -9,11 +9,9 @@ import * as fs from "fs";
 import * as path from "path";
 import viteConfig from "../../vite.config.js";
 import { AdminConsoleRoute as AdminConsoleRouteMongo } from "../../src/mongo/routes/AdminConsoleRoute.js";
-import { BookRoute as BookRouteMongo } from "../../src/mongo/routes/BookRoute.js";
 import { EscrowConsoleRoute as EscrowConsoleRouteMongo } from "../../src/mongo/routes/EscrowConsoleRoute.js";
 import { WwwRoute as WwwRouteMongo } from "../../src/mongo/routes/wwwRoute.js";
 import { AdminConsoleRoute as AdminConsoleRouteSql } from "../../src/sql/routes/AdminConsoleRoute.js";
-import { BookRoute as BookRouteSql } from "../../src/sql/routes/BookRoute.js";
 import { EscrowConsoleRoute as EscrowConsoleRouteSql } from "../../src/sql/routes/EscrowConsoleRoute.js";
 import { AppRoute as WwwRouteSql } from "../../src/sql/routes/wwwRoute.js";
 
@@ -43,14 +41,6 @@ const APPS: Array<{ route: string; classes: Array<new () => any>; sourceDir: str
         sourceDir: `${WEB_CLIENT}/apps/escrow`,
         compiledDir: `${WEB_CLIENT}/dist/apps/escrow`,
         appDir: `${WEB_CLIENT}/dist/apps/escrow`,
-    },
-    {
-        // Repo-local: appDir stays the source dir, and ReactRoute falls back to this project's own dist/ mirror.
-        route: "BookRoute",
-        classes: [BookRouteMongo, BookRouteSql],
-        sourceDir: "apps/book",
-        compiledDir: "dist/apps/book",
-        appDir: "apps/book",
     },
 ];
 

@@ -7,6 +7,7 @@ import path from "path";
 import zlib from "zlib";
 import nconf from "nconf";
 import { computePluginStateHash, PluginRegistry } from "@rapidmx/restapi";
+import { PluginSQL } from "@rapidmx/restapi/sql";
 import { installRetryDelayMs, PLUGIN_SAFE_MODE_ENV, PluginHost } from "../../src/plugins/PluginHost.js";
 import { MONGO_PLUGIN_UI_HOSTS } from "../../src/plugins/hosts/mongo.js";
 import { resolvePluginUiApps } from "../../src/plugins/PluginInstaller.js";
@@ -166,6 +167,22 @@ describe("PluginStateStore", () => {
             expect(rows[0]).toEqual(expect.objectContaining({ packageVersion: "3.0.0", integrity: undefined }));
         } finally {
             fs.rmSync(file, { force: true });
+        }
+    });
+
+    it("reads and seeds the plugin table of a SQL datastore", async () => {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), "plugin-store-sql-"));
+        try {
+            const config = configWith({ datastores: { sql: { type: "better-sqlite3", host: "localhost", database: path.join(dir, "plugins.db"), synchronize: true } } });
+            const sqlLogger = { ...logger, child: () => sqlLogger, log: vi.fn() };
+            const store = new PluginStateStore(config, sqlLogger, "sql", PluginSQL);
+            const rows = await store.loadAndSeed([{ name: "@rapidmx/activesync" }], () => registry, {});
+            expect(rows).toEqual([expect.objectContaining({ name: "@rapidmx/activesync", packageVersion: "2.0.0", enabled: true })]);
+            expect(logger.error).not.toHaveBeenCalled();
+            // A second read finds the seeded row instead of adding it again.
+            expect((await store.loadAndSeed([{ name: "@rapidmx/activesync" }], () => registry, {})).map((r) => r.name)).toEqual(["@rapidmx/activesync"]);
+        } finally {
+            fs.rmSync(dir, { recursive: true, force: true });
         }
     });
 

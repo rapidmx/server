@@ -42,8 +42,8 @@ services:
             # not just from inside the compose network (hence localhost:3001, not http://auth-server:3000).
             # Override with the real public auth-server URL in any deployment that isn't single-host/dev.
             - mail__auth_server_url=${AUTH_SERVER_PUBLIC_URL:-http://localhost:3001}
-            # Links in booking emails, and the base URL the autodiscover plugin advertises (it only accepts https://,
-            # so autodiscover stays off until PUBLIC_URL is a real https URL).
+            # Links in the booking plugin's emails, and the base URL the autodiscover plugin advertises (it only
+            # accepts https://, so autodiscover stays off until PUBLIC_URL is a real https URL).
             - mail__booking__public_url=${PUBLIC_URL:-http://localhost:3000}/book
             - mail__autodiscover__public_url=${PUBLIC_URL:-http://localhost:3000}
             # This deployment's public MX hostname (Reporting-UA of outgoing read receipts, DNS setup checks).

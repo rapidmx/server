@@ -29,9 +29,10 @@ data:
   {{- end }}
   # Where message bodies/attachments are stored - see values.yaml's mail.blob.backend.
   mail__blob__backend: {{ $.Values.mail.blob.backend | quote }}
-  # Public URLs derived from `host`, unless set explicitly under service.config: links in booking emails, the base
-  # URL the autodiscover plugin advertises to mail clients, and the MX hostname (read-receipt Reporting-UA, domain DNS
-  # checks).
+  # Public URLs derived from `host`, unless set explicitly under service.config: links in the booking plugin's emails
+  # (its mail:booking:public_url setting, where this environment variable wins over the value saved in the admin
+  # console), the base URL the autodiscover plugin advertises to mail clients, and the MX hostname (read-receipt
+  # Reporting-UA, domain DNS checks).
   {{- if not (hasKey $config "mail__booking__public_url") }}
   mail__booking__public_url: {{ printf "%s/book" $publicUrl | quote }}
   {{- end }}

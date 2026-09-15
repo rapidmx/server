@@ -10,9 +10,9 @@ import { BrandingMongo } from "@rapidmx/restapi/mongo";
 const { Inject } = ObjectDecorators;
 
 /**
- * The base of the public, unauthenticated page hosts: `BookRoute` and plugin UI apps on the `public` host. Pages are
- * hydrated and get this deployment's branding, so the first byte already has the right title, favicon and stylesheet.
- * Not mounted itself (no `@Route`).
+ * The base of the public, unauthenticated page host: plugin UI apps on the `public` host, such as the booking plugin's
+ * pages. Pages are hydrated and get this deployment's branding, so the first byte already has the right title, favicon
+ * and stylesheet. Not mounted itself (no `@Route`).
  */
 export class PublicPageRoute extends ReactRoute {
     protected readonly hydrate: boolean = true;

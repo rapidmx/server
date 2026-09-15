@@ -44,11 +44,9 @@ export default defineConfig({
     test: {
         globals: true,
         // Server-side test/**/*.test.ts suite runs under plain `node`, matching the real server runtime.
-        // Frontend (apps/www) tests render React components and need a DOM — each of those test files
-        // opts into `jsdom` individually via a `// @vitest-environment jsdom` docblock at its top
-        // (`environmentMatchGlobs`, the config-level way to do this per-directory, was removed in Vitest 4).
+        // A test that renders React components into a DOM opts into `jsdom` individually via a
+        // `// @vitest-environment jsdom` docblock at its top (`environmentMatchGlobs` was removed in Vitest 4).
         environment: 'node',
-        setupFiles: ['./test/apps/setup.ts'],
         include: ['test/**/*.test.ts', 'test/**/*.test.tsx'],
         // Pins the test process's local timezone to UTC. The calendar views (MonthView/TimeGridView)
         // use date-fns's local-time-aware functions (isToday/isSameDay/startOfDay/format/...) — correct
@@ -71,7 +69,7 @@ export default defineConfig({
         coverage: {
             enabled: true,
             provider: 'v8',
-            include: ['src/**/*.ts', 'apps/**/*.ts', 'apps/**/*.tsx'],
+            include: ['src/**/*.ts'],
             exclude: [
                 '**/node_modules/**',
                 'src/server.ts',
@@ -85,35 +83,14 @@ export default defineConfig({
             ],
             reporter: ['text', 'json', 'html', 'lcov'],
             thresholds: {
-                // Per-glob thresholds are checked *in addition to* these top-level ones, not instead of them —
-                // the top-level numbers gate the overall combined coverage across every included file, so they
-                // must stay at the backend's relaxed floor (0%) or a low-coverage src/** file fails the build
-                // via the global check even when every specific glob below it passes. Frontend enforcement
-                // instead lives entirely in the 'apps/**' glob (and the more specific ones nested under it).
+                // The backend's relaxed floor. This repo has no frontend sources left: apps/www, apps/admin and
+                // apps/shared/components moved to @rapidmx/web-client (2026-09-10), and apps/book to
+                // @rapidmx/booking-plugin (2026-09-15), whose own vitest configs carry the 100% frontend
+                // thresholds that used to live here.
                 branches: 0,
                 functions: 0,
                 lines: 0,
                 statements: 0,
-                // apps/www, apps/admin, and apps/shared/components moved out to the separate
-                // @rapidmx/web-client package (2026-09-10 - see .claude/NOTES.md) - that package's own
-                // vitest.config.ts now carries the 100% frontend threshold (and the one ComposeWindow.tsx
-                // branch-coverage carve-out) that used to live here. apps/book is the only thing left
-                // under apps/** in this repo.
-                'apps/**': {
-                    // Branches held at 97%, not 100% - apps/book/_layout.tsx's title/stylesheet conditional
-                    // rendering (`branding?.title || branding?.companyName`, `stylesheetHref && <link .../>`)
-                    // has the exact same 81.81% branch-coverage shape every other _layout.tsx in this
-                    // codebase shows (see the identical pattern in @rapidmx/web-client's own apps/admin/
-                    // _layout.tsx) - this was always true, just previously invisible: pooled with hundreds
-                    // of 100%-covered apps/www/apps/admin files, one _layout.tsx's shortfall barely moved
-                    // the aggregate below 100%. Now that apps/book is nearly this glob's entire pool, the
-                    // same shortfall drags the aggregate down to ~97.33%. Not a new gap this split
-                    // introduced - just no longer diluted enough to round up to 100.
-                    branches: 97,
-                    functions: 100,
-                    lines: 100,
-                    statements: 100,
-                },
             },
             reportsDirectory: 'coverage',
         },

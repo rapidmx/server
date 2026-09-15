@@ -15,5 +15,4 @@ services:
             - "127.0.0.1:3000:3000"
             - "127.0.0.1:9229:9229"
         volumes:
-            - ./apps:/app/apps
             - ./src:/app/src

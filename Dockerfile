@@ -29,10 +29,9 @@ COPY --from=builder --chown=node:node /app/package.json /app/yarn.lock /app/.yar
 COPY --from=builder --chown=node:node /app/.yarn/releases ./.yarn/releases
 COPY --from=builder --chown=node:node /app/dist ./dist
 COPY --from=builder --chown=node:node /app/src ./src
-# Plugin UI is built at startup (src/plugins/PluginUiBuilder.ts) together with the core apps, so the runtime keeps their
-# sources: the booking pages and the static files Vite copies into every build. (The web client's app sources ship in
-# node_modules/@rapidmx/web-client.)
-COPY --from=builder --chown=node:node /app/apps ./apps
+# Plugin UI is built at startup (src/plugins/PluginUiBuilder.ts) together with the core apps, so the runtime keeps the
+# static files Vite copies into every build. (The core apps' sources ship in node_modules/@rapidmx/web-client, and
+# plugin apps' in their plugin packages.)
 COPY --from=builder --chown=node:node /app/public ./public
 COPY --from=prod-deps --chown=node:node /app/node_modules ./node_modules
 COPY --from=builder --chown=node:node /app/scripts ./scripts

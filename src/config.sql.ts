@@ -95,6 +95,11 @@ conf.defaults({
                 { name: "@rapidmx/activesync-plugin", version: "latest" },
                 { name: "@rapidmx/mapi-plugin", version: "latest" },
                 { name: "@rapidmx/autodiscover-plugin", version: "latest" },
+                // Public booking pages, booking types and bookings, which were part of core before. Listed here so an
+                // upgraded deployment gets the plugin, and its existing booking types and bookings, back without an
+                // administrator adding it. Until the package is published, adding it logs a warning at each start and
+                // nothing else changes.
+                { name: "@rapidmx/booking-plugin", version: "latest" },
             ],
             // The npm registry plugins are downloaded from, and an optional auth token for a private one.
             registry: "https://registry.npmjs.org",
@@ -235,12 +240,12 @@ conf.defaults({
             },
         },
         booking: {
-            // `BaseBookingRoute.manageUrl()` builds the link mailed to a booker as
-            // `${public_url}/manage/${token}` — must land on `apps/book/manage/[token].tsx`, so this needs
-            // the same externally-reachable base URL as `cluster_url` below, with `/book` appended (the
-            // mount point of `BookRoute`). Keep the two in sync in a real deployment.
-            // Empty by default: booking emails then leave out the manage link rather than pointing at a host that isn't this
-            // deployment. The Helm chart sets it from its `host` value; set `mail__booking__public_url` otherwise.
+            // Read by @rapidmx/booking-plugin (see `system.plugins.defaults`), where it's also a setting in the admin
+            // console. The booking pages' address: confirmation emails link to `${public_url}/manage/${token}`, so
+            // it's the same externally-reachable base URL as `cluster_url` below with `/book` (the plugin's mount)
+            // appended. Empty by default: booking emails then leave out the manage link rather than pointing at a host
+            // that isn't this deployment. The Helm chart sets it from its `host` value; set `mail__booking__public_url`
+            // otherwise. An environment variable wins over the value saved in the admin console.
             public_url: "",
         },
         compose: {
@@ -400,9 +405,10 @@ conf.defaults({
         authRequired: true,
     },
     // Read by `TieredRateLimiter` (src/lib/TieredRateLimiter.ts, registered in place of `@rapidrest/service-core`'s
-    // `RateLimiter`), which backs every `@RateLimit()`-decorated endpoint in `@rapidmx/restapi` - the three mutating
-    // booking endpoints and the public key-discovery endpoint (both reachable anonymously; booking emails the booker),
-    // AND `GET /mailbox/:id/keys/lookup`, which every logged-in user's compose flow calls once per new recipient.
+    // `RateLimiter`), which backs every `@RateLimit()`-decorated endpoint in `@rapidmx/restapi` and its plugins -
+    // the booking plugin's three mutating endpoints and the public key-discovery endpoint (both reachable anonymously;
+    // booking emails the booker), AND `GET /mailbox/:id/keys/lookup`, which every logged-in user's compose flow calls
+    // once per new recipient.
     //
     // The top-level limits apply to ANONYMOUS requests and stay conservative - the framework's own defaults (100
     // attempts/60s per identifier, i.e. per endpoint path; 100 attempts/300s per source IP across all rate-limited
