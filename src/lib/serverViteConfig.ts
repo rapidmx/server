@@ -70,9 +70,8 @@ export function appStylesheetPlugin(stylesheets: AppStylesheet[]): any {
  *
  * `resolve.alias` sends package imports of the web client (`@rapidmx/web-client/<path>.js`, the plugin UI surface) to
  * its TSX sources, the same modules the core pages are built from. Its package exports point at the compiled
- * `dist/apps` mirror, which is for server-side rendering: it still names the search index worker by its source file
- * (`new URL("./localIndexWorker.ts", import.meta.url)`), which only exists in `apps`, so a browser build through the
- * mirror fails, and it would bundle a second copy of every web client module a plugin page uses.
+ * `dist/apps` mirror, which is for server-side rendering; bundling a plugin page through the mirror would add a second
+ * copy of every web client module it uses, with its own module state, next to the copies the core pages share.
  */
 export async function createServerViteConfig(options: ServerViteConfigOptions = {}): Promise<any> {
     const { createViteConfig } = await import("@rapidrest/react/vite");

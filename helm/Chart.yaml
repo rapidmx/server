@@ -35,6 +35,6 @@ dependencies:
     alias: redis
   - name: auth-server
     repository: oci://ghcr.io/rapidrest/charts
-    version: 1.0.0-beta.1
+    version: 1.0.0-beta.2
     condition: authServer.create
     alias: authServer

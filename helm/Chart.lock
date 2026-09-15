@@ -10,6 +10,6 @@ dependencies:
   version: 24.1.8
 - name: auth-server
   repository: oci://ghcr.io/rapidrest/charts
-  version: 1.0.0-beta.1
-digest: sha256:252076def93e6d58c0f81f637c1970f1b712ab02103f31e2c756fa6cc47a4c34
-generated: "2026-09-10T17:49:06.7831697-07:00"
+  version: 1.0.0-beta.2
+digest: sha256:ae242489d7d02c30084a68450e742b5a7c2bee600a9a932d8e8baf6cfb3664be
+generated: "2026-09-15T12:03:15.5534822-07:00"

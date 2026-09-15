@@ -34,9 +34,9 @@
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.906.0",
-    "@rapidmx/react-shared": "patch:@rapidmx/react-shared@npm%3A0.4.0#~/.yarn/patches/@rapidmx-react-shared-npm-0.4.0-e713beecf2.patch",
-    "@rapidmx/restapi": "patch:@rapidmx/restapi@npm%3A0.8.0#~/.yarn/patches/@rapidmx-restapi-npm-0.8.0-d588a97668.patch",
-    "@rapidmx/web-client": "patch:@rapidmx/web-client@npm%3A0.4.0#~/.yarn/patches/@rapidmx-web-client-npm-0.4.0-bf47c7c6fa.patch",
+    "@rapidmx/react-shared": "^0.6.0",
+    "@rapidmx/restapi": "^0.12.0",
+    "@rapidmx/web-client": "^0.6.0",
     "@rapidrest/core": "^5.2.2",
     "@rapidrest/react": "2.0.0-beta.3",
     "@rapidrest/service-core": "^2.1.1",
@@ -104,8 +104,7 @@
   "resolutions": {
     "semver": "^7.5.2",
     "axios": "^1.19.0",
-    "json-schema": "^0.4.0",
-    "@rapidmx/react-shared@npm:^0.4.0": "patch:@rapidmx/react-shared@npm%3A0.4.0#~/.yarn/patches/@rapidmx-react-shared-npm-0.4.0-e713beecf2.patch"
+    "json-schema": "^0.4.0"
   },
   "packageManager": "yarn@4.2.2",
   "engines": {
