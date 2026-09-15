@@ -34,3 +34,11 @@ the exact same value as this release's own `mail.ingestSecret` (stored in the
 "{{ include "rrst.fullname" . }}-mail-ingest-secret" Secret), or postfix-bridge's calls to /internal/mta will fail
 authorization. /internal/* is not routed through the Gateway; postfix-bridge must call the Service directly. Read it with:
   kubectl -n {{ .Release.Namespace }} get secret {{ include "rrst.fullname" . }}-mail-ingest-secret -o jsonpath='{.data.mail__transport__ingest__secret}' | base64 -d
+{{- $config := .Values.service.config | default dict }}
+{{- if not (or .Values.mail.trustedAuthservId (get $config "mail__security__trusted_authserv_id")) }}
+
+WARNING: mail.trustedAuthservId is empty, so no sender is DKIM-verified. Until it's set to the authserv-id your inbound
+MTA (postfix-bridge) stamps on Authentication-Results: messages to members-only distribution lists are dropped, list and
+forward-rule copies are sent with a rewritten From, forwarded calendar invites are refused, and key discovery, read
+receipts, iTIP replies, recalls and ACME email challenges are ignored. Set it with --set mail.trustedAuthservId=<id>.
+{{- end }}

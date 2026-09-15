@@ -105,3 +105,21 @@ export function assertProductionSecretsAreSet(config: SecretsConfig, environment
         );
     }
 }
+
+/**
+ * The startup warning for an empty `mail:security:trusted_authserv_id`, or `undefined` when it's set. Unset is a valid,
+ * fail-closed choice (no Authentication-Results header is trusted), but it silently switches off mail features that
+ * depend on a verified sender, so the server says so once at startup instead of leaving it to be discovered as mail
+ * that went missing.
+ */
+export function trustedAuthservIdWarning(config: SecretsConfig): string | undefined {
+    if (String(config.get("mail:security:trusted_authserv_id") ?? "").trim() !== "") {
+        return undefined;
+    }
+    return (
+        "mail:security:trusted_authserv_id (env mail__security__trusted_authserv_id, Helm mail.trustedAuthservId) is not set, " +
+        "so no sender is DKIM-verified: messages to members-only distribution lists are dropped, list and forward-rule copies " +
+        "are sent with a rewritten From, forwarded calendar invites are refused, and key discovery, read receipts, iTIP " +
+        "replies, recalls and ACME email challenges are ignored. Set it to the authserv-id your inbound MTA stamps."
+    );
+}

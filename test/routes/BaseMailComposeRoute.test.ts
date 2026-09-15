@@ -11,6 +11,7 @@
 import config from "../../src/config.mongo.js";
 import { BaseEntity, ObjectFactory } from "@rapidrest/service-core";
 import { Logger } from "@rapidrest/core";
+import { MAX_RETAINED_BODY_BLOB_KEYS } from "@rapidmx/restapi";
 import {
     assertRawMimeHeadersMatch,
     BaseMailComposeRoute,
@@ -225,8 +226,11 @@ describe("BaseMailComposeRoute replaced body blobs", () => {
     };
     const htmlInput = { to: [{ address: "bob@example.com" }], html: "<p>hi</p>" };
 
-    function buildRoute(bodyBlobKey: string | undefined, opts: { references?: number; updateError?: Error; matters?: any[] } = {}) {
-        const message = { uid: "m1", version: 3, folderUid: "f1", mailboxUid: "mb1", bodyBlobKey };
+    function buildRoute(
+        bodyBlobKey: string | undefined,
+        opts: { references?: number; updateError?: Error; matters?: any[]; retainedBodyBlobKeys?: string[] } = {},
+    ) {
+        const message = { uid: "m1", version: 3, folderUid: "f1", mailboxUid: "mb1", bodyBlobKey, retainedBodyBlobKeys: opts.retainedBodyBlobKeys };
         const route = new (TestMailComposeRoute as any)();
         route._objectFactory = { newInstance: vi.fn() };
         route.messageRepo = {
@@ -286,14 +290,49 @@ describe("BaseMailComposeRoute replaced body blobs", () => {
         await expect(route.assembleRaw("m1", rawInput, user)).resolves.toMatchObject({ uid: "m1" });
     });
 
-    it("keeps the replaced blob while an open Matter holds the mailbox", async () => {
-        const route = buildRoute("bodies/old", { matters: [{ uid: "mt1", custodianMailboxUids: ["other", "mb1"] }] });
+    it("keeps the replaced blob while an open Matter holds the mailbox, recording it in the same versioned update", async () => {
+        const route = buildRoute("bodies/old", {
+            matters: [{ uid: "mt1", custodianMailboxUids: ["other", "mb1"] }],
+            retainedBodyBlobKeys: ["bodies/older"],
+        });
         await route.assemble("m1", htmlInput, user);
+        expect(route.matterRepo.find).toHaveBeenCalledTimes(1);
         expect(route.matterRepo.find).toHaveBeenCalledWith(
             { sort: { uid: "ASC" }, limit: 500 },
             { ignoreACL: true, limit: 500, skipCache: true },
         );
+        // The hold is checked before the update, so the retained key is written with the new body and the draft's version.
+        expect(route.matterRepo.find.mock.invocationCallOrder[0]).toBeLessThan(route.messageRepo.update.mock.invocationCallOrder[0]);
+        const updatePatch = route.messageRepo.update.mock.calls[0][0];
+        expect(updatePatch).toMatchObject({ uid: "m1", version: 3, retainedBodyBlobKeys: ["bodies/older", "bodies/old"] });
+        expect(updatePatch.bodyBlobKey).toBe(route.blobStore.put.mock.calls[0][0]);
+        expect(route.messageRepo.count).not.toHaveBeenCalled();
         expect(route.blobStore.delete).not.toHaveBeenCalled();
+    });
+
+    it("refuses the save with 409, writing nothing, once a held draft retains MAX_RETAINED_BODY_BLOB_KEYS bodies", async () => {
+        const full = Array.from({ length: MAX_RETAINED_BODY_BLOB_KEYS }, (_v, i) => `bodies/kept-${i}`);
+        const route = buildRoute("bodies/old", { matters: [{ uid: "mt1", custodianMailboxUids: ["mb1"] }], retainedBodyBlobKeys: full });
+
+        await expect(route.assemble("m1", htmlInput, user)).rejects.toMatchObject({ status: 409 });
+        // The bound is checked before the new body is stored, so no blob is left behind; the draft keeps its body.
+        expect(route.blobStore.put).not.toHaveBeenCalled();
+        expect(route.messageRepo.update).not.toHaveBeenCalled();
+        expect(route.blobStore.delete).not.toHaveBeenCalled();
+    });
+
+    it("doesn't record a replaced body when the mailbox isn't held, or when there is no composed body to replace", async () => {
+        const unheld = buildRoute("bodies/old", { matters: [{ uid: "mt1", custodianMailboxUids: ["other"] }] });
+        await unheld.assemble("m1", htmlInput, user);
+        expect(unheld.messageRepo.update.mock.calls[0][0]).not.toHaveProperty("retainedBodyBlobKeys");
+        expect(unheld.blobStore.delete).toHaveBeenCalledWith("bodies/old");
+
+        for (const key of ["ingest/raw-1", undefined]) {
+            const route = buildRoute(key, { matters: [{ uid: "mt1", custodianMailboxUids: ["mb1"] }] });
+            await route.assemble("m1", htmlInput, user);
+            expect(route.matterRepo.find).not.toHaveBeenCalled();
+            expect(route.messageRepo.update.mock.calls[0][0]).not.toHaveProperty("retainedBodyBlobKeys");
+        }
     });
 
     it("deletes the replaced blob when the only Matters naming the mailbox are closed, or name other mailboxes", async () => {
@@ -315,13 +354,15 @@ describe("BaseMailComposeRoute replaced body blobs", () => {
             .mockResolvedValueOnce([{ uid: "b000", custodianMailboxUids: ["mb1"] }]);
         await route.assemble("m1", htmlInput, user);
         expect(route.matterRepo.find.mock.calls[1][0]).toEqual({ sort: { uid: "ASC" }, limit: 500, uid: "gt(a499)" });
+        expect(route.messageRepo.update.mock.calls[0][0].retainedBodyBlobKeys).toEqual(["bodies/old"]);
         expect(route.blobStore.delete).not.toHaveBeenCalled();
     });
 
-    it("keeps the replaced blob when the legal hold lookup fails", async () => {
+    it("keeps and records the replaced blob when the legal hold lookup fails", async () => {
         const route = buildRoute("bodies/old");
         route.matterRepo.find.mockRejectedValue(new Error("db down"));
         await expect(route.assemble("m1", htmlInput, user)).resolves.toMatchObject({ uid: "m1" });
+        expect(route.messageRepo.update.mock.calls[0][0].retainedBodyBlobKeys).toEqual(["bodies/old"]);
         expect(route.blobStore.delete).not.toHaveBeenCalled();
     });
 });

@@ -97,7 +97,12 @@ until you set `cookies.secret`, `sessions.secret` and `mail.escrow.auditHmacKey`
 `secrets.existingSecret` at a Secret you manage. Outbound mail is relayed to the `postfix-bridge` chart's `postfix`
 Service (`mail.relay.*`). Behind a Gateway this chart doesn't create, set `gateway.httpsListener` to the listener that
 terminates TLS for `host` with the `<host>-tls-cert` Secret (the render fails without it while `gateway.tls` is
-true; set `gateway.tls=false` to serve plain HTTP). `/api/metrics`
+true; set `gateway.tls=false` to serve plain HTTP). With a public `host`, set `authServer.host` (e.g. `auth.<host>`),
+the auth-server's public name that sign-in redirects to; on someone else's Gateway also set `authServer.gateway.name`
+and `authServer.gateway.namespace` to that Gateway and `gateway.authHttpsListener` to its HTTPS listener for that host
+(the render fails while these don't line up). Set `mail.trustedAuthservId` to the authserv-id your inbound MTA stamps:
+while it's empty no sender is DKIM-verified, so members-only distribution lists drop all mail, list and forward-rule
+copies get a rewritten From, and forwarded invites are refused. `/api/metrics`
 requires a token with a trusted role, so scrape it with a bearer token rather than `prometheus.io/*` annotations.
 
 #### From GHCR

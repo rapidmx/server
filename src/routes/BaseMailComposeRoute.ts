@@ -17,7 +17,18 @@ import {
     RepoUtils,
     RouteDecorators,
 } from "@rapidrest/service-core";
-import { Attachment, BlobStore, Folder, FolderType, Mailbox, Matter, Message, Recipient, RecipientType } from "@rapidmx/restapi";
+import {
+    Attachment,
+    BlobStore,
+    Folder,
+    FolderType,
+    Mailbox,
+    Matter,
+    Message,
+    Recipient,
+    RecipientType,
+    withRetainedBodyBlobKey,
+} from "@rapidmx/restapi";
 import { DEFAULT_MAX_COMPOSE_ATTACHMENT_BYTES } from "../config.defaults.js";
 const { Config, Inject } = ObjectDecorators;
 const { Description, Returns, Summary } = DocDecorators;
@@ -534,11 +545,22 @@ export abstract class BaseMailComposeRoute<M extends Message, A extends Attachme
      * Stores `raw` as a new body blob and points the draft at it. Each assemble writes a new blob (the old key may be
      * read by a send in progress), so the one it replaces is deleted afterwards - only when this compose path created
      * it (`bodies/`; an EAS/MAPI send handler uses the same prefix for the same purpose) and no message row, deleted
-     * ones included, still references it, and the mailbox isn't under a legal hold. When the update fails (e.g. a
-     * concurrent edit's version conflict) the new blob is deleted instead and the draft keeps its old one.
+     * ones included, still references it. When the update fails (e.g. a concurrent edit's version conflict) the new
+     * blob is deleted instead and the draft keeps its old one.
+     *
+     * While the mailbox is under a legal hold the replaced `bodies/` blob is kept, and recorded in the draft's
+     * `retainedBodyBlobKeys` by the same version-checked update that sets the new `bodyBlobKey` (restapi's
+     * `withRetainedBodyBlobKey()`), so matter exports can still reach it and retention enforcement can clean it up once
+     * the hold ends. A draft that already retains `MAX_RETAINED_BODY_BLOB_KEYS` bodies can't be saved again (409).
      */
     private async storeBody(message: M, raw: Buffer, user: JWTUser | undefined, patch: Record<string, unknown>): Promise<M> {
         const previousKey: string | undefined = (message as any).bodyBlobKey;
+        const replacesComposedBody: boolean = typeof previousKey === "string" && previousKey.startsWith(COMPOSED_BODY_PREFIX);
+        // Asked once per save, before the update, so the retained key lands in the same version-checked write.
+        const held: boolean = replacesComposedBody && (await this.isHeldForBodyReplacement(message.mailboxUid));
+        // Throws 409 at the bound, before anything is written.
+        const retained: Record<string, unknown> = held ? { retainedBodyBlobKeys: withRetainedBodyBlobKey(message, previousKey) } : {};
+
         const bodyBlobKey = `${COMPOSED_BODY_PREFIX}${crypto.randomUUID()}`;
         await this.blobStore!.put(bodyBlobKey, raw, { contentType: "message/rfc822" });
 
@@ -550,7 +572,7 @@ export abstract class BaseMailComposeRoute<M extends Message, A extends Attachme
         let updated: M;
         try {
             updated = await this.messageRepo!.update(
-                { uid: message.uid, version: (message as any).version, ...patch, bodyBlobKey } as any,
+                { uid: message.uid, version: (message as any).version, ...patch, ...retained, bodyBlobKey } as any,
                 existing,
                 { user, ignoreACL: true },
             );
@@ -559,15 +581,14 @@ export abstract class BaseMailComposeRoute<M extends Message, A extends Attachme
             throw err;
         }
 
-        if (typeof previousKey === "string" && previousKey.startsWith(COMPOSED_BODY_PREFIX) && previousKey !== bodyBlobKey) {
+        if (replacesComposedBody && !held) {
             try {
                 const references: number = await this.messageRepo!.count(
                     { bodyBlobKey: `eq(${previousKey})` },
                     { ignoreACL: true, includeDeleted: true },
                 );
-                // A mailbox under legal hold keeps every body it had: the superseded draft content may be discoverable.
-                if (references === 0 && !(await this.hasActiveLegalHold(message.mailboxUid))) {
-                    await this.blobStore!.delete(previousKey);
+                if (references === 0) {
+                    await this.blobStore!.delete(previousKey!);
                 }
             } catch (err: any) {
                 // The draft is already updated; a leftover blob is only wasted storage.
@@ -575,6 +596,22 @@ export abstract class BaseMailComposeRoute<M extends Message, A extends Attachme
             }
         }
         return updated;
+    }
+
+    /**
+     * Whether a replaced draft body must be kept for a legal hold on `mailboxUid`. A failing lookup counts as held: the
+     * body is then kept and recorded, which retention enforcement undoes once it finds no hold, whereas deleting it
+     * could lose discoverable content.
+     */
+    private async isHeldForBodyReplacement(mailboxUid: string): Promise<boolean> {
+        try {
+            return await this.hasActiveLegalHold(mailboxUid);
+        } catch (err: any) {
+            (this._objectFactory as any)?.logger?.warn?.(
+                `Legal hold lookup for mailbox ${mailboxUid} failed; keeping the replaced draft body: ${err?.message ?? err}`,
+            );
+            return true;
+        }
     }
 
     /**

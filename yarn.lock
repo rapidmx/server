@@ -1833,7 +1833,7 @@ __metadata:
 
 "@rapidmx/react-shared@patch:@rapidmx/react-shared@npm%3A0.4.0#~/.yarn/patches/@rapidmx-react-shared-npm-0.4.0-e713beecf2.patch":
   version: 0.4.0
-  resolution: "@rapidmx/react-shared@patch:@rapidmx/react-shared@npm%3A0.4.0#~/.yarn/patches/@rapidmx-react-shared-npm-0.4.0-e713beecf2.patch::version=0.4.0&hash=c543cd"
+  resolution: "@rapidmx/react-shared@patch:@rapidmx/react-shared@npm%3A0.4.0#~/.yarn/patches/@rapidmx-react-shared-npm-0.4.0-e713beecf2.patch::version=0.4.0&hash=c2c436"
   dependencies:
     "@emoji-mart/data": "npm:^1.2.1"
     "@peculiar/x509": "npm:^2.1.0"
@@ -1848,7 +1848,7 @@ __metadata:
   peerDependencies:
     react: 19.x
     react-dom: 19.x
-  checksum: 10c0/e50e95fa01f8af5d81812f4635830906e89a889b0ee14be156981eed13d7e1547ba0a0f58c83dccab30b24b0081fb48282f856359662ef4807a83f9d27b95137
+  checksum: 10c0/a7827e94c3df163cd5a6659cb1ff57ce6a1c02dfeff09b2836e49365f2ccbe5281004c5d865c92150823e735dea575c71136bd36305937924132a01b1ecd421c
   languageName: node
   linkType: hard
 
@@ -1891,7 +1891,7 @@ __metadata:
 
 "@rapidmx/restapi@patch:@rapidmx/restapi@npm%3A0.8.0#~/.yarn/patches/@rapidmx-restapi-npm-0.8.0-d588a97668.patch":
   version: 0.8.0
-  resolution: "@rapidmx/restapi@patch:@rapidmx/restapi@npm%3A0.8.0#~/.yarn/patches/@rapidmx-restapi-npm-0.8.0-d588a97668.patch::version=0.8.0&hash=78104d"
+  resolution: "@rapidmx/restapi@patch:@rapidmx/restapi@npm%3A0.8.0#~/.yarn/patches/@rapidmx-restapi-npm-0.8.0-d588a97668.patch::version=0.8.0&hash=1be930"
   dependencies:
     "@peculiar/x509": "npm:^2.1.0"
     acme-client: "npm:^5.4.0"
@@ -1922,7 +1922,7 @@ __metadata:
       optional: true
     pdf-parse:
       optional: true
-  checksum: 10c0/49d40a30e797cda9ff74444547a69553213016132242029e3ffa802a8d796e171b12abd9ae73298c95207b1c6404b4b126c2e2d48918295f797fe2871df3e95f
+  checksum: 10c0/36ef728b0b6ee0f20a7c92ad545a9c0941e401cc0ac16301ac3ea581d30f2458908856087f51607174292ce10e5ec522c949e3a2429366a4bbc4d1cf24421e45
   languageName: node
   linkType: hard
 
@@ -1961,7 +1961,7 @@ __metadata:
 
 "@rapidmx/web-client@patch:@rapidmx/web-client@npm%3A0.4.0#~/.yarn/patches/@rapidmx-web-client-npm-0.4.0-bf47c7c6fa.patch":
   version: 0.4.0
-  resolution: "@rapidmx/web-client@patch:@rapidmx/web-client@npm%3A0.4.0#~/.yarn/patches/@rapidmx-web-client-npm-0.4.0-bf47c7c6fa.patch::version=0.4.0&hash=50779c"
+  resolution: "@rapidmx/web-client@patch:@rapidmx/web-client@npm%3A0.4.0#~/.yarn/patches/@rapidmx-web-client-npm-0.4.0-bf47c7c6fa.patch::version=0.4.0&hash=7fbc13"
   dependencies:
     "@dnd-kit/core": "npm:^6.3.1"
     "@journeyapps/wa-sqlite": "npm:^2.0.4"
@@ -1988,7 +1988,7 @@ __metadata:
   peerDependencies:
     react: 19.x
     react-dom: 19.x
-  checksum: 10c0/107fc89084ef180a2ca3dd597f31930e7e931dcc5e4a0329089cd21b72ef2a9b791c1c64f67e06f8003e3c4113c5b47860ddf46b802bf9c8037ae351f749a59d
+  checksum: 10c0/97d37cdeaf310288a4cbf7d6836fda3d0a3fc22785c942d364eed6e3fa62c4882275aafce85da0708e30860998aa9cf9ca223264624b2a2dd932881cfa5a9a0f
   languageName: node
   linkType: hard
 

@@ -4,6 +4,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonResponse, mockFetch } from "../testUtils.js";
 import {
+    MAX_REQUESTS_PER_PAGE,
     MAX_SLOTS_PER_RESPONSE,
     SLOT_CHUNK_DAYS,
     appendSlots,
@@ -55,20 +56,35 @@ describe("_slotPaging", () => {
         expect(page.next).toBeNull();
     });
 
-    it("skips fully booked chunks until it finds a slot", async () => {
-        const later = slotAt(NOW + 65 * DAY);
-        const requested = mockSlots([[], [], [later]]);
+    it("skips a fully booked chunk until it finds a slot", async () => {
+        const later = slotAt(NOW + 35 * DAY);
+        const requested = mockSlots([[], [later]]);
         const page = await fetchSlotPage("intro-call", initialSlotCursor(120, NOW));
 
-        expect(requested.map((r) => r.from)).toEqual([NOW, NOW + 30 * DAY, NOW + 60 * DAY]);
+        expect(requested.map((r) => r.from)).toEqual([NOW, NOW + 30 * DAY]);
         expect(page.slots).toEqual([later]);
-        expect(page.next).toEqual({ from: NOW + 90 * DAY, horizon: NOW + 120 * DAY });
+        expect(page.next).toEqual({ from: NOW + 60 * DAY, horizon: NOW + 120 * DAY });
     });
 
-    it("returns an empty, final page when nothing is open in the whole window", async () => {
-        const requested = mockSlots([[], [], []]);
-        const page = await fetchSlotPage("intro-call", initialSlotCursor(90, NOW));
-        expect(requested).toHaveLength(3);
+    it("stops after MAX_REQUESTS_PER_PAGE empty chunks, returning an empty page that can continue", async () => {
+        // The anonymous slots endpoint shares a per-IP rate limit, so a long fully booked window isn't walked in one go.
+        expect(MAX_REQUESTS_PER_PAGE).toBe(2);
+        const later = slotAt(NOW + 65 * DAY);
+        const requested = mockSlots([[], [], [later]]);
+
+        const first = await fetchSlotPage("intro-call", initialSlotCursor(365, NOW));
+        expect(requested).toHaveLength(2);
+        expect(first).toEqual({ slots: [], next: { from: NOW + 60 * DAY, horizon: NOW + 365 * DAY } });
+
+        const second = await fetchSlotPage("intro-call", first.next!);
+        expect(requested.map((r) => r.from)).toEqual([NOW, NOW + 30 * DAY, NOW + 60 * DAY]);
+        expect(second.slots).toEqual([later]);
+    });
+
+    it("returns an empty, final page when nothing is open in the rest of the window", async () => {
+        const requested = mockSlots([[], []]);
+        const page = await fetchSlotPage("intro-call", initialSlotCursor(60, NOW));
+        expect(requested).toHaveLength(2);
         expect(page).toEqual({ slots: [], next: null });
     });
 

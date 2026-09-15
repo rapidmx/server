@@ -1791,10 +1791,10 @@ index 8381881fb1ee3419b5547a3dcfc31eb27327f8d9..989e33c8bcdaa1221ffed12e0221c62a
 -export declare function unlockWithPassword(mailboxUid: string, mailboxKeys: PublicKey[], password: string): Promise<void>;
 +export declare function unlockWithPassword(mailboxUid: string, mailboxKeys: PublicKey[], password: string): Promise<UnlockResult>;
 diff --git a/dist/crypto/keySession.js b/dist/crypto/keySession.js
-index 763759b94580beb99c25cdf780ab1cad7a6f8e60..b6b495f23d451da3431a1900d66a1e823ce7b6d5 100644
+index 763759b94580beb99c25cdf780ab1cad7a6f8e60..3817e0c0ef7427ab1f504137dd2cee1aa7a396d0 100644
 --- a/dist/crypto/keySession.js
 +++ b/dist/crypto/keySession.js
-@@ -1,35 +1,154 @@
+@@ -1,35 +1,166 @@
 +///////////////////////////////////////////////////////////////////////////////
 +// Copyright (C) 2026 Jean-Philippe Steinmetz
 +// SPDX-License-Identifier: MPL-2.0
@@ -1833,9 +1833,18 @@ index 763759b94580beb99c25cdf780ab1cad7a6f8e60..b6b495f23d451da3431a1900d66a1e82
  export const ENCRYPTION_PRIVATE_KEY_AAD_PURPOSE = "encrypt-private-key";
 +export { KeysLockedError };
  const sessions = new Map();
++/** A weak reference to `target` where the runtime has `WeakRef` (every supported browser and Node), otherwise a
++ * strong one - a missing `WeakRef` must never make a lock skip an object. */
++function weakHandle(target) {
++    const WeakRefCtor = globalThis.WeakRef;
++    return WeakRefCtor ? new WeakRefCtor(target) : { deref: () => target };
++}
 +/** Every `UnlockedKeys` object this store has handed out per mailbox and not yet destroyed - a re-unlock
 + * replaces the store entry but leaves the previous object usable for in-flight consumers, so a lock must
-+ * reach all of them, not only the newest. */
++ * reach all of them, not only the newest. Held *weakly*: the current object is kept alive by `sessions`, and a
++ * replaced one (e.g. holding a pre-rotation master key) only for as long as some consumer still references it -
++ * once nothing does, it can be collected instead of lingering until the next lock. A lock destroys every one
++ * still reachable, which is every one anybody could still use. */
 +const issued = new Map();
 +/** Bumped by every `destroyUnlockedKeys()` call for that mailbox (`lockAllGeneration` for a destroy-all),
 + * so an unlock still awaiting the vault/KDF when a lock happens can tell and discard what it unwrapped. */
@@ -1910,8 +1919,11 @@ index 763759b94580beb99c25cdf780ab1cad7a6f8e60..b6b495f23d451da3431a1900d66a1e82
 +        if (!objects) {
 +            continue;
 +        }
-+        for (const unlocked of objects) {
-+            destroyObject(unlocked);
++        for (const handle of objects) {
++            const unlocked = handle.deref();
++            if (unlocked) {
++                destroyObject(unlocked);
++            }
 +        }
 +        issued.delete(uid);
 +        sessions.delete(uid);
@@ -1956,7 +1968,7 @@ index 763759b94580beb99c25cdf780ab1cad7a6f8e60..b6b495f23d451da3431a1900d66a1e82
  /**
   * Unlocks a mailbox's key vault with its password unlock method: fetches the vault, derives the
   * wrapping key from `password` using the *exact* KDF parameters that wrap was created with, unwraps
-@@ -37,10 +156,15 @@ function findWrappedPrivateKey(vault, fingerprint) {
+@@ -37,10 +168,15 @@ function findWrappedPrivateKey(vault, fingerprint) {
   * currently-active public keys for. Stores the result in this module's in-memory session store.
   *
   * Throws (never silently no-ops) when there's no password wrap enrolled, or when the password is
@@ -1974,7 +1986,7 @@ index 763759b94580beb99c25cdf780ab1cad7a6f8e60..b6b495f23d451da3431a1900d66a1e82
      const vault = await getKeyVault(mailboxUid);
      const passwordWrap = vault.masterKeyWraps.find((w) => w.method === "password");
      if (!passwordWrap) {
-@@ -54,21 +178,61 @@ export async function unlockWithPassword(mailboxUid, mailboxKeys, password) {
+@@ -54,21 +190,68 @@ export async function unlockWithPassword(mailboxUid, mailboxKeys, password) {
      const { wrappingKey } = await deriveFromPassword(password, salt, kdfParams);
      const masterKey = await openWithKey(wrappingKey, { ciphertext: passwordWrap.ciphertext, nonce: passwordWrap.nonce }, buildAad(mailboxUid, MASTER_KEY_AAD_PURPOSE));
      const unlocked = { masterKey };
@@ -2042,10 +2054,17 @@ index 763759b94580beb99c25cdf780ab1cad7a6f8e60..b6b495f23d451da3431a1900d66a1e82
 +    // A re-unlock replacing existing keys (e.g. `settings/encryption`'s post-rotation refresh) deliberately
 +    // does NOT zero the previous entry's master key: an in-flight consumer that captured the old
 +    // `UnlockedKeys` object (e.g. a local-index build pass) is still legitimately using it, and nothing
-+    // "destroyed" the session - only `destroyUnlockedKeys()` does that, and it destroys every issued object.
++    // "destroyed" the session - only `destroyUnlockedKeys()` does that, and it destroys every issued object still
++    // reachable. The store itself keeps the replaced object only weakly (see `issued`).
      sessions.set(mailboxUid, unlocked);
 +    const objects = issued.get(mailboxUid) ?? new Set();
-+    objects.add(unlocked);
++    // Drop handles whose object was already collected, so repeated re-unlocks don't grow the set.
++    for (const handle of objects) {
++        if (!handle.deref()) {
++            objects.delete(handle);
++        }
++    }
++    objects.add(weakHandle(unlocked));
 +    issued.set(mailboxUid, objects);
 +    notify({ mailboxUid, state: "unlocked" });
 +    return { unopenableKeys };
@@ -2097,7 +2116,7 @@ index 509f0888cb0a588e1a404f15baacb2dad03fc613..eddf7c9f701060061d52b3d7c9bfcf87
 +    return crypto.subtle.importKey("pkcs8", raw, algorithm, extractable, usages);
  }
 diff --git a/dist/crypto/keyvaultApi.d.ts b/dist/crypto/keyvaultApi.d.ts
-index 45315c0fcf96ad7b4dcc6865ad0f1ef41a32b7ce..32f80d2f4a443246ad3c112aace8c0d51ef1b7c7 100644
+index 45315c0fcf96ad7b4dcc6865ad0f1ef41a32b7ce..c619529fc068ae6c43e9c5740372c010f887230c 100644
 --- a/dist/crypto/keyvaultApi.d.ts
 +++ b/dist/crypto/keyvaultApi.d.ts
 @@ -1,3 +1,12 @@
@@ -2113,19 +2132,40 @@ index 45315c0fcf96ad7b4dcc6865ad0f1ef41a32b7ce..32f80d2f4a443246ad3c112aace8c0d5
  /** A cryptographic public key used to sign or encrypt messages — safe to expose publicly. Mirrors
   * `@rapidmx/restapi`'s `PublicKey` type exactly. */
  export interface PublicKey {
-@@ -67,6 +76,11 @@ export declare function getKeyVault(mailboxUid: string): Promise<KeyVault>;
+@@ -58,6 +67,18 @@ export interface KeyConflict {
+ export interface KeyVault {
+     wrappedKeys: WrappedPrivateKey[];
+     masterKeyWraps: MasterKeyWrap[];
++    /** How many times the vault's master key has been rotated (`0` for never, and for no vault yet). Send it back as
++     * `expectedMasterKeyGeneration` on a write whose key material was sealed under the master key read with this vault
++     * (`enrollKey()`, `startSignEnrollment()`, `addMasterKeyWrap()`, `rekey()`), so restapi refuses it with `409` if
++     * another device rotated the master key meanwhile. Absent from servers that don't track it yet. */
++    masterKeyGeneration?: number;
++}
++/** The optional optimistic check restapi applies to vault writes carrying key material sealed under the master key. */
++export interface ExpectedMasterKeyGeneration {
++    /** The `KeyVault.masterKeyGeneration` read alongside the master key this request's material is sealed under. When
++     * given and the vault's generation has moved on, restapi answers `409` instead of installing material nobody can
++     * open with the current master key. Omitted, the write is accepted as before. */
++    expectedMasterKeyGeneration?: number;
+ }
+ /** Fetches the caller's key vault (wrapped private keys + wrapped master-key copies) for `mailboxUid`. */
+ export declare function getKeyVault(mailboxUid: string): Promise<KeyVault>;
+@@ -67,7 +88,12 @@ export declare function getKeyVault(mailboxUid: string): Promise<KeyVault>;
   * mail, never removed, per the spec's own key-lifecycle rules. Shared by `crypto/keySession.ts` (the
   * mailbox's own keys) and `crypto/composeSecurity.ts` (a recipient's discovered keys). */
  export declare function findActivePublicKey(keys: PublicKey[], useType: "sign" | "encrypt"): PublicKey | undefined;
+-export interface EnrollKeyInput {
 +/** The fingerprints (lowercased) of every signing key in `keys` that hasn't been revoked - the trusted pins to pass
 + * to `messageSecurity.ts`'s `evaluateMessageSecurity()` for a `Contact` (its TOFU-pinned `keys`, which only key
 + * discovery can write) or a `Mailbox` (its own `keys`). Expired keys are kept: mail signed while a key was valid
 + * stays verifiable after it expires. */
 +export declare function signingKeyFingerprints(keys: PublicKey[] | undefined): string[];
- export interface EnrollKeyInput {
++export interface EnrollKeyInput extends ExpectedMasterKeyGeneration {
      useType: "sign" | "encrypt";
      /** PEM-encoded PKCS#10 CSR — required (and only meaningful) for `useType: "encrypt"`; the server
-@@ -78,8 +92,19 @@ export interface EnrollKeyInput {
+      * calls its own internal CA against this CSR. */
+@@ -78,10 +104,21 @@ export interface EnrollKeyInput {
      /** Only meaningful the very first time a mailbox enrolls a key at all (bootstraps its master key). */
      masterKeyWraps?: MasterKeyWrap[];
  }
@@ -2144,9 +2184,12 @@ index 45315c0fcf96ad7b4dcc6865ad0f1ef41a32b7ce..32f80d2f4a443246ad3c112aace8c0d5
 + * matter for which `useType`. Rejects with `VaultAlreadyInitializedError` when `masterKeyWraps` were supplied
 + * but the vault is already set up (see that class). */
  export declare function enrollKey(mailboxUid: string, input: EnrollKeyInput): Promise<KeyVault>;
- export interface SignEnrollmentRequest {
+-export interface SignEnrollmentRequest {
++export interface SignEnrollmentRequest extends ExpectedMasterKeyGeneration {
      /** A PEM-encoded PKCS#10 CSR for the signing key pair to enroll. */
-@@ -111,6 +136,10 @@ export declare function startSignEnrollment(mailboxUid: string, input: SignEnrol
+     csr: string;
+     wrappedKey: Omit<WrappedPrivateKey, "fingerprint" | "useType">;
+@@ -111,6 +148,10 @@ export declare function startSignEnrollment(mailboxUid: string, input: SignEnrol
  /** Reports the current status of a previously started automated enrollment — see
   * `startSignEnrollment()`. */
  export declare function checkSignEnrollmentStatus(mailboxUid: string, enrollmentId: string): Promise<EnrollmentResult>;
@@ -2157,9 +2200,21 @@ index 45315c0fcf96ad7b4dcc6865ad0f1ef41a32b7ce..32f80d2f4a443246ad3c112aace8c0d5
  /** An escrow scope's public key, exposed only via `getEscrowInfo()` below. Mirrors `@rapidmx/restapi`'s
   * `EscrowScopePublicKey` exactly - the same shape as `PublicKey` minus `useType` (an escrow scope's key
   * is only ever used for encryption, never signing). */
-@@ -146,11 +175,16 @@ export declare function addMasterKeyWrap(mailboxUid: string, wrap: MasterKeyWrap
+@@ -138,19 +179,25 @@ export interface EscrowInfo {
+  * against. */
+ export declare function getEscrowInfo(mailboxUid: string): Promise<EscrowInfo>;
+ /** Adds a wrapped copy of the master key for a new unlock method (e.g. registering a new passkey),
+- * independent of key enrollment. Requires an already-initialized vault. */
+-export declare function addMasterKeyWrap(mailboxUid: string, wrap: MasterKeyWrap): Promise<KeyVault>;
++ * independent of key enrollment. Requires an already-initialized vault. `expectedMasterKeyGeneration`, when given, is
++ * sent alongside the wrap (see `ExpectedMasterKeyGeneration`): a `409` then means the master key was rotated since. */
++export declare function addMasterKeyWrap(mailboxUid: string, wrap: MasterKeyWrap, expectedMasterKeyGeneration?: number): Promise<KeyVault>;
+ /** Removes a wrapped copy of the master key for one unlock method. `methodId` is required whenever more
+  * than one wrap could share the same `method` (e.g. multiple passkeys). This alone does NOT revoke
+  * access for anyone who already captured the wrapped blob — see `rekey()`. */
  export declare function removeMasterKeyWrap(mailboxUid: string, method: string, methodId?: string): Promise<KeyVault>;
- export interface RekeyInput {
+-export interface RekeyInput {
++export interface RekeyInput extends ExpectedMasterKeyGeneration {
      wrappedKeys: WrappedPrivateKey[];
 +    /** Every wrap of the new master key. For a mailbox assigned an escrow scope, this must include a fresh escrow wrap
 +     * for that scope (`buildEscrowWrap()`): `rekey()` drops the old escrow wraps and refuses (409) an escrowed
@@ -2176,7 +2231,7 @@ index 45315c0fcf96ad7b4dcc6865ad0f1ef41a32b7ce..32f80d2f4a443246ad3c112aace8c0d5
  /** The wire shape `GET /mail/mailboxes/:id/keys/lookup` returns. */
  export interface KeyLookupResult {
 diff --git a/dist/crypto/keyvaultApi.js b/dist/crypto/keyvaultApi.js
-index 0c20e1474cff85aa06a91446979ccab550d1b282..3baaa04235491512866af4bcd6f78bf3a8182ea6 100644
+index 0c20e1474cff85aa06a91446979ccab550d1b282..c5389143651305906febee8c39e8516e8f97ddc8 100644
 --- a/dist/crypto/keyvaultApi.js
 +++ b/dist/crypto/keyvaultApi.js
 @@ -10,7 +10,7 @@
@@ -2253,7 +2308,24 @@ index 0c20e1474cff85aa06a91446979ccab550d1b282..3baaa04235491512866af4bcd6f78bf3
  /** Fetches `{escrowScopeId, publicKey}` for the `EscrowScope` this mailbox is currently assigned to
   * (`Mailbox.escrowScopeId`, an admin-only assignment - see `EscrowInfo`'s own doc comment). 404s if the
   * mailbox has no escrow scope assigned, the scope no longer exists, or the caller can't access this
-@@ -78,7 +116,9 @@ export function removeMasterKeyWrap(mailboxUid, method, methodId) {
+@@ -61,11 +99,13 @@ export function getEscrowInfo(mailboxUid) {
+     return apiFetch(`/mail/mailboxes/${encodeURIComponent(mailboxUid)}/escrow-info`);
+ }
+ /** Adds a wrapped copy of the master key for a new unlock method (e.g. registering a new passkey),
+- * independent of key enrollment. Requires an already-initialized vault. */
+-export function addMasterKeyWrap(mailboxUid, wrap) {
++ * independent of key enrollment. Requires an already-initialized vault. `expectedMasterKeyGeneration`, when given, is
++ * sent alongside the wrap (see `ExpectedMasterKeyGeneration`): a `409` then means the master key was rotated since. */
++export function addMasterKeyWrap(mailboxUid, wrap, expectedMasterKeyGeneration) {
++    const body = expectedMasterKeyGeneration === undefined ? wrap : { ...wrap, expectedMasterKeyGeneration };
+     return apiFetch(`/mail/mailboxes/${encodeURIComponent(mailboxUid)}/keyvault/wraps`, {
+         method: "POST",
+-        body: JSON.stringify(wrap),
++        body: JSON.stringify(body),
+     });
+ }
+ /** Removes a wrapped copy of the master key for one unlock method. `methodId` is required whenever more
+@@ -78,7 +118,9 @@ export function removeMasterKeyWrap(mailboxUid, method, methodId) {
      });
  }
  /** Full, atomic replacement of the mailbox's key-vault contents — the only real revocation mechanism

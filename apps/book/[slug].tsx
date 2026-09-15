@@ -164,10 +164,12 @@ function BookingContent({ slug, logoSrc }: { slug: string; logoSrc: string }) {
                         <p className="text-xs text-text-muted mb-4">{bookingType.durationMinutes} minutes</p>
 
                         {!selectedSlot ? (
-                            slots.length === 0 ? (
+                            slots.length === 0 && !nextSlots ? (
                                 <p className="text-sm text-text-muted">No open slots right now — please check back later.</p>
                             ) : (
                                 <div className="flex flex-col gap-4 max-h-96 overflow-y-auto">
+                                    {/* fetchSlotPage() stops after a couple of fully booked windows, leaving the rest to the button. */}
+                                    {slots.length === 0 && <p className="text-sm text-text-muted">No open times in the next few weeks.</p>}
                                     {[...grouped.entries()].map(([date, daySlots]) => (
                                         <div key={date}>
                                             <h2 className="text-sm font-semibold mb-2">{date}</h2>

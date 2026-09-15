@@ -39,7 +39,7 @@ import { selectConfigDrivenBackend } from "./lib/configDrivenBackend.js";
 
 import * as fs from "fs";
 import { readFile } from "fs/promises";
-import { assertProductionSecretsAreSet, DEVELOPMENT_ENVIRONMENTS } from "./config.defaults.js";
+import { assertProductionSecretsAreSet, DEVELOPMENT_ENVIRONMENTS, trustedAuthservIdWarning } from "./config.defaults.js";
 import { configMs, DEFAULT_RELEASE_TIMEOUT_MS, drainAndStop, withTimeout } from "./lib/gracefulShutdown.js";
 import { startTelemetryToken } from "./lib/telemetryToken.js";
 import { PluginMongo } from "@rapidmx/restapi/mongo";
@@ -57,6 +57,11 @@ assertProductionSecretsAreSet(config, process.env.NODE_ENV);
 
 const logLevel: string = config.get("logger:level") || (environment === "production" ? "info" : "debug");
 const logger = Logger(logLevel, config.get("logger:file"));
+// One line while mail:security:trusted_authserv_id is empty, naming the mail features that are off until it's set.
+const authservIdWarning: string | undefined = trustedAuthservIdWarning(config);
+if (authservIdWarning) {
+    logger.warn(authservIdWarning);
+}
 console.log("Log Level=" + logLevel);
 
 const objectFactory = new ObjectFactory(config, logger);

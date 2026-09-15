@@ -213,14 +213,18 @@ conf.defaults({
             key_dir: "/var/lib/rspamd/dkim",
             selector: "mail",
         },
-        // Consumed by RapidMX-Key header / MDN receipt processing (KeyringUtils, ReceiptUtils in
-        // @rapidmx/restapi) to decide which Authentication-Results the upstream MTA/DKIM-verifier can be
-        // trusted to have stamped. Left empty by default (fail closed - per @rapidmx/restapi's own design,
-        // an unset trusted_authserv_id means every Authentication-Results header is treated as
-        // unauthenticated, so RapidMX-Key/receipt trust checks pass nothing at all). An admin MUST set this
-        // to the exact authserv-id string their MTA (Postfix/rspamd - see docker-compose.mail.yml) stamps
-        // before enabling E2E encryption, receipt verification, calendar iTIP replies/cancellations, message
-        // recalls or ACME email challenges in production (all are ignored until it is set). Helm: mail.trustedAuthservId.
+        // The authserv-id whose Authentication-Results this server trusts to say a message's From is DKIM-verified
+        // (@rapidmx/restapi's verifiedFromAddress()/hasAlignedPassingDkim(), used by ingest, ScanQueueJob, KeyringUtils
+        // and ReceiptUtils). Left empty by default: fail closed, every Authentication-Results header is treated as
+        // unauthenticated. Until an admin sets it to the exact authserv-id their MTA (Postfix/rspamd - see
+        // docker-compose.mail.yml) stamps:
+        //   - messages to a distribution list that only lets members send are all dropped (no sender is a verified member);
+        //   - distribution list relay copies and mail filter forward-rule copies are sent with From rewritten to the list or
+        //     the forwarding mailbox (the original sender moves to X-Original-From / Reply-To);
+        //   - forwarded or list-relayed calendar invites (iTIP content) are refused;
+        //   - published-key discovery via RapidMX-Key headers, read receipt verification, calendar iTIP
+        //     replies/cancellations, message recalls and ACME email challenges are ignored.
+        // The server logs a warning at startup while it's empty (trustedAuthservIdWarning()). Helm: mail.trustedAuthservId.
         security: {
             trusted_authserv_id: "",
         },

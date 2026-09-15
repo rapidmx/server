@@ -4,6 +4,7 @@
 {{- $authHost := $.Values.authServer.host }}
 {{- $authHttpsListener := include "server.authHttpsListener" $ }}
 {{- $ownsGateway := eq (include "server.ownsGateway" $) "true" }}
+{{- include "server.assertAuthServerRouting" $ }}
 {{- if $ownsGateway }}
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway

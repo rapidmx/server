@@ -211,10 +211,17 @@ authServer:
   create: true
   # Kubernetes names must be lowercase; without this the subchart names its resources after the "authServer" alias.
   nameOverride: auth-server
+  # The auth-server's public host name: sign-in redirects browsers here (mail__auth_server_url). Set it (e.g.
+  # auth.<host>) whenever `host` is public - the render fails while it's still a localhost name.
   host: auth.localhost
   environment: production
   gateway:
     create: false
+    # The subchart routes authServer.host on its own gateway.name/gateway.namespace (default: this chart's api-gateway in
+    # the release namespace). When the server attaches to a Gateway this chart doesn't own, set both to that Gateway's
+    # name and namespace (the render fails otherwise), and gateway.authHttpsListener for HTTPS.
+    # name: shared-gateway
+    # namespace: gateway-namespace
   auth:
     audience: mail-server-api
     issuer: mail-server-api
@@ -272,10 +279,17 @@ mail:
   # This deployment's public MX hostname (the Reporting-UA of outgoing read receipts, and what domain DNS checks
   # expect MX records to point at) - normally postfix-bridge's own mail.hostname. Defaults to `host`.
   mxHostname: ''
-  # The exact authserv-id your inbound MTA/DKIM verifier (postfix-bridge's milter) stamps on Authentication-Results.
-  # Left empty, every Authentication-Results header is untrusted (fail closed): published-key discovery via
-  # RapidMX-Key headers, read receipt verification, calendar iTIP replies/cancellations, message recalls and
-  # ACME email challenges are all ignored. Set it before relying on any of those.
+  # The exact authserv-id your inbound MTA/DKIM verifier (postfix-bridge's milter) stamps on Authentication-Results
+  # (mail__security__trusted_authserv_id). Left empty, every Authentication-Results header is untrusted (fail closed),
+  # so no sender is ever DKIM-verified:
+  #   - every message to a distribution list that only lets members send is dropped;
+  #   - distribution list relay copies and mail filter forward-rule copies go out with From rewritten to the list or
+  #     the forwarding mailbox;
+  #   - forwarded or list-relayed calendar invites are refused;
+  #   - published-key discovery via RapidMX-Key headers, read receipt verification, calendar iTIP
+  #     replies/cancellations, message recalls and ACME email challenges are ignored.
+  # The server logs a warning at startup and NOTES.txt repeats it while this is empty. Set it for any real mail
+  # deployment.
   trustedAuthservId: ''
   # Where outbound mail is relayed (scripts/docker-entrypoint.sh writes the msmtp config PostfixSendmailTransport sends
   # through): the Postfix of the separate postfix-bridge chart, whose SMTP Service is named "postfix". Use

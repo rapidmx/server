@@ -179,6 +179,34 @@ https-auth
 {{- end -}}
 
 {{/*
+Fails the render when the bundled auth-server would be unreachable. Sign-in sends browsers to authServer.host
+(mail__auth_server_url), and the auth-server subchart routes that host on its own gateway.name/gateway.namespace, which a
+parent chart can't pass down - they must be set under authServer too:
+- a public `host` with authServer.host still a localhost name (the auth.localhost default) redirects every visitor to a
+  host that doesn't resolve for them;
+- on a Gateway this chart doesn't own, authServer.gateway.name/namespace still pointing at the default api-gateway
+  attach the auth-server HTTPRoute to a Gateway that doesn't exist.
+*/}}
+{{- define "server.assertAuthServerRouting" -}}
+{{- if .Values.authServer.create -}}
+{{- $authHost := .Values.authServer.host -}}
+{{- if and (eq (include "server.publicHost" .Values.host) "true") (ne (include "server.publicHost" $authHost) "true") -}}
+{{- fail (printf "host %q is public but authServer.host is %q, so sign-in would redirect every browser to a host it can't reach. Set authServer.host to the auth-server's public name, e.g. --set authServer.host=auth.%s (and route it through your Gateway)." .Values.host $authHost .Values.host) -}}
+{{- end -}}
+{{- if ne (include "server.ownsGateway" .) "true" -}}
+{{- $gatewayName := tpl .Values.gateway.name . -}}
+{{- $gatewayNamespace := tpl .Values.gateway.namespace . -}}
+{{- $authGateway := .Values.authServer.gateway | default dict -}}
+{{- $authGatewayName := tpl ($authGateway.name | default "api-gateway") . -}}
+{{- $authGatewayNamespace := tpl ($authGateway.namespace | default "{{ .Release.Namespace }}") . -}}
+{{- if or (ne $authGatewayName $gatewayName) (ne $authGatewayNamespace $gatewayNamespace) -}}
+{{- fail (printf "The server attaches to Gateway %s/%s, but the bundled auth-server's HTTPRoute attaches to %s/%s. Set authServer.gateway.name=%s and authServer.gateway.namespace=%s too." $gatewayNamespace $gatewayName $authGatewayNamespace $authGatewayName $gatewayName $gatewayNamespace) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
 "true" when the site is served over HTTPS: a certificate is issued for `host` and a Gateway listener terminates TLS with
 it. Empty otherwise - the routes then attach to the plain HTTP listener, with no redirect, and public URLs use http.
 */}}

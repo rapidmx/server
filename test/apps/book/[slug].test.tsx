@@ -100,7 +100,7 @@ describe("PublicBookingPage", () => {
         expect(screen.getByRole("button", { name: "Show later times" })).toBeEnabled();
     });
 
-    it("skips fully booked stretches both on first load and when showing later times", async () => {
+    it("stops after two fully booked windows on first load and offers Show later times", async () => {
         const DAY = 24 * 60 * 60 * 1000;
         const later = { start: new Date(Date.now() + 100 * DAY).toISOString(), end: new Date(Date.now() + 100 * DAY + 1800000).toISOString() };
         const requested: URLSearchParams[] = [];
@@ -108,23 +108,24 @@ describe("PublicBookingPage", () => {
             if (url === "/api/mail/bookings/types/intro-call") return jsonResponse(200, { ...publicBookingType, bookingWindowDays: 120 });
             if (url.startsWith("/api/mail/bookings/types/intro-call/slots?")) {
                 requested.push(new URL(url, "http://localhost").searchParams);
-                // Windows 1-2 fully booked, window 3 has slot1, window 4 has `later`.
-                return jsonResponse(200, requested.length === 3 ? [slot1] : requested.length === 4 ? [later] : []);
+                // Windows 1-3 fully booked, window 4 has `later`.
+                return jsonResponse(200, requested.length === 4 ? [later] : []);
             }
             return undefined;
         });
         const user = userEvent.setup();
         render(<PublicBookingPage params={{ slug: "intro-call" }} />);
 
-        const slotLabel = new Date(slot1.start).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
-        expect(await screen.findByRole("button", { name: slotLabel })).toBeInTheDocument();
+        // The page load asks for two windows only (the anonymous rate limit is shared per IP), then leaves it to the visitor.
+        expect(await screen.findByText("No open times in the next few weeks.")).toBeInTheDocument();
         expect(screen.queryByText(/No open slots right now/)).not.toBeInTheDocument();
-        expect(requested).toHaveLength(3);
+        expect(requested).toHaveLength(2);
 
         await user.click(screen.getByRole("button", { name: "Show later times" }));
         const laterDate = new Date(later.start).toLocaleDateString(undefined, { weekday: "long", year: "numeric", month: "long", day: "numeric" });
         expect(await screen.findByRole("heading", { name: laterDate })).toBeInTheDocument();
         expect(requested).toHaveLength(4);
+        expect(screen.queryByText("No open times in the next few weeks.")).not.toBeInTheDocument();
         // The 120-day window is exhausted after the fourth 30-day chunk.
         expect(screen.queryByRole("button", { name: "Show later times" })).not.toBeInTheDocument();
     });

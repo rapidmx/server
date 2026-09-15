@@ -284,6 +284,32 @@ describe("ManageBookingPage", () => {
         });
     });
 
+    it("stops after two fully booked windows when rescheduling starts, and offers later times", async () => {
+        const later = { start: "2026-12-01T15:00:00.000Z", end: "2026-12-01T15:30:00.000Z" };
+        const requested: URLSearchParams[] = [];
+        mockPage((url) => {
+            if (url === "/api/mail/bookings/manage/tok123") return jsonResponse(200, booking());
+            if (url === "/api/mail/bookings/types/intro-call") return jsonResponse(200, { ...publicBookingType, bookingWindowDays: 365 });
+            if (url.startsWith("/api/mail/bookings/types/intro-call/slots?")) {
+                requested.push(new URL(url, "http://localhost").searchParams);
+                return jsonResponse(200, requested.length === 3 ? [later] : []);
+            }
+            return undefined;
+        });
+        const user = userEvent.setup();
+        render(<ManageBookingPage params={{ token: "tok123" }} />);
+        await screen.findByRole("heading", { name: "30 Minute Intro Call" });
+
+        await user.click(screen.getByRole("button", { name: "Reschedule" }));
+        expect(await screen.findByText("No open times in the next few weeks.")).toBeInTheDocument();
+        expect(requested).toHaveLength(2);
+
+        await user.click(screen.getByRole("button", { name: "Show later times" }));
+        const label = new Date(later.start).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+        expect(await screen.findByRole("button", { name: label })).toBeInTheDocument();
+        expect(requested).toHaveLength(3);
+    });
+
     it("shows an empty state when there are no slots to reschedule into", async () => {
         mockPage((url) => {
             if (url === "/api/mail/bookings/manage/tok123") return jsonResponse(200, booking());

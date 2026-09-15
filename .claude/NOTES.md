@@ -5222,3 +5222,71 @@ entity/legal hold, raw content audit, `_slotPaging`, both booking pages' paging)
 - **restapi patch:** refreshed to restapi 8e2f16a (its own service-core 2.1.0 migration). Verified with tsc for both configs, lint, and 329/329 tests.
 - **Consumer rule:** code that creates `Folder` or `Mailbox` rows at deterministic uids must go through restapi's `findOrCreateWellKnownFolder()` or pass `allowExistingACL`. service-core 2.1.0 refuses a create at a uid that already has an ACL. No server route does this today.
 - **Test hygiene, pre-existing:** "Tests closed successfully but something prevents 2 Vite servers from exiting" appears after `Server.mongo/sql.test.ts`. The hanging-process reporter shows only FILEHANDLE handles, and it reproduces identically with service-core 2.0.0, so the upgrade didn't cause it. A subset run of only those two files exits 1 because of the close timeout; the full run exits 0.
+
+## 2026-09-15 — Review round 6 fixes: auth-server routing, installer (RHEL, uninstall), escrow key guard, slot paging, trusted_authserv_id, held draft bodies
+
+Every finding was re-checked against the code first. Nothing committed, no version bumps; `.yarn/patches`, package.json
+and yarn.lock are the coordinator's (patch refresh to restapi a662869). `single_node_install.sh` has the user's
+uncommitted Envoy Gateway rework, so installer fixes were delivered as a patch against that working copy instead of
+edited in place (scratchpad `single_node_install.round6.patch`, not in the repo).
+
+1. **HIGH sign-in after install** - confirmed: the installer never set `authServer.host` (stayed `auth.localhost`) or
+   `authServer.gateway.*` (subchart HTTPRoute attached to `api-gateway` in the release namespace, which doesn't exist on a
+   shared Gateway). The user's working copy also passed `gateway.namespace=nginx-gateway` while the Gateway now lives in
+   `envoy-gateway-system`, and had dropped `HTTPS_LISTENER` (TLS never enabled; the static `https` listener had no
+   certificateRefs). Installer patch: `https` (hostname `$DOMAIN`) and `https-auth` (hostname `auth.$DOMAIN`, only when
+   it doesn't contain `.local`, mirroring the subchart's cert condition) listeners with certificateRefs to
+   `$NAMESPACE/<host>-tls-cert`; helm gets `authServer.host`, `authServer.gateway.name/namespace`, `authServer.gateway.tls`,
+   `gateway.authHttpsListener`, and `gateway.namespace=envoy-gateway-system`. Chart: the subchart evaluates its own
+   `host`/`gateway.*` and the parent can't pass values down, so defaulting `authServer.host` from the parent isn't
+   possible - instead `server.assertAuthServerRouting` (included from 3_gateways/api.yaml) fails the render when `host`
+   is public but `authServer.host` isn't, or when the chart doesn't own the Gateway and `authServer.gateway.name/namespace`
+   (parent `.Values.authServer` is coalesced with the subchart defaults - verified) differ from `gateway.*`.
+2. **MEDIUM RHEL nginx** - confirmed (stock nginx.conf `server { listen 80; listen [::]:80; }` in http{}). Patch:
+   `disablePort80HttpServers` (awk, brace-depth aware) comments out http-level server blocks listening on 80 with the
+   `#rapidmx-server# ` prefix, `nginx -t` before restart, `ss` output on a failed restart. Also fixed in the same block:
+   the working copy's RHEL package name was back to `libnginx-mod-stream` (RHEL's is `nginx-mod-stream`) and its
+   `[ ! \`dnf list installed | grep nginx\` ]` test; Debian's `sites-enabled/default` is moved aside instead of deleted.
+3. **LOW uninstall** - state file `/var/lib/rapidmx-installer/state` (`recordInstalled`/`installedBy`, first record wins):
+   k3s, helm (snap|script), nginx (dnf|apt), the port-80 server comment-out, the moved default site, envoy-gateway, the
+   envoy GatewayClass/EnvoyProxy, shared-gateway, cert-manager, the ClusterIssuer, the release. Uninstall undoes only
+   those (k3s-uninstall covers everything in-cluster when k3s was ours), always removes the marked nginx block and the
+   comment prefix, and no longer restores `nginx.conf.bak`. Also: `helm install eg` skipped when the release exists, and
+   the envoy wait no longer tests a stale `$result`.
+4. **LOW escrow HMAC key** - service-secrets.yaml fails the render when a stored `mail__escrow__audit_hmac_key` exists and
+   the explicit one (dedicated value or service.config) differs; message gives the kubectl command to read the stored
+   key and says to remove the Secret key to rotate deliberately. Cookie/session keep "explicit wins" (only logs people
+   out). Verified with a scratch chart copy whose lookups are stubbed.
+5. **LOW slot paging** - `MAX_REQUESTS_PER_PAGE = 2` in `_slotPaging.ts`: `fetchSlotPage()` may now return
+   `{slots: [], next}`. `[slug].tsx` shows "No open times in the next few weeks." plus "Show later times" in that case;
+   the manage page uses the same text above its existing button.
+6. **MEDIUM trusted_authserv_id** - confirmed in restapi (`isVerifiedMemberMessage`/`restrictSenders`, `prepareRelayCopy`,
+   `forwardByRule`). Config comments (both), values.yaml, README, `trustedAuthservIdWarning()` in config.defaults.ts
+   logged once per worker start (all three workers), NOTES.txt warning while neither `mail.trustedAuthservId` nor the
+   service.config key is set.
+7. **MEDIUM held draft bodies** - `storeBody()` checks the hold before writing (only when the replaced key is `bodies/`),
+   adds `retainedBodyBlobKeys: withRetainedBodyBlobKey(message, previousKey)` to the same version-checked update, and
+   never deletes the old blob while held. The 409 at `MAX_RETAINED_BODY_BLOB_KEYS` is thrown before the new blob is
+   stored (so nothing needs deleting). A failing hold lookup counts as held (kept and recorded; RetentionEnforcementJob
+   clears it once no hold). One lookup per request, so no cache was needed.
+8. **Investigation (no change)** - auth-server's `jwt`/`refresh` cookies come from `@rapidrest/auth` `TokenUtils.buildCookie()`:
+   `SameSite=Lax` by default (explicit attribute), HttpOnly, Secure, no `Domain` (host-only on authServer.host).
+   auth-server's config.mongo/sql.ts set no `sameSite`, and neither chart overrides it. The server accepts the `jwt`
+   cookie (`auth.cookie.enabled`), but only receives it when authServer.host equals host. A cross-site `text/plain`
+   POST carries no Lax cookie, so it isn't exploitable; a same-site origin (a sibling subdomain of the same registrable
+   domain) could still send one. service-core's own session cookie also defaults to Lax.
+
+**Open items / not fixed here**
+- The auth-server subchart's HTTPRoute still renders an invalid `tls:` field when its `gateway.tls` is true, which the
+  installer now sets on public TLS installs (needed for its certificate); Helm's schema validation may reject it (other repo).
+- The chart's `gateway.hsts=false` renders an nginx-gateway `NginxHTTPRoute`; the installer patch now always passes
+  `gateway.hsts=true` because Envoy Gateway has no such CRD. The chart itself is still nginx-specific there.
+
+Verified: `npx tsc --noEmit` for tsconfig.json and tsconfig.client.json, `yarn lint`, full `yarn vitest run` 335/335
+(exit 0, coverage gates pass); `helm lint` and `helm template` for localhost, public host without/with authServer.host,
+external Gateway without/with authServer.gateway.*, cluster.local on the shared Gateway, authServer.create=false,
+postgresql; NOTES.txt warning rendered for unset/set/service.config; installer patch: `git apply --check` against a
+copy of the working-tree script (applies cleanly, result identical), `bash -n`, shellcheck 0.11 `-S warning` (no new
+warnings; one SC2024 disabled with a reason), and harness runs of the awk against the stock Fedora nginx.conf
+(idempotent, restores byte-for-byte), the Gateway heredoc for public/.local/TLS-off/.localdomain domains, and
+recordInstalled/installedBy/uninstall with stubbed sudo/helm/kubectl.

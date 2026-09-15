@@ -7,6 +7,7 @@ import {
     DEFAULT_COOKIE_SECRET,
     DEFAULT_MAIL_INGEST_SECRET,
     SecretsConfig,
+    trustedAuthservIdWarning,
 } from "../src/config.defaults.js";
 
 type FakeConfigKey = "cookie_secret" | "auth:secret" | "mail:transport:ingest:secret";
@@ -63,5 +64,26 @@ describe("assertProductionSecretsAreSet", () => {
     it("does not throw once all three secrets have been overridden", () => {
         expect(() => assertProductionSecretsAreSet(fakeConfig(realSecrets), "production")).not.toThrow();
         expect(() => assertProductionSecretsAreSet(fakeConfig(realSecrets), undefined)).not.toThrow();
+    });
+});
+
+describe("trustedAuthservIdWarning", () => {
+    const configWith = (value: unknown): SecretsConfig => ({
+        get: (key: string) => (key === "mail:security:trusted_authserv_id" ? value : undefined),
+    });
+
+    it("warns, naming the affected features, while the authserv-id is empty, blank or missing", () => {
+        for (const value of ["", "   ", undefined]) {
+            const warning = trustedAuthservIdWarning(configWith(value));
+            expect(warning).toMatch(/mail__security__trusted_authserv_id/);
+            expect(warning).toMatch(/members-only distribution lists are dropped/);
+            expect(warning).toMatch(/rewritten From/);
+            expect(warning).toMatch(/forwarded calendar invites are refused/);
+            expect(warning).not.toMatch(/[\r\n]/);
+        }
+    });
+
+    it("says nothing once it is set", () => {
+        expect(trustedAuthservIdWarning(configWith("mx.example.com"))).toBeUndefined();
     });
 });

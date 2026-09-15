@@ -171,7 +171,9 @@ function ManageBookingContent({ token, logoSrc }: { token: string; logoSrc: stri
                                         {slotsLoading ? (
                                             <p className="text-sm text-text-muted">Loading&hellip;</p>
                                         ) : slots.length === 0 ? (
-                                            <p className="text-sm text-text-muted">No open slots right now.</p>
+                                            <p className="text-sm text-text-muted">
+                                                {nextSlots ? "No open times in the next few weeks." : "No open slots right now."}
+                                            </p>
                                         ) : (
                                             <div className="flex flex-wrap gap-2 max-h-64 overflow-y-auto">
                                                 {slots.map((slot) => (
