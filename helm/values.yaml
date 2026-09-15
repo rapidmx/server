@@ -35,6 +35,10 @@ gateway:
   create: true
   name: api-gateway
   namespace: '{{ .Release.Namespace }}'
+  # The GatewayClass of the Gateway this chart creates (gateway.create): "envoy" is the class single_node_install.sh sets
+  # up for Envoy Gateway. Use your cluster's class otherwise (e.g. "nginx" for nginx-gateway-fabric).
+  className: envoy
+  # false strips the Strict-Transport-Security response header (a standard ResponseHeaderModifier filter).
   hsts: true
   tls: true
   # Only for a Gateway this chart doesn't create (gateway.name other than api-gateway, gateway.namespace other than the
@@ -149,13 +153,14 @@ service:
     # if you manage schema changes yourself.
     synchronize: true
   # Proxies whose X-Forwarded-For header is trusted for the client's address (config `trusted_proxies`; exact
-  # addresses or CIDR ranges). Every request reaches the server through the nginx Gateway, so with an empty list every
+  # addresses or CIDR ranges). Every request reaches the server through the Gateway, so with an empty list every
   # client shares the Gateway pod's address and one caller can use up the anonymous per-IP rate limits (booking, key
   # discovery) for everyone. The default trusts the private ranges the Gateway pods run in. Narrow it to your cluster's
   # pod CIDR if other workloads in those ranges can reach this Service directly (they could otherwise claim any address),
   # and make sure the Gateway itself sees real client addresses (e.g. its LoadBalancer Service uses
   # `externalTrafficPolicy: Local`, or the load balancer in front uses PROXY protocol) - otherwise it forwards a node's
   # address, which is also in these ranges, and the client-supplied part of X-Forwarded-For would be used instead.
+  # single_node_install.sh does this: its nginx sends the PROXY protocol to Envoy Gateway, which is only reachable that way.
   # Set to [] when not running behind the Gateway.
   trustedProxies:
     - 10.0.0.0/8

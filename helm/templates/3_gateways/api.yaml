@@ -11,7 +11,7 @@ kind: Gateway
 metadata:
   name: api-gateway
 spec:
-  gatewayClassName: nginx
+  gatewayClassName: {{ $.Values.gateway.className | quote }}
   listeners:
   # No `hostname:` on the plain HTTP listener - it's shared with the authServer subchart (a distinct auth.<host>
   # subdomain, see values.yaml's authServer.host), whose HTTPRoute attaches to "http" by name; hostname-based routing is
@@ -85,12 +85,12 @@ spec:
     - name: {{ include "rrst.fullname" . }}-services
       port: 80
     {{- if not $.Values.gateway.hsts }}
+    # Standard Gateway API filter, so it works on any implementation (Envoy Gateway, nginx-gateway-fabric, ...).
     filters:
-    - type: ExtensionRef
-      extensionRef:
-        group: gateway.nginx.org
-        kind: NginxHTTPRoute
-        name: disable-hsts
+    - type: ResponseHeaderModifier
+      responseHeaderModifier:
+        remove:
+        - Strict-Transport-Security
     {{- end }}
 {{- if $tls }}
 ---
@@ -139,16 +139,4 @@ spec:
     backendRefs:
     - name: {{ $.Values.authServer.fullnameOverride | default $authFullname }}-services
       port: 80
-{{- end }}
-{{- if not $.Values.gateway.hsts }}
----
-apiVersion: gateway.nginx.org/v1alpha1
-kind: NginxHTTPRoute
-metadata:
-  name: disable-hsts
-spec:
-  headers:
-    response:
-      remove:
-      - Strict-Transport-Security
 {{- end }}

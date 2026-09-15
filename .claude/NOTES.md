@@ -11,6 +11,12 @@ Keep entries terse — this is a reference, not a transcript.
 
 ## Standing decisions
 
+- **Quick Lookup** - For a small, factual, single-answer lookup (does file X exist, where is symbol Y defined, what
+  does this one function do, list the files under this directory) — delegate to the `quick-lookup`
+  subagent (`quick-lookup.md`) instead of `Explore`/`general-purpose`. It runs on a
+  cheaper/faster model, so it's the lower-cost default for that narrow class of question. Reserve
+  `Explore`/`general-purpose` for anything needing synthesis across multiple files, open-ended
+  search, or judgment — `quick-lookup` is instructed to bail out and say so rather than attempt those.
 - **Commit discipline.** Don't `git commit` unless explicitly asked for *that specific piece of
   work*. An autonomous-execution/"commit as you go" approval given for one approved plan (e.g. via
   plan mode) is scoped to that plan only — it does not carry forward to later, separate requests in
@@ -5527,3 +5533,54 @@ Links in `pluginNav`; setting `plugin_sql.enabled` false made the running server
 restarting to apply it" (Postgres run). On Postgres the logs had no errors at all (on SQLite only the expected
 PostgresFullTextSearchProvider instantiation errors). Windows: embedded-postgres' `stop()` leaves the postmaster
 running; kill its `io_worker` child tree.
+
+## 2026-09-15 — Installer on Envoy Gateway: round-6 patch applied, ClusterIP + PROXY protocol, chart portability
+
+Starting point: the user's merged Envoy Gateway working copy (backup: session scratchpad
+`single_node_install.user-working-copy.sh`). The round-6 installer patch still applied cleanly and was applied first.
+
+**Installer (`single_node_install.sh`), on top of round 6**
+- Envoy Gateway pinned: `ENVOY_GATEWAY_VERSION` (default v1.9.1, latest on 2026-08-28), not `v0.0.0-latest` (tracks main).
+  An existing `eg` release is left alone (helm doesn't upgrade CRDs).
+- **The Envoy Service is a ClusterIP, not NodePort 30080/30443.** nginx `proxy_pass`es to the ClusterIP with
+  `proxy_protocol on`, and a `ClientTrafficPolicy` `shared-gateway-proxy-protocol` (`proxyProtocol: {}`; the
+  `enableProxyProtocol` bool is deprecated in v1.9) makes Envoy require it. Why: without it the server's
+  `trusted_proxies` (RFC1918 default) trusts the SNAT'd node/pod address and uses the client-supplied part of
+  X-Forwarded-For (spoofable per-IP rate limits, everyone sharing one address otherwise). NodePorts listen on every
+  interface, so with PROXY protocol they'd let anyone forge the address; a ClusterIP is reachable from the host only.
+  A NodePort Service left by an earlier run is detected, with the delete command printed.
+  The old StrategicMerge ports patch also added a port 443 with no listener (targetPort 443, Envoy listens on 10443).
+- The nginx readiness check waits for any HTTP code (a stream proxy never returns 5xx; the merged copy's 5xx loop passed
+  on connection failure). Stream module installed when nginx exists without it (dpkg-query/rpm checks).
+- Host firewall, Debian/Ubuntu and RHEL alike (`activeFirewall`: firewalld if its unit is active, else ufw if
+  `sudo ufw status` is active - both are in /usr/sbin, only on sudo's PATH on Debian): k3s' 10.42.0.0/16 and
+  10.43.0.0/16 (`firewallTrustSource`: firewalld trusted zone / `ufw allow from <cidr> to any`), 80/tcp (+443/tcp with a
+  listener; `firewallOpenPort`: default zone port / `ufw allow`). Only rules the script actually added are recorded, in
+  `/var/lib/rapidmx-installer/firewall` (`firewalld <zone> <kind> <value>` or `ufw <rule>`), and `--uninstall` deletes
+  just those. ufw added-vs-existing is read from its reply ("Rules updated" vs "Skipping adding existing rule"), not
+  `ufw show added`, whose text may not match the rule as typed. The user runs Ubuntu (ufw). SELinux enforcing:
+  `httpd_can_network_relay` (recorded as `selinux_nginx_relay`); nothing needed for AppArmor.
+- `--skip-k3s`: uses the installing user's kubeconfig under sudo and fails early without kubectl/cluster access.
+- `CHART` may be a local directory (`CHART=./helm`): `--version` dropped, missing deps built. The Bitnami repo add and
+  `helm repo up` are gone for the OCI chart. GatewayClass lost its meaningless `namespace`. total_steps 7 (6 without TLS).
+- Published chart `1.0.0-beta.2` (tag 4175d8d, 2026-09-10) predates 46fef9b, so it lacks `gateway.authHttpsListener`
+  and the auth routing checks: until a new chart is released, installs need `CHART=./helm`.
+
+**Charts**
+- server: `gateway.className` (default `envoy`) instead of hard-coded `nginx`; `gateway.hsts=false` now renders a
+  standard `ResponseHeaderModifier` removing Strict-Transport-Security (no `NginxHTTPRoute`).
+- auth-server (`D:/github/RapidREST/auth-server`, uncommitted, needs a release and the server's dependency bump):
+  the HTTPRoute's invalid `tls:` block removed (with a strict field validation it would reject installs with
+  `authServer.gateway.tls=true`, which the installer sets for https CORS and the certificate); the chart-owned Gateway's
+  https listener gets its certificateRefs and the route attaches to it; same className/hsts changes. The server's
+  `helm/charts/auth-server-1.0.0-beta.1.tgz` is still the old package.
+
+Verified: `bash -n`; shellcheck (npx, 0.11) `-S warning` clean (the merged working copy had 23); `helm lint` both charts;
+`helm template` of a scratch server chart bundling the repackaged auth-server (as 1.0.0-beta.1: a version mismatch
+makes helm render the subchart twice) with the installer's flags for mail.example.com TLS, mail.cluster.local and TLS
+off, plus the chart-owned Gateway with hsts=false and standalone auth-server with tls true/false. Harness run of the
+whole installer (Debian path, `--skip-k3s`, stubbed sudo/kubectl/helm/nginx/apt, paths sed'ed into the scratchpad):
+generated EnvoyProxy/GatewayClass/Gateway/ClientTrafficPolicy, nginx.conf block, state file and helm command line as
+expected; `--uninstall` restored nginx.conf byte-for-byte. Not run on a real machine or cluster.
+ufw and firewalld paths were also exercised with stateful stubs (a pre-existing rule left alone, repeats not
+recorded twice, uninstall removing only the recorded rules); shellcheck still clean.

@@ -167,8 +167,16 @@ great way to get started. This script will automatically set up everything neede
 environment, including ingress with TLS support. Simply run the script from any linux compatible machine.
 
 ```bash
-./single_node_install.sh
+./single_node_install.sh --domain mail.example.com --email admin@example.com
 ```
+
+It installs k3s, helm, [Envoy Gateway](https://gateway.envoyproxy.io/) (a shared Gateway `envoy-gateway-system/shared-gateway`
+whose Service is only reachable inside the cluster), nginx on the host forwarding ports 80 and 443 to that Gateway with
+the PROXY protocol (so the server sees real client addresses), cert-manager with a Let's Encrypt `letsencrypt-prod`
+ClusterIssuer, and this chart with `authServer.host` set to `auth.<domain>`. Both `<domain>` and `auth.<domain>` must
+resolve to the machine. When a host firewall is active (ufw on Ubuntu/Debian, firewalld on RHEL/Fedora) it opens
+HTTP/HTTPS and allows k3s' pod and service networks; under SELinux it also allows nginx to relay. Set `CHART=./helm` to install the chart from a checkout instead of the published one, and
+`ENVOY_GATEWAY_VERSION` to pick another Envoy Gateway release. `--uninstall` removes only what the script installed.
 
 ## Debugging
 
