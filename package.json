@@ -39,7 +39,7 @@
     "@rapidmx/web-client": "patch:@rapidmx/web-client@npm%3A0.4.0#~/.yarn/patches/@rapidmx-web-client-npm-0.4.0-bf47c7c6fa.patch",
     "@rapidrest/core": "^5.2.2",
     "@rapidrest/react": "2.0.0-beta.2",
-    "@rapidrest/service-core": "^2.0.0",
+    "@rapidrest/service-core": "^2.1.0",
     "@types/node": "^26.5.0",
     "acme-client": "^5.4.0",
     "axios": "^1.20.0",

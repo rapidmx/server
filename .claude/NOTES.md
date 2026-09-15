@@ -5215,3 +5215,10 @@ entity/legal hold, raw content audit, `_slotPaging`, both booking pages' paging)
   - A non-trusted user can still move a draft into Sent Items or create a message there, which invents sent history (restapi).
   - Plugin transitive dependencies float on Kubernetes.
   - Five stale `rapidrest dev` watchers were found running in this repo and rebuilding on any root file change.
+
+### 2026-09-15 - service-core 2.1.0
+
+- **Dependency:** `@rapidrest/service-core` is `^2.1.0`, with a single installed copy.
+- **restapi patch:** refreshed to restapi 8e2f16a (its own service-core 2.1.0 migration). Verified with tsc for both configs, lint, and 329/329 tests.
+- **Consumer rule:** code that creates `Folder` or `Mailbox` rows at deterministic uids must go through restapi's `findOrCreateWellKnownFolder()` or pass `allowExistingACL`. service-core 2.1.0 refuses a create at a uid that already has an ACL. No server route does this today.
+- **Test hygiene, pre-existing:** "Tests closed successfully but something prevents 2 Vite servers from exiting" appears after `Server.mongo/sql.test.ts`. The hanging-process reporter shows only FILEHANDLE handles, and it reproduces identically with service-core 2.0.0, so the upgrade didn't cause it. A subset run of only those two files exits 1 because of the close timeout; the full run exits 0.

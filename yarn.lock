@@ -1891,7 +1891,7 @@ __metadata:
 
 "@rapidmx/restapi@patch:@rapidmx/restapi@npm%3A0.8.0#~/.yarn/patches/@rapidmx-restapi-npm-0.8.0-d588a97668.patch":
   version: 0.8.0
-  resolution: "@rapidmx/restapi@patch:@rapidmx/restapi@npm%3A0.8.0#~/.yarn/patches/@rapidmx-restapi-npm-0.8.0-d588a97668.patch::version=0.8.0&hash=789776"
+  resolution: "@rapidmx/restapi@patch:@rapidmx/restapi@npm%3A0.8.0#~/.yarn/patches/@rapidmx-restapi-npm-0.8.0-d588a97668.patch::version=0.8.0&hash=78104d"
   dependencies:
     "@peculiar/x509": "npm:^2.1.0"
     acme-client: "npm:^5.4.0"
@@ -1922,7 +1922,7 @@ __metadata:
       optional: true
     pdf-parse:
       optional: true
-  checksum: 10c0/c9094192e785903018c162be79bfa82d57b8d56ea09bd3ff0a1975edfae12f74c5a834697af27b0c61ef3759ca324ee052cef3660634f655501f8b8dad842757
+  checksum: 10c0/49d40a30e797cda9ff74444547a69553213016132242029e3ffa802a8d796e171b12abd9ae73298c95207b1c6404b4b126c2e2d48918295f797fe2871df3e95f
   languageName: node
   linkType: hard
 
@@ -2071,9 +2071,9 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@rapidrest/service-core@npm:^2.0.0":
-  version: 2.0.0
-  resolution: "@rapidrest/service-core@npm:2.0.0"
+"@rapidrest/service-core@npm:^2.1.0":
+  version: 2.1.0
+  resolution: "@rapidrest/service-core@npm:2.1.0"
   dependencies:
     axios: "npm:^1.20.0"
     dayjs: "npm:^1.11.23"
@@ -2103,7 +2103,7 @@ __metadata:
       optional: true
     uWebSockets.js:
       optional: true
-  checksum: 10c0/5509e35e6ec4bceca2cde984cf485249bcb19324cd781c543b8bf0ee40cd4428603aaf96c6886adb91e7c0bec5d8d8c254e4ca39ed3a3ba911f6bb676bfa3989
+  checksum: 10c0/4b2a7615d41ff51ca67c17c9506b851a472ce6a51d4d6d04cd7b9c76a7aca38656082247049fd682307efc7bb533ded68be96ce6d9ad125af62b51ad8515d3fa
   languageName: node
   linkType: hard
 
@@ -10000,7 +10000,7 @@ __metadata:
     "@rapidrest/cli": "npm:^2.0.0"
     "@rapidrest/core": "npm:^5.2.2"
     "@rapidrest/react": "npm:2.0.0-beta.2"
-    "@rapidrest/service-core": "npm:^2.0.0"
+    "@rapidrest/service-core": "npm:^2.1.0"
     "@swc/core": "npm:^1.16.2"
     "@tailwindcss/vite": "npm:^4.3.3"
     "@testing-library/dom": "npm:^10.4.1"
