@@ -72,6 +72,11 @@ export function appStylesheetPlugin(stylesheets: AppStylesheet[]): any {
  * its TSX sources, the same modules the core pages are built from. Its package exports point at the compiled
  * `dist/apps` mirror, which is for server-side rendering; bundling a plugin page through the mirror would add a second
  * copy of every web client module it uses, with its own module state, next to the copies the core pages share.
+ *
+ * `build.rolldownOptions.output.strictExecutionOrder` keeps modules running in import order. Without it Rolldown runs
+ * a CommonJS module lazily where it's imported but hoists ESM modules, so `@rapidmx/react-shared`'s
+ * `import "reflect-metadata"` (CommonJS) ran after `@peculiar/x509`'s ESM dependency tsyringe, which throws "tsyringe
+ * requires a reflect polyfill" on load and left every page that imports the crypto modules blank.
  */
 export async function createServerViteConfig(options: ServerViteConfigOptions = {}): Promise<any> {
     const { createViteConfig } = await import("@rapidrest/react/vite");
@@ -82,8 +87,16 @@ export async function createServerViteConfig(options: ServerViteConfigOptions = 
         ...(options.outDir ? { outDir: options.outDir } : {}),
         plugins: [appStylesheetPlugin(stylesheets), tailwindcss()],
     });
+    const rolldownOptions: any = config.build?.rolldownOptions ?? {};
     return {
         ...config,
+        build: {
+            ...config.build,
+            rolldownOptions: {
+                ...rolldownOptions,
+                output: { ...rolldownOptions.output, strictExecutionOrder: true },
+            },
+        },
         resolve: {
             ...config.resolve,
             alias: [webClientSourceAlias()],

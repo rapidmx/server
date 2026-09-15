@@ -17,6 +17,8 @@ describe("serverViteConfig", () => {
         expect(config.resolve.dedupe).toEqual(["react", "react-dom"]);
         expect(config.resolve.alias).toEqual([webClientSourceAlias()]);
         expect(config.build.outDir).toBe("dist/public");
+        // reflect-metadata (CommonJS) must run before @peculiar/x509's tsyringe (ESM), or every crypto page is blank.
+        expect(config.build.rolldownOptions.output.strictExecutionOrder).toBe(true);
         const inputs = hydrationInputs(config);
         for (const dir of CORE_APP_DIRS) {
             expect(inputs.some((input) => input.startsWith(`${dir}/`)), dir).toBe(true);

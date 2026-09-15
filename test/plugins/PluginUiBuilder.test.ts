@@ -311,11 +311,19 @@ describe("PluginUiBuilder with Vite", () => {
         const outDir = path.dirname(path.dirname(result.manifestPath!));
         const viteManifest: Record<string, any> = JSON.parse(fs.readFileSync(result.manifestPath!, "utf8"));
         const byName = (name: string) => Object.values(viteManifest).find((entry: any) => entry.name === name);
+        // A page's stylesheets can sit on chunks it imports rather than on the entry itself (strict execution order
+        // moves shared CSS there), so collect them the way ReactRoute.resolveClientUrls() does.
+        const stylesheetsOf = (chunk: any, seen = new Set<string>()): string[] => [
+            ...(chunk.css ?? []),
+            ...(chunk.imports ?? [])
+                .filter((key: string) => !seen.has(key) && seen.add(key))
+                .flatMap((key: string) => stylesheetsOf(viteManifest[key], seen)),
+        ];
         for (const page of ["apps/hello/index.tsx", "apps/greet/index.tsx", "apps/greet/_name_.tsx"]) {
             const entry = byName(`test/fixtures/ui-plugin/${page}`);
             expect(entry, page).toBeDefined();
-            expect(entry.css, page).toHaveLength(1);
-            expect(fs.readFileSync(path.join(outDir, entry.css[0]), "utf8")).toContain("bg-fuchsia-700");
+            const css = stylesheetsOf(entry).map((file) => fs.readFileSync(path.join(outDir, file), "utf8")).join("\n");
+            expect(css, page).toContain("bg-fuchsia-700");
         }
         expect(byName("node_modules/@rapidmx/web-client/apps/www/index.tsx")).toBeDefined();
         expect(fs.existsSync(path.join(outDir, "favicon.ico"))).toBe(true);

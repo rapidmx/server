@@ -5584,3 +5584,20 @@ generated EnvoyProxy/GatewayClass/Gateway/ClientTrafficPolicy, nginx.conf block,
 expected; `--uninstall` restored nginx.conf byte-for-byte. Not run on a real machine or cluster.
 ufw and firewalld paths were also exercised with stateful stubs (a pre-existing rule left alone, repeats not
 recorded twice, uninstall removing only the recorded rules); shellcheck still clean.
+
+### 2026-09-15 — Blank pages: reflect-metadata ran after tsyringe in the browser bundles
+
+Every hydrated page (www, admin setup, settings, admin) rendered its SSR placeholder and never hydrated: the browser threw
+`tsyringe requires a reflect polyfill` while loading the shared `smime-*.js` chunk. react-shared's crypto modules
+`import "reflect-metadata"` before `@peculiar/x509`, but Rolldown (Vite 8) runs a CommonJS module (reflect-metadata)
+lazily at its importer while hoisting ESM modules (x509's tsyringe), so tsyringe's top-level check ran first. Vite was
+unchanged since 09-06; recent package changes most likely rearranged which modules share that chunk. The earlier production
+checks fetched pages and assets over HTTP only and never executed the JavaScript, so they missed it.
+
+- Fix: `createServerViteConfig` sets `build.rolldownOptions.output.strictExecutionOrder: true` (core build and plugin UI
+  builds). Shared CSS can now sit on an imported chunk rather than the entry; `ReactRoute.resolveClientUrls()` already
+  walks imports, and the PluginUiBuilder Vite test now collects stylesheets the same way.
+- Browser check: scratchpad `browsecheck.mjs` runs `dist/src/server.js` (production, in-memory Mongo/Redis) and loads
+  pages in Playwright's headless Chromium with a `jwt` cookie (profile as a JSON string), failing on any `pageerror`
+  or an empty `#react-root`. Run it with `MSYS_NO_PATHCONV=1` from Git Bash when passing paths. Future UI changes should
+  be checked in a browser, not just with curl.
