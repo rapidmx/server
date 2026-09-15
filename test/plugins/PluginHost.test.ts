@@ -8,6 +8,8 @@ import zlib from "zlib";
 import nconf from "nconf";
 import { computePluginStateHash, PluginRegistry } from "@rapidmx/restapi";
 import { installRetryDelayMs, PLUGIN_SAFE_MODE_ENV, PluginHost } from "../../src/plugins/PluginHost.js";
+import { MONGO_PLUGIN_UI_HOSTS } from "../../src/plugins/hosts/mongo.js";
+import { resolvePluginUiApps } from "../../src/plugins/PluginInstaller.js";
 import { findAllPlugins, PluginStateStore, readTarballPackageJson } from "../../src/plugins/PluginStateStore.js";
 import { SAFE_MODE_ATTEMPT_ENV, SAFE_MODE_BASELINE_ENV } from "../../src/plugins/supervisor.js";
 
@@ -411,5 +413,96 @@ describe("PluginHost", () => {
         expect(logger.error).toHaveBeenCalledWith(expect.stringMatching(/Could not read the plugin list/));
         // An unreadable list isn't an empty one: installed plugins are left alone.
         expect(installer.install).not.toHaveBeenCalled();
+    });
+
+    describe("plugin UI", () => {
+        const uiPlugin = (name: string, apps: { id: string; host: string; mount: string }[]) => {
+            const manifest: any = { ...MANIFEST, displayName: name, ui: { apps: apps.map((app) => ({ ...app, dir: `apps/${app.id}` })) } };
+            const packageDir = path.join(process.cwd(), "plugins", "node_modules", name);
+            return { ...installed(name), manifest, packageDir, uiApps: resolvePluginUiApps(packageDir, manifest) };
+        };
+        const prepare = (overrides: Record<string, any>) =>
+            PluginHost.prepare({
+                config: configWith({}),
+                logger,
+                datastore: "mongo",
+                pluginClass: class {},
+                appRoot: process.cwd(),
+                store: new MemoryStore([row("first"), row("second"), row("backend")]),
+                uiHosts: MONGO_PLUGIN_UI_HOSTS,
+                ...overrides,
+            });
+
+        it("builds plugins' UI before the server starts, leaving out apps that overlap an earlier plugin's, and serves the build", async () => {
+            const first = uiPlugin("first", [{ id: "book", host: "public", mount: "/book" }]);
+            const second = uiPlugin("second", [
+                { id: "book", host: "public", mount: "/book" },
+                { id: "other", host: "www", mount: "/settings/other" },
+            ]);
+            const installer: any = { install: vi.fn(async () => ({ installed: [first, second, installed("backend")], errors: [] })) };
+            const uiBuilder = { build: vi.fn(async () => ({ manifestPath: "/app/plugins/.ui-build/abc/.vite/manifest.json", hash: "abc", built: ["first", "second"], failed: [] })) };
+            const config = configWith({ react: { manifestPath: "dist/public/.vite/manifest.json" } });
+            const host = await prepare({ config, installer, uiBuilder });
+
+            const [plugins] = (uiBuilder.build.mock.calls as any[])[0];
+            expect(plugins.map((plugin: any) => plugin.name)).toEqual(["first", "second", "backend"]);
+            expect(plugins[1].uiApps.map((app: any) => app.mount)).toEqual(["/settings/other"]);
+            expect(config.get("react:manifestPath")).toBe("/app/plugins/.ui-build/abc/.vite/manifest.json");
+            const ui = (host.classLoader as any).ui;
+            expect(ui.hosts).toBe(MONGO_PLUGIN_UI_HOSTS);
+            expect(ui.refusedMounts).toEqual(new Map([["second", ["/book"]]]));
+            expect((host as any).errors).toEqual([{ name: "second", message: expect.stringMatching(/^Its UI app at \/book isn't served: /) }]);
+        });
+
+        it("records plugins whose UI didn't build, keeping the prebuilt bundles, and never fails the start when building throws", async () => {
+            const one = uiPlugin("first", [{ id: "one", host: "www", mount: "/one" }]);
+            const installer: any = { install: vi.fn(async () => ({ installed: [one, installed("backend")], errors: [] })) };
+            const config = configWith({ react: { manifestPath: "dist/public/.vite/manifest.json" } });
+            const failing = { build: vi.fn(async () => ({ built: [], failed: [{ name: "first", message: "The plugin's UI failed to build: boom" }] })) };
+            const host = await prepare({ config, installer, uiBuilder: failing });
+            expect(config.get("react:manifestPath")).toBe("dist/public/.vite/manifest.json");
+            expect((host.classLoader as any).ui.failed).toEqual(new Map([["first", "The plugin's UI failed to build: boom"]]));
+            expect((host as any).errors).toEqual([{ name: "first", message: "The plugin's UI failed to build: boom" }]);
+
+            const throwing = { build: vi.fn(async () => Promise.reject(new Error("vite is missing"))) };
+            const thrown = await prepare({ installer, uiBuilder: throwing });
+            expect((thrown.classLoader as any).ui.failed).toEqual(new Map([["first", "The plugin's UI wasn't built: vite is missing"]]));
+            expect(logger.error).toHaveBeenCalledWith(expect.stringMatching(/Plugin UI wasn't built/));
+        });
+
+        it("warns when react:manifestPath is pinned by the environment, so the build can't be served", async () => {
+            const installer: any = { install: vi.fn(async () => ({ installed: [uiPlugin("first", [{ id: "one", host: "www", mount: "/one" }])], errors: [] })) };
+            // A read-only store ahead of the writable one, as nconf's env and argv stores are.
+            const config = new nconf.Provider();
+            config.add("pinned", { type: "literal", store: { react: { manifestPath: "pinned.json" } } });
+            config.use("memory");
+            config.defaults({ base_path: "./src/mongo" });
+            const warn = vi.spyOn(logger, "warn");
+            await prepare({ config, installer, uiBuilder: { build: vi.fn(async () => ({ manifestPath: "built.json", built: ["first"], failed: [] })) } });
+            expect(config.get("react:manifestPath")).toBe("pinned.json");
+            expect(warn).toHaveBeenCalledWith(expect.stringMatching(/isn't served/));
+        });
+
+        it("builds nothing in safe mode, without host routes, or when the plugin list can't be read", async () => {
+            const installer: any = { install: vi.fn(async () => ({ installed: [uiPlugin("first", [{ id: "one", host: "www", mount: "/one" }])], errors: [] })) };
+            const uiBuilder = { build: vi.fn() };
+            await prepare({ installer, uiBuilder, uiHosts: undefined });
+            await prepare({ installer, uiBuilder, store: { loadAndSeed: vi.fn(async () => Promise.reject(new Error("db down"))) } });
+            process.env[PLUGIN_SAFE_MODE_ENV] = "1";
+            await prepare({ installer, uiBuilder });
+            expect(uiBuilder.build).not.toHaveBeenCalled();
+        });
+
+        it("reports each loaded plugin's UI state in its status", async () => {
+            const one = { ...uiPlugin("first", [{ id: "one", host: "www", mount: "/one" }]), entryUrl: "file:///nope.js" };
+            const installer: any = { install: vi.fn(async () => ({ installed: [one], errors: [] })) };
+            const host = await prepare({ installer, uiBuilder: { build: vi.fn(async () => ({ built: [], failed: [{ name: "first", message: "boom" }] })) } });
+            // As if the entry point had imported.
+            host.classLoader.loaded.push(one);
+            await host.start({ getInstance: () => undefined } as any, async () => undefined);
+            expect((host as any).watcher.options.status.loaded).toEqual([{ name: "first", version: "1.0.0", ui: { status: "failed", mounts: [], error: "boom" } }]);
+            expect(PluginRegistry.list()).toEqual([expect.objectContaining({ name: "first", ui: expect.objectContaining({ status: "failed" }) })]);
+            await host.stop();
+        });
     });
 });

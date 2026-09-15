@@ -155,7 +155,8 @@ conf.defaults({
     trusted_roles: ["admin"],
     react: {
         // Path to the Vite manifest produced by `rapidrest build`, used to resolve hashed
-        // client bundle URLs for hydrated pages (see apps/www, apps/admin).
+        // client bundle URLs for hydrated pages (see apps/www, apps/admin). When enabled plugins ship UI, the server
+        // replaces this at startup with the build it makes in system:plugins:dir/.ui-build (see src/plugins/PluginUiBuilder.ts).
         manifestPath: "dist/public/.vite/manifest.json",
     },
     // Settings pertaining to the VERIFICATION of authentication tokens issued by the separate `auth-server`

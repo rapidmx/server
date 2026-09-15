@@ -108,6 +108,37 @@ describe("PluginInstaller", () => {
         expect(result.installed[0].version).toBe("1.1.0");
     });
 
+    it("returns each plugin's package directory, integrity and UI apps with their source and compiled directories", async () => {
+        const ui = {
+            apps: [
+                { id: "book", host: "public", mount: "/book", dir: "apps/book" },
+                { id: "booking-types", host: "www", mount: "/settings/booking-types", dir: "apps/settings/booking-types" },
+            ],
+        };
+        const npm = fakeNpm({ "@rapidmx/booking": { rapidmx: { plugin: { ...MANIFEST.plugin, ui } } }, "@rapidmx/plain": {} });
+        const result = await installer(npm).install([
+            { name: "@rapidmx/booking", packageVersion: "1.0.0", integrity: "sha512-@rapidmx/booking" },
+            { name: "@rapidmx/plain", packageVersion: "1.0.0", integrity: "sha512-@rapidmx/plain" },
+        ]);
+        expect(result.errors).toEqual([]);
+        const packageDir = path.join(dir, "node_modules", "@rapidmx", "booking");
+        expect(result.installed[0]).toEqual(
+            expect.objectContaining({
+                packageDir,
+                integrity: "sha512-@rapidmx/booking",
+                uiApps: [
+                    { ...ui.apps[0], sourceDir: path.join(packageDir, "apps", "book"), ssrDir: path.join(packageDir, "dist", "apps", "book") },
+                    {
+                        ...ui.apps[1],
+                        sourceDir: path.join(packageDir, "apps", "settings", "booking-types"),
+                        ssrDir: path.join(packageDir, "dist", "apps", "settings", "booking-types"),
+                    },
+                ],
+            }),
+        );
+        expect(result.installed[1].uiApps).toEqual([]);
+    });
+
     it("uses the sql entry point for a SQL server, including a plain-string export", async () => {
         const result = await installer(fakeNpm({ "@rapidmx/one": {} }), { datastore: "sql" }).install([{ name: "@rapidmx/one", packageVersion: "1.0.0", integrity: "sha512-@rapidmx/one" }]);
         expect(result.installed[0].entryUrl).toMatch(/dist\/sql\.js$/);

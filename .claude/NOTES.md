@@ -5354,3 +5354,75 @@ errors, none in the new test.
   PowerShell in `d:\github\rapidmx\server` (or any shell whose cwd uses the same drive-letter case as the runner).
 
 Verified: `yarn tsc --noEmit`, `yarn lint`, `yarn test` 347/347 (32 files, exit 0).
+
+## 2026-09-15 — Plugin UI: built at startup, served through the host routes (plan phase 3)
+
+- **Installer:** `InstalledPlugin` gains `packageDir`, `integrity` and `uiApps` (`resolvePluginUiApps()`: the manifest's
+  `ui.apps` plus `sourceDir` = `<pkg>/<dir>` for Vite and `ssrDir` = `<pkg>/dist/<dir>` for SSR, like web-client's
+  `apps` + `dist/apps`).
+- **Shared Vite config:** `src/lib/serverViteConfig.ts` (`CORE_APP_DIRS`, `createServerViteConfig()`,
+  `appStylesheetPlugin()`); `vite.config.ts` just calls it. `appStylesheetPlugin` prepends a CSS import to the
+  `\0rapidrest-entry:` hydration entries of an app dir. The core build uses it to give `apps/book` web-client's `app.css`,
+  which fixes the "book pages get no stylesheet" gap (all three book entries now list the shared css through their imports).
+- **`PluginUiBuilder` (`src/plugins/PluginUiBuilder.ts`), called from `PluginHost.prepare` (only with `uiHosts`, not in
+  safe mode, not when the plugin table is unreadable):**
+  - No plugin with `uiApps` → nothing built, `react:manifestPath` untouched, hash folders pruned.
+  - `uiHash` = sha256 of build format, server version, installed versions + yarn.lock patch hashes of web-client,
+    react-shared, @rapidrest/react, react(-dom), vite, plugin-react, @tailwindcss/vite, tailwindcss, and per plugin name,
+    version, apps and integrity (or a content hash of the app source dirs when there's no integrity, e.g. `sources` tarballs).
+  - Build dir `<system:plugins:dir>/.ui-build/<uiHash>`; reused when its `.vite/manifest.json` exists. Otherwise
+    `vite.build()` in-process with `configFile: false`, `root: appRoot` (must be cwd - the hydration plugin scans
+    cwd-relative), `cacheDir: .ui-build/.vite-cache`, `outDir: .ui-build/.tmp-<hash12>-<pid>-<rand>`, then `renameSync`
+    into place (a failed rename with a completed target uses the target). `publicDir` = `<appRoot>/public`, or copies the
+    prebuilt `dist/public` static files when it's missing.
+  - Tailwind: a generated `.tmp-...-css/plugin-ui.css` = `@import` web-client's `app.css` + `@source "<plugin package dir>"`
+    per plugin (relative paths), imported by every plugin page entry via `appStylesheetPlugin`. Output asset is
+    `plugin-ui-<hash>.css`; core pages keep their own css. Note Tailwind's automatic source detection scans the repo root,
+    so `test/fixtures/ui-plugin` classes also land in the dev build's core css (the image has no `test/`); the e2e check
+    used a class (`text-[#123457]`) that exists nowhere else.
+  - Failure: error text (message, stack, id, loc.file, nested `errors`) is matched against each plugin's package dir
+    (absolute, cwd-relative, `/node_modules/<name>/`). Named plugins are dropped and the build retried; recorded in
+    `.ui-build/failed-<setHash>.json` so the next start skips the failing build. Unattributable → all plugin UI failed,
+    prebuilt served. Missing core app dirs, missing app sources, or (outside tsx/vitest) missing `dist/<dir>` fail the
+    plugin before building. Pruning keeps only the used hash, its failure record and `.tmp-*` younger than 1h.
+  - `react:manifestPath` is `config.set` to the absolute build manifest (warns if env/argv pin it). Assets are served by
+    every ReactRoute from `dirname(dirname(manifestPath))`, so core pages move to the new build too.
+- **Mount conflicts:** `PluginHost.prepareUi` runs restapi's `findPluginUiMountConflicts` over the load-ordered plugins and
+  drops the later plugin's overlapping app (error in status, its nav entries beneath that mount hidden).
+- **Hosting (`PluginUiRoutes.ts`, `PluginClassLoader`):** after importing plugin entry points, for each loaded plugin whose
+  UI built, each app gets `createPluginUiRoute(host base, app)`: a subclass with `appDir` = source dir under tsx/vitest,
+  else `ssrDir`, `hydrate = true`, and `rrst:routePaths` defined directly as `[mount]` on the subclass prototype
+  (`@Route` would concatenate with the base's `/`). Registered as `plugins.<prefix>.ui.<id>`. Bases:
+  `src/plugins/hosts/{mongo,sql}.ts` (`WwwRoute`/`AppRoute`, `AdminConsoleRoute`, `EscrowConsoleRoute`, new
+  `PublicPageRoute` - branding props, no `@Route`, now `BookRoute`'s base), passed as `uiHosts` by all three workers.
+- **Route collisions:** `registeredRoutePaths()` reduces every registered route (server's own and plugins' backend) to its
+  literal prefix (base + handler sub-path up to the first `:`/`*` segment); `findRouteCollision()` refuses, case-insensitively,
+  a mount equal to a route path or with a route beneath it, or beneath a non-React route. Beneath a ReactRoute host is fine,
+  `/` is ignored. So `/book` clashes with core `BookRoute` until booking moves out.
+- **Registry and nav:** `PluginRegistry.setLoaded()` keeps extra fields, so the class loader records
+  `ui: { status: "built"|"failed", error?, mounts, nav }` on each loaded plugin with UI (`LoadedPluginWithUi` in
+  `pluginNav.ts`; restapi's `LoadedPlugin` type doesn't declare it). The watcher status `loaded` entries carry
+  `ui: { status, mounts, error? }`, and build failures and refusals are in `errors`. `getPluginNav()` merges
+  `settingsSections`/`adminNav`/`appRail` (`{id,label,href,icon?}`) of built plugins; `WwwRoute`/`AppRoute` and
+  `AdminConsoleRoute` (both backends, and so plugin www/admin pages) always pass `pluginNav` with all three arrays.
+  Escrow and public hosts get none.
+- **Packaging:** `vite`, `@vitejs/plugin-react`, `@tailwindcss/vite`, `tailwindcss` are production dependencies. The runtime
+  image copies `apps` and `public` (the build needs `apps/book` sources and the static files) and creates
+  `/app/plugins/.ui-build` owned by node. Helm: memory request 384Mi→512Mi, limit 1Gi→1536Mi, probe/volume comments;
+  README "Plugin UI" section. No new config keys.
+- **Dev caveat:** under `yarn dev`, a plugin UI build replaces the manifest path, so `vite build --watch` rebuilds of
+  `dist/public` aren't served while a UI plugin is enabled. Plugin SSR imports TSX from the plugin package there (not
+  verified under tsx).
+- **Fixture:** `test/fixtures/ui-plugin` (`@rapidmx-test/ui-fixture-plugin`): www app `/settings/hello`, public app
+  `/greet` (`index`, `[name]`), settings and app rail nav, hand-written `dist/apps` JS and an empty entry.
+
+Verified: real build in a test (`PluginUiBuilder with Vite`, under 1s) and a production run (scratchpad
+`prodcheck-ui.mjs`: `yarn build`, in-memory Mongo/Redis, fixture installed from an `npm pack` tarball via
+`system__plugins__sources`/`defaults`, `system__plugins__dir=tmp-e2e-plugins`, `NODE_ENV=production node dist/src/server.js`).
+First start built in 1s (worker RSS 640 MiB right after) and served after 5s; `/settings/hello`, `/greet`, `/greet/bob`,
+`/`, `/admin`, `/escrow`, `/book`, `/book/some-slug` all 200 with props and a module bundle, every bundle and stylesheet
+200, the plugin-only class in `/settings/hello`'s stylesheet, `pluginNav` on `/`, `/admin` and the plugin www page, none
+on `/greet`, `/escrow`, `/book`, and book pages now with a stylesheet. Second start: "Using the plugin UI build <hash>".
+Without the plugin: `/settings/hello` and `/greet` 404, empty `pluginNav`, prebuilt bundles, old build pruned.
+`yarn tsc --noEmit`, `yarn lint`, `yarn test` 381/381 (35 files). `helm lint` and `helm template` (1536Mi limit rendered).
+Docker image not built (no Docker daemon here).

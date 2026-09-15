@@ -7,7 +7,7 @@ import crypto from "crypto";
 import fs from "fs";
 import path from "path";
 import { pathToFileURL } from "url";
-import { parsePluginManifest, type PluginManifest, type PluginNamespace } from "@rapidmx/restapi";
+import { parsePluginManifest, type PluginManifest, type PluginNamespace, type PluginUiApp } from "@rapidmx/restapi";
 
 /** The packages a plugin must share with the server rather than bring its own copy of: a second copy of any of
  * them breaks decorator metadata and `instanceof` checks, so its routes, models and jobs silently never load. */
@@ -21,6 +21,14 @@ export interface DesiredPlugin {
     integrity?: string;
 }
 
+/** One of a plugin's UI apps (its manifest's `ui.apps`), with the directories it's built and rendered from. */
+export interface PluginUiAppFiles extends PluginUiApp {
+    /** The app's TSX sources, `<package>/<dir>`: what Vite builds the client bundles from. */
+    sourceDir: string;
+    /** The app's compiled pages, `<package>/dist/<dir>`: what the server renders in production. */
+    ssrDir: string;
+}
+
 /** A plugin that installed cleanly and is ready to import. */
 export interface InstalledPlugin {
     name: string;
@@ -28,6 +36,21 @@ export interface InstalledPlugin {
     manifest: PluginManifest;
     /** The file URL of the plugin's entry point for the server's datastore. */
     entryUrl: string;
+    /** The plugin's package directory (absolute, below the plugin directory's `node_modules`). */
+    packageDir?: string;
+    /** The integrity hash recorded when the plugin was added, when it has one. */
+    integrity?: string;
+    /** The plugin's UI apps, empty when its manifest declares none. */
+    uiApps?: PluginUiAppFiles[];
+}
+
+/** A plugin's UI apps, with `sourceDir` (`<packageDir>/<dir>`) and `ssrDir` (`<packageDir>/dist/<dir>`) resolved. */
+export function resolvePluginUiApps(packageDir: string, manifest: PluginManifest): PluginUiAppFiles[] {
+    return (manifest.ui?.apps ?? []).map((app) => ({
+        ...app,
+        sourceDir: path.join(packageDir, ...app.dir.split("/")),
+        ssrDir: path.join(packageDir, "dist", ...app.dir.split("/")),
+    }));
 }
 
 export interface PluginInstallResult {
@@ -391,6 +414,14 @@ export class PluginInstaller {
         if (!fs.existsSync(entry)) {
             throw new Error(`The plugin's ./${this.options.datastore} entry point (${target}) is missing.`);
         }
-        return { name: plugin.name, version: pkg.version, manifest, entryUrl: pathToFileURL(entry).href };
+        return {
+            name: plugin.name,
+            version: pkg.version,
+            manifest,
+            entryUrl: pathToFileURL(entry).href,
+            packageDir,
+            ...(plugin.integrity ? { integrity: plugin.integrity } : {}),
+            uiApps: resolvePluginUiApps(packageDir, manifest),
+        };
     }
 }

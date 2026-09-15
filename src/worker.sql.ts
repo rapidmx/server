@@ -42,6 +42,7 @@ import { startTelemetryToken } from "./lib/telemetryToken.js";
 import { applySqlColumnTypes } from "./lib/sqlColumnTypes.js";
 import { PluginSQL } from "@rapidmx/restapi/sql";
 import { PluginHost } from "./plugins/PluginHost.js";
+import { SQL_PLUGIN_UI_HOSTS } from "./plugins/hosts/sql.js";
 import { notifyListening, restartWorker } from "./plugins/supervisor.js";
 import { TieredRateLimiter } from "./lib/TieredRateLimiter.js";
 
@@ -151,7 +152,7 @@ const start = async function (config: any, logger: any) {
 
     // Create and start the server
     // Install and load this deployment's plugins before the server scans for classes - see plugins/PluginHost.ts.
-    pluginHost = await PluginHost.prepare({ config, logger, datastore: "sql", pluginClass: PluginSQL, appRoot: process.cwd() });
+    pluginHost = await PluginHost.prepare({ config, logger, datastore: "sql", pluginClass: PluginSQL, appRoot: process.cwd(), uiHosts: SQL_PLUGIN_UI_HOSTS });
     // MySQL/MariaDB column types for restapi's and the plugins' SQL models, applied once they're all loaded and before
     // the datastore connects (a no-op on Postgres) - see lib/sqlColumnTypes.ts.
     pluginHost.classLoader.afterLoad = async (classes) => {

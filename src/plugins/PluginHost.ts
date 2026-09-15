@@ -10,6 +10,7 @@ import {
     DEFAULT_PLUGIN_NAMESPACES,
     DEFAULT_PLUGIN_REGISTRY,
     findPluginNamespace,
+    findPluginUiMountConflicts,
     normalizePluginNamespaces,
     NpmRegistryClient,
     orderByDependencies,
@@ -18,9 +19,11 @@ import {
     type Plugin,
     type PluginNamespace,
 } from "@rapidmx/restapi";
-import { PluginClassLoader } from "./PluginClassLoader.js";
+import { PluginClassLoader, type PluginUiLoadOptions } from "./PluginClassLoader.js";
 import { PluginInstaller, type PluginInstallResult } from "./PluginInstaller.js";
 import { findAllPlugins, PluginStateStore, type DefaultPlugin } from "./PluginStateStore.js";
+import { PluginUiBuilder, type PluginUiBuildResult } from "./PluginUiBuilder.js";
+import type { PluginUiHostClasses } from "./PluginUiRoutes.js";
 import {
     createWatcherRedisClient,
     DEFAULT_LOCK_TTL_MS,
@@ -58,9 +61,13 @@ export interface PluginHostOptions {
     pluginClass: any;
     /** The server's own directory. */
     appRoot: string;
+    /** The base route of each plugin UI host for this datastore (see `PluginUiRoutes.ts`). Without them no plugin UI is
+     * built or served. */
+    uiHosts?: PluginUiHostClasses;
     /** Test seams. */
     store?: PluginStateStore;
     installer?: PluginInstaller;
+    uiBuilder?: Pick<PluginUiBuilder, "build">;
     registry?: NpmRegistryClient;
     createRedisClient?: (url: string) => WatcherRedisClient;
 }
@@ -95,13 +102,19 @@ export class PluginHost {
         private readonly errors: { name: string; message: string }[],
         public readonly safeMode: boolean,
         installed: PluginInstallResult["installed"],
+        ui: PluginUiLoadOptions,
         /** How this copy retries and whether it holds up other copies' restarts - see `PluginWatcherOptions`. */
         public readonly retry: Pick<PluginWatcherOptions, "retryDelayMs" | "haltRollout" | "safeModeBaseline" | "safeModeRetryMs">,
         private readonly restartLock?: RestartLockConnection,
     ) {
         const { config, logger } = options;
-        this.classLoader = new PluginClassLoader(config.get("base_path"), config.get("class_loader:ignore"), installed, logger, () =>
-            notifyPluginsLoaded(loadedHash),
+        this.classLoader = new PluginClassLoader(
+            config.get("base_path"),
+            config.get("class_loader:ignore"),
+            installed,
+            logger,
+            () => notifyPluginsLoaded(loadedHash),
+            ui,
         );
     }
 
@@ -153,10 +166,11 @@ export class PluginHost {
         }
 
         const enabled: Plugin[] = rows.filter((row) => row.enabled && !row.removed);
+        const pluginsDir: string = config.get("system:plugins:dir") || path.join(appRoot, "plugins");
         const installer: PluginInstaller =
             options.installer ??
             new PluginInstaller({
-                dir: config.get("system:plugins:dir") || path.join(appRoot, "plugins"),
+                dir: pluginsDir,
                 appRoot,
                 registry: registryUrl,
                 registryToken,
@@ -189,6 +203,13 @@ export class PluginHost {
         }
         PluginRegistry.setLoaded(installed.map((plugin) => ({ name: plugin.name, version: plugin.version })));
 
+        // Plugins' UI apps are built into the browser bundles before the server starts, which then serves that build.
+        // In safe mode, or without the plugin list, nothing is built, and earlier builds are kept for when plugins return.
+        const ui: PluginUiLoadOptions = { hosts: options.uiHosts, failed: new Map(), refusedMounts: new Map() };
+        if (known && !safeMode && options.uiHosts) {
+            await PluginHost.prepareUi(options, pluginsDir, installed, ui, errors);
+        }
+
         // npm failing (say, the registry is down) isn't the plugins' fault: try again later rather than running without them
         // until the next unrelated restart - but not for an error retrying won't fix, nor forever.
         let retryDelayMs: number | undefined;
@@ -220,7 +241,55 @@ export class PluginHost {
               }
             : { retryDelayMs, haltRollout: !!result.installFailures };
 
-        return new PluginHost(options, computePluginStateHash(safeMode ? [] : rows), errors, safeMode, installed, retry, restartLock);
+        return new PluginHost(options, computePluginStateHash(safeMode ? [] : rows), errors, safeMode, installed, ui, retry, restartLock);
+    }
+
+    /**
+     * Leaves out plugin UI apps whose mounts overlap an earlier plugin's, builds the rest (`PluginUiBuilder`) and points
+     * `react:manifestPath` at the build. Failures are recorded in `ui` and `errors`, never thrown.
+     */
+    private static async prepareUi(
+        options: PluginHostOptions,
+        pluginsDir: string,
+        installed: PluginInstallResult["installed"],
+        ui: PluginUiLoadOptions,
+        errors: { name: string; message: string }[],
+    ): Promise<void> {
+        const { config, logger, appRoot } = options;
+        // Hosts share one URL space: the first plugin (in load order) to claim a path keeps it.
+        for (const conflict of findPluginUiMountConflicts(installed)) {
+            const plugin = installed.find((candidate) => candidate.name === conflict.name);
+            if (!plugin?.uiApps?.some((app) => app.mount === conflict.mount)) {
+                continue;
+            }
+            plugin.uiApps = plugin.uiApps.filter((app) => app.mount !== conflict.mount);
+            ui.refusedMounts!.set(plugin.name, [...(ui.refusedMounts!.get(plugin.name) ?? []), conflict.mount]);
+            const message: string = `Its UI app at ${conflict.mount} isn't served: ${conflict.message}`;
+            logger.error(`Plugin ${plugin.name}: ${message}`);
+            errors.push({ name: plugin.name, message });
+        }
+
+        const configuredManifest: string = config.get("react:manifestPath") || "dist/public/.vite/manifest.json";
+        let result: PluginUiBuildResult;
+        try {
+            const builder: Pick<PluginUiBuilder, "build"> =
+                options.uiBuilder ?? new PluginUiBuilder({ pluginsDir, appRoot, logger, prebuiltOutDir: path.dirname(path.dirname(configuredManifest)) });
+            result = await builder.build(installed);
+        } catch (err: any) {
+            const message: string = `The plugin's UI wasn't built: ${err.message}`;
+            logger.error(`Plugin UI wasn't built: ${err.stack ?? err.message}`);
+            result = { built: [], failed: PluginUiBuilder.uiPlugins(installed).map((plugin) => ({ name: plugin.name, message })) };
+        }
+        for (const failure of result.failed) {
+            ui.failed!.set(failure.name, failure.message);
+            errors.push(failure);
+        }
+        if (result.manifestPath) {
+            config.set("react:manifestPath", result.manifestPath);
+            if (config.get("react:manifestPath") !== result.manifestPath) {
+                logger.warn(`react:manifestPath is set in the environment or arguments, so the plugin UI build at ${result.manifestPath} isn't served.`);
+            }
+        }
     }
 
     private static instanceId(config: any): string {
@@ -253,14 +322,18 @@ export class PluginHost {
     public async start(objectFactory: ObjectFactory, restart: () => Promise<void>): Promise<void> {
         const { config, logger, datastore, pluginClass } = this.options;
         // Entry points that failed to import are only known once the server has loaded its classes.
-        PluginRegistry.setLoaded(this.classLoader.loaded.map((plugin) => ({ name: plugin.name, version: plugin.version })));
+        PluginRegistry.setLoaded(this.classLoader.registryEntries());
         // Serving now: the watcher releases the restart lock once this copy has been ready a little while.
         this.restartLock?.lock.clearHoldLimit();
         this.watcher = new PluginWatcher({
             instance: PluginHost.instanceId(config),
             loadedHash: this.loadedHash,
             status: {
-                loaded: this.classLoader.loaded.map((plugin) => ({ name: plugin.name, version: plugin.version })),
+                loaded: this.classLoader.registryEntries().map(({ name, version, ui }) => ({
+                    name,
+                    version,
+                    ...(ui ? { ui: { status: ui.status, mounts: ui.mounts, ...(ui.error ? { error: ui.error } : {}) } } : {}),
+                })),
                 errors: [...this.errors, ...this.classLoader.errors],
                 safeMode: this.safeMode,
             },

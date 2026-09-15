@@ -7,6 +7,7 @@ import { ObjectFactory, RouteDecorators, type HttpRequest } from "@rapidrest/ser
 import { fetchBrandingPropsForSSR } from "@rapidmx/restapi";
 import { BrandingSQL } from "@rapidmx/restapi/sql";
 import { isRunningUnderYarnDev } from "../../dev/enableDevAutoLogin.js";
+import { getPluginNav } from "../../plugins/pluginNav.js";
 import { webClientAppDir } from "../../routes/webClientAppDir.js";
 
 const { Route } = RouteDecorators;
@@ -45,6 +46,8 @@ export class AppRoute extends ReactRoute {
             // the admin console, this just saves them from navigating there manually to discover that.
             trusted: UserUtils.hasRoles(req.user, this.trustedRoles),
             branding,
+            // Settings sections and app rail entries from loaded plugins whose UI built (see plugins/pluginNav.ts).
+            pluginNav: getPluginNav(),
         };
     }
 }

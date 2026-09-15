@@ -185,8 +185,9 @@ spec:
             # The local encryption CA and signing-certificate enrollment state (mail:pki:*).
             - name: pki-data
               mountPath: /var/lib/rapidmx/pki
-            # Where the plugin host npm-installs plugins at startup. Per pod and disposable: each pod reinstalls
-            # the plugin set recorded in the database when it starts.
+            # Where the plugin host npm-installs plugins at startup, and builds their UI into .ui-build when they ship
+            # any. Per pod and disposable: each pod reinstalls the plugin set recorded in the database, and rebuilds
+            # its UI, when it starts.
             - name: plugins
               mountPath: /app/plugins
       volumes:

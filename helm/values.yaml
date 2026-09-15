@@ -124,8 +124,8 @@ service:
     capabilities:
       drop:
         - ALL
-  # Startup installs the deployment's plugins with npm (up to system.plugins.npm_timeout_ms, 10 minutes), so give it
-  # up to 15 minutes before liveness applies.
+  # Startup installs the deployment's plugins with npm (up to system.plugins.npm_timeout_ms, 10 minutes) and builds their
+  # UI when they ship any (see resources below), so give it up to 15 minutes before liveness applies.
   startupProbe:
     httpGet:
       path: /api/status
@@ -133,7 +133,7 @@ service:
     periodSeconds: 10
     failureThreshold: 90
   # Restarts a hung server. Deliberately slow to give up (11 minutes): /api/status also fails while a copy drains and
-  # reinstalls plugins during a plugin restart, which runs npm again inside the same container.
+  # reinstalls plugins during a plugin restart, which runs npm (and the plugin UI build) again inside the same container.
   livenessProbe:
     httpGet:
       path: /api/status
@@ -172,12 +172,16 @@ service:
   # on this single-replica deployment, which would OOM-kill the whole pod rather than fail just those two
   # requests. Raised with margin for that scenario rather than only the single-request case. This bound
   # is still per-pod, not global - see the replicas comment above for the remaining gap this doesn't close.
+  # When enabled plugins ship UI, the server also builds the browser bundles with Vite at startup, in the same process
+  # (src/plugins/PluginUiBuilder.ts), after a plugin with UI is added, changed, enabled or disabled, and on every new pod
+  # (the plugins volume is an emptyDir). A build takes seconds on a typical node and up to about a minute on a small CPU
+  # limit, and adds a few hundred MiB while it runs; the request and limit below leave room for that.
   resources:
     requests:
       cpu: 100m
-      memory: 384Mi
+      memory: 512Mi
     limits:
-      memory: 1Gi
+      memory: 1536Mi
   mongodb:
     acl:
       name: rapidmx_server_acls

@@ -131,6 +131,23 @@ collections, tables and columns, but on PostgreSQL TypeORM may drop and recreate
 releases, losing that column's data. **Back up the database before upgrading.** If you manage schema changes yourself,
 set `datastores__acl__synchronize` and `datastores__sql__synchronize` (or `datastores__mongo__synchronize`) to `false`.
 
+#### Plugin UI
+
+Plugins can ship pages (for example the booking pages) and navigation entries along with their API routes. They ship
+those pages as TSX sources, so when enabled plugins have UI the server builds the browser bundles with Vite as it starts,
+together with its own apps, before it starts serving. The build is kept in `system:plugins:dir`'s `.ui-build` folder
+(`/app/plugins/.ui-build` in the image) and reused until the plugins with UI, their versions, or the server's web client
+change. Without plugin UI nothing is built and the bundles in the image are served.
+
+- **Build time:** the first start after a plugin with UI is added, upgraded, enabled or disabled takes longer, from a few
+  seconds on a typical node to about a minute on a small CPU limit. On Kubernetes the plugins volume is per pod, so every
+  new pod builds once.
+- **Memory:** the build adds a few hundred MiB while it runs, which is why the chart's default memory request and limit
+  (`service.resources`) are 512Mi and 1536Mi.
+- **Failures never stop the server:** a plugin whose UI fails to build is left out (its pages 404, its navigation entries
+  are hidden and the admin console's plugin status shows the error), and the rest are rebuilt without it. A page whose
+  path clashes with another plugin's pages or with any other route isn't served either.
+
 #### Single Node Cluster
 
 If you would like to run the project in a single-node Kubernetes cluster, the `single_node_install.sh` script is a

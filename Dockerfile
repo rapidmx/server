@@ -29,6 +29,11 @@ COPY --from=builder --chown=node:node /app/package.json /app/yarn.lock /app/.yar
 COPY --from=builder --chown=node:node /app/.yarn/releases ./.yarn/releases
 COPY --from=builder --chown=node:node /app/dist ./dist
 COPY --from=builder --chown=node:node /app/src ./src
+# Plugin UI is built at startup (src/plugins/PluginUiBuilder.ts) together with the core apps, so the runtime keeps their
+# sources: the booking pages and the static files Vite copies into every build. (The web client's app sources ship in
+# node_modules/@rapidmx/web-client.)
+COPY --from=builder --chown=node:node /app/apps ./apps
+COPY --from=builder --chown=node:node /app/public ./public
 COPY --from=prod-deps --chown=node:node /app/node_modules ./node_modules
 COPY --from=builder --chown=node:node /app/scripts ./scripts
 RUN chmod +x /app/scripts/*
@@ -56,12 +61,14 @@ ENV HOME=/home/node
 # docker-compose/Helm volume mounted at either path would otherwise be created root-owned on first use.
 # Without this, the `node` user (below) can't write into any of them at runtime.
 # /app/plugins is where the plugin host (src/plugins/PluginHost.ts) npm-installs this deployment's plugins at startup -
-# it must sit under /app so a plugin resolves the server's own copies of its shared peer packages.
+# it must sit under /app so a plugin resolves the server's own copies of its shared peer packages. Its .ui-build folder
+# holds the browser bundles built at startup when enabled plugins ship UI (one folder per plugin UI set, reused until
+# that set changes).
 # /var/lib/rapidmx/pki holds the local encryption CA's key/certificate (mail:pki:local_ca:dir) and the signing
 # enrollment stores (mail:pki:manual_enrollment:store_path, mail:pki:rfc8823:store_dir) - mount a persistent volume
 # there, or the CA key is regenerated on every container recreation.
-RUN mkdir -p /app/data /app/plugins /var/lib/rspamd/dkim /var/lib/rapidmx/pki \
-    && chown node:node /app /app/data /app/plugins /var/lib/rspamd/dkim /var/lib/rapidmx /var/lib/rapidmx/pki
+RUN mkdir -p /app/data /app/plugins/.ui-build /var/lib/rspamd/dkim /var/lib/rapidmx/pki \
+    && chown node:node /app /app/data /app/plugins /app/plugins/.ui-build /var/lib/rspamd/dkim /var/lib/rapidmx /var/lib/rapidmx/pki
 
 USER node
 

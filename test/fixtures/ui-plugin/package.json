@@ -1,0 +1,28 @@
+{
+  "name": "@rapidmx-test/ui-fixture-plugin",
+  "version": "1.0.0",
+  "description": "A tiny plugin with UI apps on the www and public hosts, for PluginUiBuilder tests and production checks.",
+  "type": "module",
+  "private": true,
+  "exports": {
+    "./mongo": "./dist/entry.js",
+    "./sql": "./dist/entry.js"
+  },
+  "peerDependencies": {
+    "react": "19.x"
+  },
+  "rapidmx": {
+    "plugin": {
+      "apiVersion": 1,
+      "displayName": "UI fixture",
+      "ui": {
+        "apps": [
+          { "id": "hello", "host": "www", "mount": "/settings/hello", "dir": "apps/hello" },
+          { "id": "greet", "host": "public", "mount": "/greet", "dir": "apps/greet" }
+        ],
+        "settingsSections": [{ "id": "hello", "label": "Hello", "href": "/settings/hello" }],
+        "appRail": [{ "id": "greet", "label": "Greet", "href": "/greet", "icon": "HiOutlineHandRaised" }]
+      }
+    }
+  }
+}

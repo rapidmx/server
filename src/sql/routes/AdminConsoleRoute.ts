@@ -7,6 +7,7 @@ import { ObjectFactory, RouteDecorators, type HttpRequest } from "@rapidrest/ser
 import { fetchBrandingPropsForSSR } from "@rapidmx/restapi";
 import { BrandingSQL } from "@rapidmx/restapi/sql";
 import { isRunningUnderYarnDev } from "../../dev/enableDevAutoLogin.js";
+import { getPluginNav } from "../../plugins/pluginNav.js";
 import { webClientAppDir } from "../../routes/webClientAppDir.js";
 
 const { Route } = RouteDecorators;
@@ -29,6 +30,7 @@ export class AdminConsoleRoute extends ReactRoute {
         // endpoint (see `DevImpersonationRoute`) instead of a real auth-server that isn't running locally.
         const impersonationBaseUrl = isRunningUnderYarnDev() ? "" : (this.authServerUrl ?? "");
         const { branding } = await fetchBrandingPropsForSSR(this.brandingObjectFactory, BrandingSQL);
-        return { authServerUrl: this.authServerUrl, impersonationBaseUrl, branding };
+        // pluginNav: navigation entries from loaded plugins whose UI built (see plugins/pluginNav.ts).
+        return { authServerUrl: this.authServerUrl, impersonationBaseUrl, branding, pluginNav: getPluginNav() };
     }
 }
