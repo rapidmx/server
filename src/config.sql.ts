@@ -87,19 +87,11 @@ conf.defaults({
         // console; every server copy installs the enabled ones with npm at startup and restarts itself (one copy at a
         // time) when they change.
         plugins: {
-            // Installed the first time a server starts against a database that has never had them. `enabled` (default
-            // true) is only the initial state - administrators turn plugins on and off in the admin console after that.
-            // A default an administrator later removes stays removed; a default added in a later release is still added
-            // to an existing deployment.
             defaults: [
-                { name: "@rapidmx/activesync-plugin", version: "latest" },
-                { name: "@rapidmx/mapi-plugin", version: "latest" },
-                { name: "@rapidmx/autodiscover-plugin", version: "latest" },
-                // Public booking pages, booking types and bookings, which were part of core before. Listed here so an
-                // upgraded deployment gets the plugin, and its existing booking types and bookings, back without an
-                // administrator adding it. Until the package is published, adding it logs a warning at each start and
-                // nothing else changes.
-                { name: "@rapidmx/booking-plugin", version: "latest" },
+                { name: "@rapidmx/activesync-plugin", version: "latest", enabled: false },
+                { name: "@rapidmx/autodiscover-plugin", version: "latest", enabled: false },
+                { name: "@rapidmx/booking-plugin", version: "latest", enabled: false },
+                { name: "@rapidmx/mapi-plugin", version: "latest", enabled: false },
             ],
             // The npm registry plugins are downloaded from, and an optional auth token for a private one.
             registry: "https://registry.npmjs.org",
