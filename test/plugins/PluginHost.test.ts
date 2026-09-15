@@ -7,11 +7,12 @@ import path from "path";
 import zlib from "zlib";
 import nconf from "nconf";
 import { computePluginStateHash, PluginRegistry } from "@rapidmx/restapi";
-import { PluginSQL } from "@rapidmx/restapi/sql";
+import { FolderSQL, PluginSQL } from "@rapidmx/restapi/sql";
+import { ConnectionManager, ObjectFactory } from "@rapidrest/service-core";
 import { installRetryDelayMs, PLUGIN_SAFE_MODE_ENV, PluginHost } from "../../src/plugins/PluginHost.js";
 import { MONGO_PLUGIN_UI_HOSTS } from "../../src/plugins/hosts/mongo.js";
 import { resolvePluginUiApps } from "../../src/plugins/PluginInstaller.js";
-import { findAllPlugins, PluginStateStore, readTarballPackageJson } from "../../src/plugins/PluginStateStore.js";
+import { findAllPlugins, pluginRepository, PluginStateStore, readTarballPackageJson } from "../../src/plugins/PluginStateStore.js";
 import { SAFE_MODE_ATTEMPT_ENV, SAFE_MODE_BASELINE_ENV } from "../../src/plugins/supervisor.js";
 
 const MANIFEST = { apiVersion: 1, displayName: "EAS", settings: [{ key: "mail:eas:sync_window_size", label: "Window", type: "number", default: 100 }] };
@@ -184,6 +185,43 @@ describe("PluginStateStore", () => {
         } finally {
             fs.rmSync(dir, { recursive: true, force: true });
         }
+    });
+
+    it("leaves the server's SQL connection with every model after reading the plugin table", async () => {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), "plugin-store-sql-server-"));
+        const sqlLogger = { ...logger, child: () => sqlLogger, log: vi.fn() };
+        const datastores = { sql: { type: "better-sqlite3", host: "localhost", database: path.join(dir, "server.db"), synchronize: true } };
+        const config = configWith({ datastores });
+        const objectFactory = new ObjectFactory(config, sqlLogger);
+        try {
+            const store = new PluginStateStore(config, sqlLogger, "sql", PluginSQL);
+            await store.loadAndSeed([], () => registry, {});
+            // What Server.start() does next, with every model class it found.
+            const connectionManager: ConnectionManager = await objectFactory.newInstance(ConnectionManager, { name: "default" });
+            await connectionManager.connect(config.get("datastores"), new Map<string, any>([[PluginSQL.name, PluginSQL], [FolderSQL.name, FolderSQL]]));
+            try {
+                const connection: any = connectionManager.connections.get("sql");
+                expect(connection.hasMetadata(FolderSQL)).toBe(true);
+                const tables = (await connection.query("select name from sqlite_master where type = 'table'")).map((t: any) => t.name);
+                expect(tables).toEqual(expect.arrayContaining(["plugin_sql", "folder_sql"]));
+                expect(PluginSQL.datasource).toBe("sql");
+            } finally {
+                await connectionManager.disconnect();
+            }
+        } finally {
+            await objectFactory.destroy();
+            fs.rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    it("gets the plugin repository by the connection's database type", () => {
+        const repo = {};
+        const sql = { options: { type: "postgres" }, getMongoRepository: () => { throw new Error("mongo only"); }, getRepository: () => repo };
+        const mongo = { getRepository: () => repo };
+        const typeormMongo = { options: { type: "mongodb" }, getMongoRepository: () => repo, getRepository: () => { throw new Error("sql only"); } };
+        expect(pluginRepository(sql, PluginSQL)).toBe(repo);
+        expect(pluginRepository(mongo, PluginSQL)).toBe(repo);
+        expect(pluginRepository(typeormMongo, PluginSQL)).toBe(repo);
     });
 
     it("reads rows from both a Mongo cursor and a promised SQL result", async () => {

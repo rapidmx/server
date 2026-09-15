@@ -5492,3 +5492,38 @@ list (an admin JWT got `[]`/404 for rows whose mailbox doesn't exist; not pursue
 (`prodcheck-booking-sql.mjs`, better-sqlite3 files) got as far as the plugin loading, the UI build and `/book` rendering
 after fix 2; the data half didn't run because in that harness the SQL worker doesn't create the core or plugin tables
 ("No metadata for MatterExportRequestSQL" also without plugins), which wasn't investigated. Docker image not built.
+
+## 2026-09-15 — SQL servers started with only the Plugin table (real bug, not the harness)
+
+The "No metadata for MatterExportRequestSQL" in the SQL production check above was a real bug on every SQL start
+(`worker.sql.ts`: SQLite, Postgres, MySQL; `yarn dev` and production alike), not a harness or build issue.
+- **Cause:** service-core's `TypeOrmSupport.connect()` keeps a module-level `dataSources` map keyed by datastore name,
+  and a later connect under the same name re-initializes the cached DataSource with the entities it was *first* given
+  (`ConnectionManager.disconnect()` destroys it but never removes it). `PluginStateStore.withRepository()` (run by
+  `PluginHost.prepare()` before `Server.start()`) connected as `sql` with only `PluginSQL`, so the server's own `sql`
+  connection reused that DataSource: `synchronize` created only `plugin_sql` (+ the search provider's
+  `mail_search_index`), and every other model failed with "No metadata" (jobs, `/api/system/branding` 500, mailbox
+  policy fallback). Mongo is unaffected (MongoConnection isn't cached). `test/Server.sql.test.ts` never runs
+  `PluginHost.prepare()`, so it never saw it. Worth fixing in service-core too (drop the map entry on destroy, or don't
+  reuse a DataSource whose entities differ) - not edited here.
+- **Fix:** the plugin-state connection is named `<datastore>-plugin-state`, claims the Plugin model via
+  `entities: [name]` on a copy of the datastore config, and restores `pluginClass.datasource` afterwards.
+- **Second SQL bug (same area):** `PluginHost.start()`'s watcher `readPlugins` still chose `getMongoRepository` whenever
+  the method existed ("Plugin change check failed: You can use getMongoRepository only for MongoDB connections" every
+  minute), so plugin changes never restarted SQL servers. Both call sites now use `pluginRepository()` (by
+  `connection.options.type`).
+- Tests: `PluginHost.test.ts` connects the server's `sql` ConnectionManager with PluginSQL + FolderSQL after
+  `loadAndSeed` on a real better-sqlite3 file and expects `folder_sql` (fails without the fix), plus `pluginRepository`.
+
+Verified: `yarn tsc --noEmit`, `yarn lint`, `yarn test` 322/322. Production (`yarn build`, scratchpad
+`prodcheck-sqlfix.mjs sqlite|postgres`: `NODE_ENV=production node dist/src/server.sql.js`, Redis in memory, SQLite
+files or `embedded-postgres` from node_modules). With the old `PluginStateStore` in dist, both SQLite and Postgres had
+2 tables, branding 500 and "No metadata" in the log. Fixed, on both: 41 tables, `/`, `/admin`, `/escrow` 200 and
+hydrated, `/api/system/branding` and admin-JWT `/api/system/mailbox-policy` and `/api/system/plugins` 200, no
+"No metadata"/getMongoRepository lines; booking plugin tarball (booking b14674a, `npm pack`) as a default created
+`booking_type_sql`/`booking_sql`, seeded rows served by `/api/mail/bookings/types/<slug>` and
+`/api/mail/bookings/manage/<token>`, `/book/<slug>`, `/book/manage/<token>`, `/settings/booking-types` 200 with Booking
+Links in `pluginNav`; setting `plugin_sql.enabled` false made the running server log "The plugin set changed;
+restarting to apply it" (Postgres run). On Postgres the logs had no errors at all (on SQLite only the expected
+PostgresFullTextSearchProvider instantiation errors). Windows: embedded-postgres' `stop()` leaves the postmaster
+running; kill its `io_worker` child tree.

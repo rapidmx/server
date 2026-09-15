@@ -21,7 +21,7 @@ import {
 } from "@rapidmx/restapi";
 import { PluginClassLoader, type PluginUiLoadOptions } from "./PluginClassLoader.js";
 import { PluginInstaller, type PluginInstallResult } from "./PluginInstaller.js";
-import { findAllPlugins, PluginStateStore, type DefaultPlugin } from "./PluginStateStore.js";
+import { findAllPlugins, pluginRepository, PluginStateStore, type DefaultPlugin } from "./PluginStateStore.js";
 import { PluginUiBuilder, type PluginUiBuildResult } from "./PluginUiBuilder.js";
 import type { PluginUiHostClasses } from "./PluginUiRoutes.js";
 import {
@@ -339,9 +339,7 @@ export class PluginHost {
             },
             readPlugins: async () => {
                 const connection: any = objectFactory.getInstance<ConnectionManager>(ConnectionManager)?.connections.get(datastore);
-                const repo: any =
-                    typeof connection?.getMongoRepository === "function" ? connection.getMongoRepository(pluginClass) : connection.getRepository(pluginClass);
-                return findAllPlugins(repo);
+                return findAllPlugins(pluginRepository(connection, pluginClass));
             },
             restart,
             eventsUrl: config.get("datastores:events:url"),

@@ -37,6 +37,13 @@ export async function findAllPlugins(repo: { find(options?: any): any }): Promis
     return typeof result?.toArray === "function" ? result.toArray() : await result;
 }
 
+/** The plugin repository on `connection`. Every TypeORM DataSource has getMongoRepository(), which throws on any other
+ * database, so this goes by the connection's type (service-core's own Mongo connection has no `options` and serves
+ * getRepository()). */
+export function pluginRepository(connection: any, pluginClass: any): PluginRepository {
+    return connection.options?.type === "mongodb" ? connection.getMongoRepository(pluginClass) : connection.getRepository(pluginClass);
+}
+
 /** Reads the `package.json` inside an npm package tarball (`.tgz`) without extracting it. */
 export function readTarballPackageJson(file: string): any {
     const tar: Buffer = zlib.gunzipSync(fs.readFileSync(file));
@@ -73,23 +80,26 @@ export class PluginStateStore {
     /** Runs `work` against the plugin repository on a connection that's closed afterwards. */
     public async withRepository<R>(work: (repo: PluginRepository) => Promise<R>): Promise<R> {
         const objectFactory = new ObjectFactory(this.config, this.logger);
+        // service-core keeps each SQL DataSource for the life of the process by datastore name, and a later connect under
+        // that name reuses it with the entities it was first given. Connecting as the server's own datastore (`sql`) here
+        // left the server's connection with only the Plugin model: no other tables were created and every other model's
+        // query failed with "No metadata". So this connection gets a name of its own, and the Plugin model is named as
+        // its entity (its @DataStore is the server's name), on a copy of the datastore config.
+        const name: string = `${this.datastore}-plugin-state`;
+        const datasource: any = { ...this.config.get(`datastores:${this.datastore}`), entities: [this.pluginClass.name] };
+        // The connection manager records the datastore a model was connected on; the server's own connect sets it again.
+        const previousDatasource: any = this.pluginClass.datasource;
         try {
             const connectionManager: ConnectionManager = await objectFactory.newInstance(ConnectionManager, { name: "plugins" });
             const models = new Map<string, any>([[this.pluginClass.name, this.pluginClass]]);
-            await connectionManager.connect({ [this.datastore]: this.config.get(`datastores:${this.datastore}`) }, models);
+            await connectionManager.connect({ [name]: datasource }, models);
             try {
-                const connection: any = connectionManager.connections.get(this.datastore);
-                // Every TypeORM DataSource has getMongoRepository(), which throws on any other database, so this goes
-                // by the connection's type.
-                const repo: PluginRepository =
-                    connection.options?.type === "mongodb"
-                        ? connection.getMongoRepository(this.pluginClass)
-                        : connection.getRepository(this.pluginClass);
-                return await work(repo);
+                return await work(pluginRepository(connectionManager.connections.get(name), this.pluginClass));
             } finally {
                 await connectionManager.disconnect();
             }
         } finally {
+            this.pluginClass.datasource = previousDatasource;
             await objectFactory.destroy();
         }
     }
