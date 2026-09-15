@@ -260,6 +260,9 @@ conf.defaults({
         // broke plain `yarn dev` with `getaddrinfo ENOTFOUND clamav`/`rspamd` the moment mail send tried to
         // scan anything (ScanPipeline fails closed on a scan-engine outage - see ScanPipeline.ts - so this
         // didn't just log a warning, it silently quarantined every outbound message instead of relaying it).
+        // With NODE_ENV dev/development/test, an rspamd/clamd that can't be connected to at all is bypassed (scans
+        // treated as clean, with a periodic warning) so `yarn dev` can send without that stack - see
+        // dev/registerMailProviders.ts. Every other NODE_ENV still fails closed.
         scan: {
             spam: {
                 rspamd: {

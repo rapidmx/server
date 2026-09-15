@@ -9,7 +9,8 @@ services:
         ports:
             - "127.0.0.1:11333:11333"
     # Anti-virus scanning (AvScanProvider) — see ClamAvScanProvider. clamd's signature database can take a
-    # few minutes to load on first start; the provider fails closed (quarantines) until it's ready.
+    # few minutes to load on first start; the provider fails closed (quarantines) until it's ready, except that with
+    # NODE_ENV dev/development/test an unreachable clamd/rspamd is bypassed with a warning (src/dev/DevScanBypass.ts).
     clamav:
         image: clamav/clamav:stable
         ports:

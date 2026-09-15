@@ -19,17 +19,17 @@ import {
     ManualSigningCertificateEnrollment,
     NodeDnsResolver,
     OpenBaoPkiCertificateAuthority,
-    PostfixSendmailTransport,
     Rfc8823AcmeSigningCertificateEnrollment,
     S3BlobStore,
 } from "@rapidmx/restapi";
 import { MongoTextSearchProvider } from "@rapidmx/restapi/search";
-import { ClamAvScanProvider, RspamdSpamScanProvider } from "@rapidmx/restapi/scan";
 import {
     configureDevAutoProvisioningIfApplicable,
     enableDevAutoLoginIfApplicable,
     mountDevImpersonationRouteIfApplicable,
 } from "./dev/enableDevAutoLogin.js";
+import { DevLocalDeliveryTransportMongo } from "./dev/DevLocalDeliveryTransportMongo.js";
+import { registerMailProviders } from "./dev/registerMailProviders.js";
 import { DohDnssecDnsResolver } from "./dns/DohDnssecDnsResolver.js";
 import { selectConfigDrivenBackend } from "./lib/configDrivenBackend.js";
 
@@ -75,9 +75,9 @@ objectFactory.register(TieredRateLimiter, "RateLimiter");
 // S3-compatible bucket (mail:blob:s3:*) for production use - see config.mongo.ts for the full key list.
 objectFactory.register(selectConfigDrivenBackend(config, "mail:blob:backend", "s3", LocalFsBlobStore, S3BlobStore), "BlobStore");
 objectFactory.register(MongoTextSearchProvider, "SearchProvider");
-objectFactory.register(RspamdSpamScanProvider, "SpamScanProvider");
-objectFactory.register(ClamAvScanProvider, "AvScanProvider");
-objectFactory.register(PostfixSendmailTransport, "MailTransport");
+// SpamScanProvider/AvScanProvider/MailTransport: rspamd, ClamAV and Postfix. Under a development NODE_ENV only, wrapped so
+// `yarn dev` can send mail without them running - see dev/registerMailProviders.ts. Any other NODE_ENV fails closed.
+registerMailProviders(objectFactory, DevLocalDeliveryTransportMongo, process.env.NODE_ENV);
 // DnsResolver backend is config-driven (mail:dns:resolver) rather than hardcoded, same rationale as
 // mail:pki:backend below: `"node"` (default) is Node's own built-in resolver with no DNSSEC validation,
 // `"doh-dnssec"` validates DNSSEC (specs/end-to-end_encryption.md's Transport Trust requirement) via a

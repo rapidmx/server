@@ -178,6 +178,23 @@ resolve to the machine. When a host firewall is active (ufw on Ubuntu/Debian, fi
 HTTP/HTTPS and allows k3s' pod and service networks; under SELinux it also allows nginx to relay. Set `CHART=./helm` to install the chart from a checkout instead of the published one, and
 `ENVOY_GATEWAY_VERSION` to pick another Envoy Gateway release. `--uninstall` removes only what the script installed.
 
+## Local Development
+
+`yarn dev` runs the server from source with `NODE_ENV=development`, signing every request in as a dev admin user. Mail
+can be composed and sent without the scanning stack or an MTA, so neither Docker nor Postfix is required:
+
+- **Spam and virus scanning:** while rspamd or clamd can't be connected to at all (connection refused, a host name that
+  doesn't resolve, or a connection timeout), scans are treated as clean and the server logs a `[dev] ... is unreachable`
+  warning when it starts bypassing and then at most every five minutes. Start the scanners with
+  `docker compose -f docker-compose.mail.yml up -d` to scan for real; once they answer, their verdicts are used again.
+- **Sending:** without a `sendmail` binary at `mail:transport:sendmail:path` (default `/usr/sbin/sendmail`), a sent
+  message is delivered straight to this server's own mailboxes through the same ingest path Postfix uses, and arrives in
+  the recipient's Inbox. Other recipients are rejected, and a message with no local recipient fails to send; relaying
+  them needs the [`postfix-bridge`](https://github.com/rapidmx/postfix-bridge) stack.
+
+This only happens with `NODE_ENV` `dev`, `development` or `test`. With any other `NODE_ENV` the real providers are
+registered unchanged, and a scanner outage makes every send fail closed.
+
 ## Debugging
 
 [Visual Studio Code](https://code.visualstudio.com/) is the recommended IDE to develop with. The project includes workspace and launch configuration files out of the box.

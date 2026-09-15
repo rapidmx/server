@@ -5601,3 +5601,40 @@ checks fetched pages and assets over HTTP only and never executed the JavaScript
   pages in Playwright's headless Chromium with a `jwt` cookie (profile as a JSON string), failing on any `pageerror`
   or an empty `#react-root`. Run it with `MSYS_NO_PATHCONV=1` from Git Bash when passing paths. Future UI changes should
   be checked in a browser, not just with curl.
+
+## 2026-09-15 — `yarn dev` sends without rspamd/ClamAV/Postfix (dev-only wrappers, production unchanged)
+
+Symptom: sending under `yarn dev` without docker-compose.mail.yml failed. Cause: `ClamAvScanProvider`/`RspamdSpamScanProvider`
+never throw on an outage; they log (`ClamAV scan failed ... ECONNREFUSED`, `rspamd scan failed: fetch failed`) and return
+`AvVerdict.ERROR` / `SUSPECT` + `SCAN_ENGINE_UNAVAILABLE`, so `resolveDeliveryVerdict()` says quarantine and restapi's
+`scanAndRelay()` throws 422 "This message could not be sent because it failed spam/malware scanning." Behind that was a
+second blocker: `PostfixSendmailTransport` swallows the missing `/usr/sbin/sendmail` spawn error and returns
+`accepted: []`, so the send would 502 ("The mail transport rejected this message."). DKIM signing isn't on the send path
+(Postfix/postfix-bridge signs; `FsDkimKeyProvider` only writes keys when domains are set up). No restapi change needed.
+
+- `src/dev/registerMailProviders.ts` replaces the three workers' `SpamScanProvider`/`AvScanProvider`/`MailTransport`
+  registrations: NODE_ENV in `DEVELOPMENT_ENVIRONMENTS` (dev/development/test, NODE_ENV only - not
+  `isRunningUnderYarnDev()`, so compose's NODE_ENV=dev and compiled dev runs get it too) registers the wrappers; anything
+  else registers exactly the real classes (test/dev/registerMailProviders.test.ts proves it, also via a real ObjectFactory).
+- `src/dev/DevScanBypass.ts` (`DevBypassSpamScanProvider`/`DevBypassAvScanProvider`, `@Inject` the real provider, same
+  config keys): only when the real result is the outage result is the engine probed with a TCP connect; ECONNREFUSED/
+  ENOTFOUND/EAI_AGAIN/EHOSTUNREACH/ENETUNREACH/EADDRNOTAVAIL/ETIMEDOUT or a 2 s connect timeout -> clean
+  (`DEV_SCAN_BYPASSED` symbol for spam). A reachable engine's results (fail-closed ones, e.g. rspamd HTTP 500 or a clamd
+  ERROR reply) pass through; a thrown error propagates; a probe failing for another reason keeps the real result. While
+  unreachable, scans skip the engine and it's re-probed every 30 s; `[dev] ... is unreachable ... start it with docker
+  compose -f docker-compose.mail.yml up -d` is logged on the first bypass and then at most every 5 min with a count;
+  "reachable again" is logged on recovery. ScanQueueJob's inbound scan uses the same providers, so delivery isn't
+  quarantined either.
+- `src/dev/DevLocalDeliveryTransport(.ts|Mongo|SQL)`: if `mail:transport:sendmail:path` doesn't exist, calls the
+  datastore's `MailIngestRouteMongo/SQL.deliver()` in-process (fake req with the ingest bearer secret and X-Envelope-*
+  headers), i.e. the same path postfix-bridge uses; queued rcpts are `accepted`, others `rejected` (warned). A send with
+  no local recipient therefore still 502s in dev - relaying needs postfix-bridge. If the binary exists (compose/msmtp),
+  the real transport is used unchanged. Not an HTTP self-call (a request can't fetch its own uWS server, see
+  enableDevAutoLogin.ts).
+
+Verified: scratchpad `devsend.mjs dev|prod` (tsx `src/server.ts`, in-memory Mongo/Redis, clamd/rspamd pointed at closed
+ports 38599/38598, ports 38560/38570, mailbox created via admin API, then createDraft -> compose assemble -> send like
+web-client). Before the fix (dev): 422 with the two scan-failed errors. After (dev): send 200, the message reached the
+recipient's Inbox via ScanQueueJob, one bypass warning per engine plus one no-sendmail warning, a second send logged no
+new warnings, an external-only send 502 with "Not delivered ... someone@external.test". NODE_ENV=production: all three
+sends 422, no `[dev]` lines. `yarn tsc --noEmit`, `yarn lint`, `yarn test` 356/356 (src/dev 100% lines).
