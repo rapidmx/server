@@ -7,6 +7,328 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.3] - 2026-09-15
+
+### Added
+- Added nav icon branding and server-rendered site branding
+- Added coveralls reporting to test job
+- Added src/lib/reactDedupeHooks.ts, registered from server.ts/server.mongo.ts/server.sql.ts before any page module can be dynamically imported
+- Added config-driven EncryptionCertificateAuthority selection in server.mongo.ts/server.sql.ts (mail:pki:backend: "local" default vs. "openbao" opt-in), the first config-driven DI provider selection in this repo
+- Added mail:pki:* and mail:security:trusted_authserv_id config to config.mongo.ts/config.sql.ts, documenting each key against the @rapidmx/restapi class that consumes it
+- Added invalidWhereValuesBehavior to config.sql.ts's acl/sql datastores per @rapidmx/restapi's required deployment configuration
+- Added docker-compose.openbao.yml as an opt-in example compose file, not enabled by default
+- Added BaseMailComposeRoute.assembleRaw(), accepting client-supplied raw RFC 5322 MIME for E2E signed/encrypted drafts, stored byte-for-byte
+- Added message raw-MIME-content route for client-side E2E decrypt/verify
+- Added DNSSEC-validating DnsResolver (DoH-backed), config-driven via mail:dns:resolver
+- Added acme-client as a direct dependency (restapi's new transitive dependency, patching alone doesn't pull it in)
+- Added config-driven S3BlobStore backend selection (mail:blob:backend)
+- Added mail:pki:rfc8823 and mail:jobs:acme_enrollment_driver config blocks
+- Added a new BaseEscrowInfoRoute proxy exposing only {escrowScopeId, publicKey} for a mailbox's own assigned escrow scope, since restapi has no non-admin-readable path to it
+- Added unit tests for BaseEscrowInfoRoute covering every NOT_FOUND/403 branch and both owner and delegate success paths
+- Added real unit tests for the selector logic, since server.mongo.ts/server.sql.ts can't be safely imported by a test process
+- Added pst-extractor as a direct dependency, restapi's new transitive dependency for PST mailbox import parsing that patching alone doesn't pull in
+- Added a plugin host: the server installs the plugins recorded in the database with npm at startup, verifies their version, integrity, plugin API version and shared packages, applies their saved settings and loads their routes, models and jobs alongside its own
+- Added a supervisor process that runs the server as a child and starts a fresh one when the plugin set changes, falling back to starting without plugins after repeated failed starts
+- Added a plugin watcher that restarts server copies one at a time under a Redis lock when plugins change, and reports each copy's loaded plugins and errors for the admin console
+- Added the system/plugins API route and seed ActiveSync, MAPI and Autodiscover as default plugins through the new system.plugins config block
+- Added a readiness probe and a plugins volume to the Helm chart, and a plugins directory to the Docker image
+- Added the system/setup and system/mailbox-policy API routes for the first-run setup wizard and the new mailbox policy
+- Added the mail.default_quota_bytes config, which with mail.auto_provision seeds the mailbox policy and remains its fallback
+- Added enabled to default plugin entries, used as the plugin's initial state when it's first added
+- Added the system.plugins.namespaces config, and install and look up plugins in a namespace with its own registry from that registry through scoped .npmrc entries
+- Added system.plugins.require_integrity to allow registries without integrity hashes
+- Added a mail.trustedAuthservId Helm value and document that iTIP replies, recalls and ACME email challenges are ignored until mail:security:trusted_authserv_id is set
+- Added @aws-sdk/client-s3 so the S3 blob backend works
+- Added assembling drafts with no recipients or an empty body, omit display names containing @ or line breaks from From, and keep old draft bodies under legal hold
+- Added the escrow console to the Vite build so its pages get client bundles and stop returning 500 in production
+- Added @rapidmx/booking-plugin to the default plugins on MongoDB and SQL, so upgraded deployments install it and their existing booking types and bookings return
+
+### Changed
+- Splits the persistent nav-rail mark (AppShell/AdminShell) into a
+- dedicated, independently configurable icon, separate from the full logo
+- - mirrors auth-server's own logo/icon split: brandingApi.ts/useBranding.ts
+- gain iconUrl/iconSrc (falling back to the logo, then a built-in default),
+- AppShell/AdminShell's nav rail renders iconSrc instead of logoSrc, and the
+- admin Branding settings page gains an Icon section mirroring the Logo one.
+- Also makes branding (title, favicon, custom stylesheet) render correctly
+- on the very first byte of the response instead of flashing in after a
+- client-side fetch, and be visible to crawlers reading the raw HTML:
+- wwwRoute/AdminConsoleRoute/BookRoute (mongo + sql) now fetch branding via
+- @rapidmx/restapi's new fetchBrandingPropsForSSR() and feed it into
+- apps/*/_layout.tsx, which renders <title>/<link rel="icon">/the custom
+- stylesheet <link> directly from that prop. useBranding()'s stylesheet
+- effect now matches by the same <link> id rather than always appending a
+- duplicate, so it can pick up and keep live a stylesheet _layout.tsx
+- already server-rendered.
+- Requires @rapidmx/restapi's new icon field/SSR helper - not yet published,
+- so pointed at via a temporary portal:../restapi dependency until it is
+- (swap back to a real registry range once released) - and @rapidrest/react
+- 2.0.0-beta.2, which now spreads a route's fetchProps() onto _layout.tsx as
+- well as the page component.
+- Upgraded helm deps
+- The MTA bridge (tcp_table/SMTP-to-/internal/mta translation) and Postfix itself
+- now live in the separate rapidmx/postfix-bridge repo, deployed alongside this
+- one instead of built into this image. Strips the corresponding Docker Compose
+- services, Helm templates, and now-unused smtp-server dependency, and updates
+- docs/comments to point at the new repo and explain the cross-repo volume/secret
+- sharing this split now requires.
+- Extract apps/shared/lib into the new @rapidmx/react-shared package, portal-linked for now
+- First step of splitting the React frontend so the same source can build the web client, this
+- server, and a future Electron desktop client. Every apps/www/apps/admin/apps/shared/components
+- import that used to reach apps/shared/lib now imports the identical export from
+- @rapidmx/react-shared instead - no behavioral change, verified by the full test suite (1109
+- passing) and a clean production Vite build.
+- Adds resolve.dedupe for react/react-dom to vite.config.ts and vitest.config.ts, required once a
+- portal-linked package with its own devDependency copy of React is in the module graph - without
+- it, react-shared's hooks (useIsMobile, useBranding, mailDetailHooks) resolve a different React
+- instance than the components calling them and fail with "Invalid hook call".
+- Extract apps/www, apps/admin, and apps/shared/components into the new @rapidmx/web-client package
+- Second phase of the frontend split - apps/book stays in this repo per explicit instruction, but had a
+- real cross-boundary dependency on Alert/Button/BrandingChrome that now import from @rapidmx/web-client
+- as a package instead of a local relative path.
+- Adds src/routes/webClientAppDir.ts so WwwRoute/AdminConsoleRoute point at web-client's raw TSX source in
+- dev/test and its compiled dist/apps/** mirror in production, mirroring ReactRoute's own hasTsxContext
+- detection - its automatic dist/<appDir> fallback doesn't reach across a node_modules package boundary.
+- Switches @rapidmx/react-shared and @rapidmx/web-client from portal: to link: in both this repo and
+- web-client's own package.json - portal: hard-failed on the resulting diamond dependency (both packages
+- needing react-shared), a distinct yarn limitation from the instanceof-breaking portal: hazard already
+- documented further up this file.
+- Verified end to end: web-client standalone (1006/1006 tests, clean build), this repo's own vite build
+- (every web-client page correctly bundled, apps/book unaffected), and its full test suite (15 files/103
+- Document the electron-client phase that closes out this spike's three-phase plan
+- No code changes in this repo this phase - electron-client (a new sibling repo) only needed changes in
+- Updated readme
+- Renaming helm chart
+- Updated readme badges
+- Update apps/book's @rapidmx/react-shared imports to their new nested module paths
+- Update NOTES.md with the root cause and why --preserve-symlinks does not fix it
+- Upgraded restapi  dep
+- Updated deps
+- Mount KeyVaultRoute, KeyLookupRoute, KeyDiscoveryRoute, and EncryptionPolicyRoute from @rapidmx/restapi 0.6.0 for both mongo and sql backends, previously never wired in despite being fully implemented and tested upstream
+- Register SigningCertificateEnrollment as ManualSigningCertificateEnrollment, the only real implementation available today
+- Mirror the new DI registrations into test/Server.mongo.test.ts/test/Server.sql.test.ts per this repo's established convention for @Inject string-token providers
+- Document this session's scope decisions in NOTES.md, including that Escrow Scoping and ACME enrollment are out of scope here (owned directly in restapi)
+- Real crypto (signing/encryption) happens entirely client-side per this system's architecture - assemble()'s own server-side nodemailer MIME composition would invalidate a signature (signing must be the final step before submission) and would require this server to see plaintext it must never have for an encrypted message, so this is a genuinely new send path, not an extension of assemble()'s own HTML-composition one
+- Reject with 400 when a draft already has file attachments uploaded, since a signed/encrypted message can't yet embed them as MIME parts before signing/encryption - a real, disclosed scope boundary rather than silently ignoring already-uploaded files
+- Leave from/recipients server-derived exactly like assemble() (never trusted from the client), and bodyPreview intentionally empty rather than attempting to parse content out of a body this server has no business reading
+- @rapidmx/restapi's own GET /:id/content deliberately only ever serves
+- already-sanitized HTML (see that route's own doc comment) - an encrypted
+- message's real body is never sanitized or even visible server-side at all,
+- and a signed message's detached signature isn't carried in the sanitized
+- HTML either way. GET /mail/messages/:id/raw (server-local, mounted
+- alongside restapi's own MessageRoute at the same base path) streams the
+- stored bodyBlobKey bytes unmodified, labeled message/rfc822 (never
+- text/html) so a stray direct navigation can't render it as HTML - the
+- client is expected to run react-shared's crypto/smimeMessage.ts against
+- the result and sanitize before ever touching the DOM with it.
+- Document the message raw-content route in NOTES.md
+- Patch in restapi's 11 post-0.6.0 commits (RFC 8823 ACME, Escrow Scoping, Labels, Archive, S3BlobStore)
+- Mount restapi's new Label CRUD route at mail/labels
+- Make SigningCertificateEnrollment config-driven (mail:pki:signing_enrollment:backend), mirroring the existing mail:pki:backend/mail:blob:backend pattern
+- Register AcmeEnrollmentDriverJobMongo/SQL in Jobs.ts's re-export lists so the driver job actually runs once the rfc8823 backend is selected
+- Mirror the new DI registration in Server.mongo.test.ts/Server.sql.test.ts, hardcoded to the safe manual default
+- Document Phase 4 of consuming restapi's 11 post-0.6.0 commits in NOTES.md
+- Mount restapi's four new Escrow Scoping route classes: EscrowScopeRoute, MatterRoute, EscrowAccessRequestRoute, EscrowAuditLogRoute
+- Gate the new route with a mailbox-owner-or-ACL-grant check with no trusted-role bypass, mirroring BaseKeyVaultRoute's own encryption-adjacent access pattern
+- Document Phase 5a of consuming restapi's 11 post-0.6.0 commits in NOTES.md
+- Widen webClientAppDir()'s type to include the new escrow console directory
+- Mount @rapidmx/web-client's apps/escrow console at /escrow (mongo + sql), mirroring AdminConsoleRoute
+- Omit impersonationBaseUrl for the escrow console, which never impersonates a mailbox owner
+- Document Phase 5c of consuming restapi's 11 post-0.6.0 commits in NOTES.md, closing out the batch
+- Correct a misleading comment claiming AcmeEnrollmentDriverJob is a no-op under the manual signing-enrollment backend
+- Extract the blob-store/signing-enrollment config-driven selectors into a small, unit-testable selectConfigDrivenBackend() helper
+- Document this adversarial review pass and its two findings in NOTES.md
+- Patch in restapi's next 7 post-batch commits (Legal Hold, non-owner access auditing, retention, GDPR export/import/erasure, eDiscovery Matter export+search)
+- Document Phases 1-2 of consuming restapi's next batch (audit non-owner access, Legal Hold enforcement) in NOTES.md - both verified transparent, zero server code needed
+- Mount restapi's RetentionPolicy route at mail/retention-policy (mongo + sql)
+- Register RetentionEnforcementJobMongo/SQL in Jobs.ts, confirmed genuinely opt-in (only acts when the policy row has fields configured)
+- Document Phase 3 (Retention Policy) of consuming restapi's next batch in NOTES.md
+- Mount restapi's DataExportRequest route at mail/data-export-requests (mongo + sql)
+- Register DataExportJobMongo/SQL in Jobs.ts
+- Document Phase 4 (GDPR data export) of consuming restapi's next batch in NOTES.md
+- Mount restapi's MailboxImportRequest route at mail/mailbox-import-requests (mongo + sql)
+- Register MailboxImportJobMongo/SQL in Jobs.ts
+- Raise max_body_size from the framework's 10 MiB default to 100 MiB so a real Mbox/PST upload doesn't 413, as a deliberately moderate increase given this framework buffers whole request bodies in memory
+- Document Phase 5 (mailbox import) of consuming restapi's next batch in NOTES.md
+- Mount restapi's DataSubjectErasureRequest route at mail/erasure-requests (mongo + sql), self-service create only
+- Register ErasureExecutionJobMongo/SQL in Jobs.ts
+- Document Phase 6 (GDPR erasure) of consuming restapi's next batch in NOTES.md
+- Mount restapi's MatterExportRequest route at escrow/matter-export-requests (mongo + sql)
+- Mount restapi's MatterSearchRoute at escrow/matter-search (mongo + sql)
+- Register MatterExportJobMongo/SQL in Jobs.ts
+- Document Phase 7 (eDiscovery: Matter export + Matter-scoped search) of consuming restapi's next batch in NOTES.md, closing out the full compliance-roadmap batch
+- Raise the service pod's memory request/limit from 256Mi/512Mi to 384Mi/1Gi in helm/values.yaml
+- Document why: the new 100 MiB max_body_size cap (Phase 5) briefly buffers ~2x a request's body size during assembly with no per-route override, so as few as two concurrent legitimate uploads could approach the previous 512Mi limit and OOM-kill the single-replica pod for everyone
+- Document this adversarial review pass and the fix in NOTES.md, found by an independent backend-focused review agent and verified directly against readBody()'s own buffering code and this repo's own deployed resource limits
+- Register OofReplySuppressionCleanupJobMongo/SQL and ScheduledSendJobMongo/SQL in Jobs.ts, restapi job classes that were exported but never wired up
+- Verify no new DI registration is needed for either job's dependencies, and confirm both instantiate cleanly via a full server start/stop/restart run
+- Document the finding and fix in NOTES.md
+- Refresh the @rapidmx/restapi patch to pick up 4 commits of restapi's own post-batch adversarial-review fixes
+- Close a real escrow-scope bypass where any holder could list an arbitrary mailbox as a matter custodian and read/search its content without dual-control approval
+- Close several Legal Hold and holder-only separation-of-duties bypasses on Matter/Mailbox bulk endpoints (truncate/updateBulk/updateProperty/exists) that fell through to the generic trusted-role ACL
+- Pick up RetentionEnforcementJob now purging Attachment rows and blob content, not just Message rows, on expiry
+- Build from a git worktree checkout of restapi's HEAD, isolated from substantial uncommitted WIP already sitting in that repo, per the standing rule to never touch or commit restapi's own source
+- Document restapi's own build currently failing its committed lint gate (pre-existing, unrelated to this refresh) and why the patch was built via tsc directly instead
+- Raise service.replicas from 1 to 2 in helm/values.yaml, so a single pod OOM no longer takes the entire mail server down for every mailbox
+- Document that the max_body_size memory-exhaustion risk is worse than originally scoped: service-core reads the whole request body before any middleware runs, including authentication, so an unauthenticated caller can reach the same memory ceiling on any POST/PUT/PATCH endpoint, not just mailbox import
+- Document two critical/high findings from an adversarial review round that live entirely in restapi's own source and are out of scope to fix here: ScheduledSendJob sends the email before its optimistic-lock check, letting a mid-flight cancel/edit still result in delivery while the DB shows it as cancelled, and DataExportJob's mbox export plus MatterExportJob's multi-custodian aggregation both have gaps in the max_content_rows capping this session already relies on elsewhere
+- Confirm the ScheduledSendJob/OofReplySuppressionCleanupJob DI wiring and the restapi patch refresh's actual installed content both re-verified clean on direct re-inspection
+- Refresh the @rapidmx/restapi patch to pick up JP's own upstream fixes for the critical ScheduledSendJob send-after-cancel race and the DataExportJob mbox-export row-cap gap found during this session's adversarial review
+- Document that MatterExportJob's per-custodian-only cap was investigated and confirmed deliberate, not fixed
+- Document restapi's own lint gate now passing end to end
+- Updated package deps
+- Bump @rapidrest/service-core from ^1.7.2 to ^2.0.0, matching the peer dependency range @rapidmx/restapi@0.8.0 actually requires
+- Verify via a real full start/stop/restart cycle in Server.mongo.test.ts/Server.sql.test.ts, the full 146-test suite, tsc, and a full build
+- Mirror server.mongo.ts's current DI registration block into src/server.ts, the third, generic entry point rapidrest dev actually runs, which had silently drifted out of sync and was missing config-driven BlobStore/DnsResolver backend selection plus the EncryptionCertificateAuthority/SigningCertificateEnrollment registrations entirely
+- Verify by actually starting the dev server and confirming every route, including KeyVaultRoute, mounts cleanly through to Listening on 0.0.0.0:3001
+- Document the investigation in NOTES.md, including two dead ends (the service-core bump was already correct; the Unable to register class undefined log lines were unrelated framework noise) and a flagged follow-up gap: no test actually imports and exercises server.ts/server.mongo.ts/server.sql.ts as real entry points, which is how this drifted unnoticed
+- Raise dev rate limits and fix dev-mode ClamAV/rspamd scan config
+- RateLimiter was still on the bare framework default (100/60 per
+- identifier, 100/300 per IP), which is tuned for brute-force-prone
+- anonymous endpoints and too tight for GET /mailbox/:id/keys/lookup -
+- every logged-in user's compose flow hits it once per new recipient,
+- and the per-IP counter is shared across every rate-limited endpoint.
+- Raised well past restapi's own test-suite headroom a second time
+- after that still proved too tight for real interactive use.
+- Also fixed config.{mongo,sql}.ts's scan.spam.rspamd/scan.av.clamav
+- defaults, which pointed at docker-network-only hostnames ("rspamd"/
+- "clamav") instead of localhost - broke plain `yarn dev` with
+- getaddrinfo ENOTFOUND the moment mail send tried to scan anything,
+- since ScanPipeline fails closed (quarantines) on a scan-engine
+- outage rather than just logging a warning.
+- Bump @rapidmx/activesync to 1.0.0-beta.1 and @rapidmx/mapi to 1.0.0-beta.2
+- Both now declare peer deps matching the already-installed @rapidrest/service-core
+- 2.x and @rapidmx/restapi ^0.8.0 (bumped in 2bd8f2c/2bd8f2c's own follow-up), rather
+- than the stale service-core 1.x/restapi 0.3.x their previous versions expected.
+- package.json/yarn.lock had drifted behind what was already installed and running.
+- Wire the new mailbox access management/email-lookup routes into the running server
+- Adds MailboxAccessRoute.ts (mongo/sql), each sharing MailboxRoute's own
+- "mail/mailboxes" base path - same pattern as KeyLookupRoute.ts.
+- @rapidmx/restapi's own new BaseMailboxAccessRoute (see that repo's own commit)
+- isn't reachable here without a fresh yarn patch, since this repo consumes
+- restapi as a published dependency, not a live symlink - patched to 0.8.0's
+- real build output (not hand-written JS) via `yarn patch`/`yarn patch-commit`.
+- Verified with a real `yarn dev` boot: all four new routes register and the
+- server reaches "Listening on 0.0.0.0:3002" cleanly.
+- Change the branding, retention policy and encryption policy API routes from mail/ to system/, keeping mail/branding mounted for previously saved asset URLs
+- Refresh the @rapidmx/restapi patch with the plugin contract
+- Refresh the @rapidmx/restapi patch with the mailbox policy and setup state
+- Refresh the @rapidmx/restapi patch with plugin search, updates and namespaces
+- Skip plugins whose required plugins aren't loaded or are out of range, cascading to plugins that require them, and report each in plugin status
+- Load plugins in dependency order so required plugins register first
+- Refresh the @rapidmx/restapi patch with plugin dependency planning
+- Handle Redis client errors in the plugin watcher so a Redis restart no longer crashes every server process
+- Stop safe mode from restarting back into the failing plugin set unless an administrator changes plugins
+- Restore conservative anonymous and per-IP rate limits, keeping very high limits for signed-in users under rateLimit.authenticated, via a TieredRateLimiter
+- Retry failed plugin installs with backoff instead of serving without plugins until the next restart
+- Make rolling plugin restarts safer: drain readiness before stopping, renew the restart lock and release it after the new copy is serving, jitter restarts without a lock, and always exit when stopping fails
+- Refuse registry plugins without integrity, keep package-lock.json between installs, fail only the plugin that brings its own copy of a shared peer, rewrite .npmrc with 0600 on every start, and prune stale plugin status entries
+- Time fast-failure detection from when the worker starts listening rather than from fork
+- Seed default plugins whose required plugins won't be enabled as disabled
+- Serve @rapidmx/web-client and @rapidmx/react-shared 0.4, which call the system/ routes
+- Refresh the @rapidmx/restapi patch with the review fixes
+- Only enter plugin safe mode after a crash once plugins have loaded, pass the failing plugin set to safe mode and retry it with backoff, and never delete installed plugins in safe mode or when the plugin list can't be read
+- Keep loading already-installed plugins that still match when npm fails, halt the rolling restart while a copy can't install the new set, and stop retrying after 6 attempts or on errors retrying won't fix
+- Key anonymous per-endpoint rate limits by client IP, resolve client IPs through trusted proxies with CIDR support, and add a Helm trustedProxies value
+- Skip seeding a default plugin whose required default failed to load this start instead of adding it disabled
+- Renew and release the restart lock atomically with Lua, time out npm installs, stop renewing a lock held too long before serving, and release the lock on shutdown during a restart
+- Use a UUID for the dev auto-login user
+- Refresh the @rapidmx/restapi patch with the round 2 review fixes
+- Default the Helm chart to production, require real JWT and ingest secrets, and reject known default secrets outside dev and test
+- Use an explicitly set JWT secret over the stored one, and keep generated cookie and session secrets in a Secret that survives upgrades
+- Block /internal at the Gateway, fix TLS on the https listener with an http redirect, require auth for metrics, and derive booking, autodiscover and MX hostnames from host
+- Validate raw MIME sends: From and Sender must be the mailbox's own addresses, no Bcc or Resent headers, recipients must match the draft, and enforce the size cap
+- Default to 1 replica with the Recreate strategy unless storage is ReadWriteMany or S3, persist the local PKI directory, and make schema synchronize configurable
+- Stop accepting JWTs in query strings, drain readiness before stopping on SIGTERM, add probes and a non-root security context, and pin the rspamd image
+- Give the telemetry token a telemetry-only role with a 1 hour expiry, count IPv6 clients per /64 for rate limits, and harden the Giphy route
+- Build a production-only runtime image, ignore .env, data and plugins, health check /api/status, and bind compose ports to localhost
+- Refresh the @rapidmx/restapi patch with the round 3 review fixes
+- Register all 42 restapi models in the Mongo and SQL model lists, with a test that fails when they drift from restapi's exports
+- Run the image entrypoint on Kubernetes so the mail relay is configured, and add mail.relay values defaulting to the postfix-bridge service
+- Pass bundled database passwords as secretKeyRef env vars instead of lookups that are empty on a fresh install
+- Serve HTTPS only when the chart owns the Gateway or an HTTPS listener is named, use one listener per hostname, add the auth-server HTTPS route and ReferenceGrant, and fix the installer's TLS listener
+- Fail rendering without cluster access unless generated secrets are set or secrets.existingSecret is used, and generate and keep an escrow audit HMAC key
+- Delete superseded compose body blobs when unreferenced, and tighten raw MIME From and Sender, display name and trace header checks
+- Bound plugin host stop during shutdown, require a dev NODE_ENV for dev auto-login, match .local hosts by suffix, refuse both databases enabled, cap the telemetry renew interval, and remove Prometheus scrape annotations
+- Apply restapi's MySQL column type hook after plugin models load, and fix uppercase auth-server resource names
+- Refresh the @rapidmx/restapi patch with round-4 fixes: client _id and dotted key stripping, originator checks before any send, send claims, oversigned DKIM for key discovery and recall, job claims and leases, bounded indexed lookups, and extraction worker isolation
+- Document the round-4 DKIM oversigning requirement, scheduled send contract change and patch refresh verification
+- Label server pods as Redis clients and admit auth-server through Redis's NetworkPolicy so default installs can reach Redis
+- Copy the kubeconfig to the invoking user with mode 0600 instead of making it world-readable, and pass secrets to helm through a temporary 0600 values file
+- Print kubectl commands instead of database root passwords in NOTES.txt
+- Fail the render when TLS is on but an external Gateway has no HTTPS listener, probe cluster access with a namespaced object, and keep operator-set cookie, session and escrow HMAC keys
+- Audit non-owner raw content reads, and page public booking slots across the booking window
+- Serve the current web client and react-shared through yarn patches of @rapidmx/web-client 0.4.0 (apps and dist) and @rapidmx/react-shared 0.4.0, so deployments pick up the round-3 to round-5 UI fixes and the send-later and plugin-add contracts restapi now requires, instead of the stale npm builds
+- Cover public booking slot paging and the booking layout in tests, drop two unreachable load-more guards, and keep Server.sql.test's SQLite files in a temp directory so running dev watchers don't rebuild mid-test
+- Refresh the @rapidmx/restapi patch with round-5 fixes: send leases and recipient checks, Drafts move rules, erasure deferral, list and forward relay rewriting, owner renames, attachment scoping by message and key vault enrollment and rekey guards
+- Refuse to assemble a delivered message that a mail filter moved into Drafts
+- Document the round-5 patch set, verification and open items
+- Updated @rapidrest/service-core to ^2.1.0
+- Refresh the @rapidmx/restapi patch with restapi's service-core 2.1.0 migration: allowExistingACL for well-known folders, literal query values for sender- and client-controlled lookups, and batched literal truncates
+- Document the migration and the pre-existing Vite server exit warning in the server tests
+- Fail the chart render when a public host keeps a localhost auth-server host or the auth-server gateway doesn't match the chart's gateway
+- Refuse to silently change the escrow audit HMAC key on upgrade when a stored key differs from the configured one
+- Warn at startup and in helm notes when trusted_authserv_id is unset, and document the mail features that depend on it
+- Record superseded draft bodies kept under legal hold on the message in the same versioned update, refusing with 409 past the retention bound
+- Limit public booking pages to two slot requests per page with a Show later times prompt
+- Refresh the restapi, react-shared and web-client patches with round-6 fixes
+- Treat fullwidth and small look-alike @ signs as address-like in composed From display names, matching restapi and the web client
+- Patch @rapidrest/react so a compiled dist/ appDir finds its source entries in the Vite manifest, fixing production hydration for the www, admin and escrow pages
+- Cover production client bundle resolution for every page of the www, admin, escrow and book routes on both backends
+- Document the production hydration findings and fixes
+- Refresh the @rapidmx/restapi patch with restapi 3196232: 0.11.0's key trust, key conflict resolution and verification seal endpoints, and the plugin manifest ui contract with its mount conflict helpers
+- Carry restapi's package.json in the patch so it lists semver and the service-core ^2.1.0 peer range
+- Cover the key trust, key resolve and verification seal routes and their required model classes on both backends
+- Document the refresh and the drive-letter case that breaks vitest when run from Git Bash
+- Build enabled plugins' UI apps into the browser bundles at startup with PluginUiBuilder, cached by a hash of the web client, react-shared, build tooling and plugin versions, written to a temporary folder and moved into place, retried without a plugin whose UI fails and never failing the start
+- Share the Vite build configuration between vite.config.ts and the startup build, and give the booking pages the web client's stylesheet
+- Serve each plugin UI app through a route generated from its host's base route on MongoDB and SQL, registered as plugins.<name>.ui.<id>, with PublicPageRoute as the public host's base
+- Refuse plugin UI mounts that overlap an earlier plugin's pages or clash case-insensitively with any other registered route
+- Pass pluginNav with loaded plugins' settings sections, admin navigation and app rail entries to the web client and admin console pages, and record each plugin's UI state in PluginRegistry and its status
+- Return each installed plugin's package directory, integrity and UI apps from PluginInstaller
+- Ship vite, @vitejs/plugin-react, @tailwindcss/vite and tailwindcss as production dependencies, keep the app sources and public files in the image with a writable /app/plugins/.ui-build, and raise the chart's default memory request and limit
+- Cover the builder, generated routes, collisions, navigation and a real Vite build of a fixture plugin, and document plugin UI builds and the production check
+- Refresh the @rapidmx/restapi patch with restapi 31007c9, which removes booking types, bookings and the public booking routes from core and exports DateCoercionUtils
+- Refresh the @rapidmx/react-shared patch with react-shared 720279d, which removes bookingApi
+- Refresh the @rapidmx/web-client patch with web-client a639fc0, which removes the Booking Links settings pages, their settings section and AvailabilityEditor
+- Move semver to the production dependencies, since restapi imports it at runtime
+- Keep earlier plugin UI builds when a start has no plugin UI, so re-enabling the same plugins reuses their build
+- Document booking as a plugin, its public URL setting and the unpublished package in the README, configs, chart and NOTES
+- Cover the server's SQL connection keeping every model after the plugin table is read, and the repository choice by database type
+- Document the root cause, the fix and the SQLite and Postgres production checks in NOTES
+- Update @rapidrest/react to 2.0.0-beta.3 and @rapidrest/service-core to ^2.1.1, dropping the @rapidrest/react patches now that the dist appDir manifest fix is published
+- Depend on the published @rapidmx/restapi ^0.12.0, @rapidmx/react-shared ^0.6.0 and @rapidmx/web-client ^0.6.0, removing the local patches and the react-shared resolution
+- Update the auth-server chart dependency to 1.0.0-beta.2
+- Reword the web client source alias comment now that web-client 0.6.0 names its search index worker by its built file
+- Plugins are disabled by default
+- Lots of impovements to k3s installer script
+- Build the browser bundles with strict execution order, so react-shared's reflect-metadata import runs before @peculiar/x509's tsyringe instead of every hydrated page throwing "tsyringe requires a reflect polyfill" and staying blank
+- Collect a plugin page's stylesheets through its imported chunks in the PluginUiBuilder Vite test, since shared CSS can now sit on an imported chunk
+
+### Fixed
+- Fixed apps/book's Alert/Button imports to come from @rapidmx/react-shared instead of @rapidmx/web-client, since those components moved
+- Fixed Invalid hook call during SSR by adding a Node module hook that forces react/react-dom to resolve to this project's own copy
+- Fixed a real, user-visible bug: ScheduledSendJob is the only thing that actually relays a message once its scheduledSendTime is due, so the already-shipped Compose "Schedule send" feature was silently a no-op end to end - a scheduled message would confirm as scheduled and then never send
+- Fixed an unbounded storage-growth gap: OofReplySuppressionCleanupJob purges aging suppression rows that were already being written elsewhere, just never cleaned up
+- Fixed linter errors
+- Fixed a server startup crash: BaseKeyVaultRoute's @Inject("EncryptionCertificateAuthority") wiring depends on DI-registration behavior that isn't compatible with the older service-core, so route-scanning at boot threw No class found with name: EncryptionCertificateAuthority the moment KeyVaultRoute was instantiated
+- Fixed yarn dev crashing at startup with No class found with name: EncryptionCertificateAuthority
+- Fixed the SQL config's default plugins still using the pre-rename package names, and update the defaults to the -plugin package names
+- Fixed helm upgrades: render rollingUpdate null with Recreate and keep existing PVC storage classes
+- Fixed the single-node installer: SKIP_K3S and --tls parsing, the nginx wait loop, idempotent stream blocks, uninstall, kubectl and helm install, readiness waits, Gateway NodePort lookup, sudo writes, RHEL package, Let's Encrypt email and chart path
+- Fixed plugin UI pages that import @rapidmx/web-client failing to build by resolving its package exports to the web client's app sources in the browser build
+- Fixed plugins never loading on SQL datastores, where reading the plugin list always asked TypeORM for a MongoDB repository
+- Fixed SQL servers creating only the plugin table and failing every other model with "No metadata", on SQLite, Postgres and MySQL, by reading the plugin table on a connection named apart from the server's own datastore, since service-core reuses a SQL DataSource by name with the entities it was first given
+- Fixed the plugin watcher on SQL datastores asking TypeORM for a MongoDB repository, so plugin changes never restarted SQL servers, by sharing pluginRepository() with the plugin state store
+
+### Removed
+- Removed mta-bridge/Postfix in favor of the standalone postfix-bridge repo
+- Removed @rapidmx/activesync, @rapidmx/mapi and @rapidmx/autodiscover as direct dependencies, and DeviceSyncState and EasDeviceStateCleanupJob from the server's models and jobs, now that they come from plugins
+- Removed the mail/branding alias so the branding API is served only at system/branding
+- Removed localhost:9999 from Mongo defaults, fix the documented env var names, and run server tests on free ports
+- Removed the public booking pages, BookRoute, the BookingRoute and BookingTypeRoute API routes and the booking models from the server on MongoDB and SQL, now that they come from @rapidmx/booking-plugin, keeping PublicPageRoute as the public plugin host base
+
+
 ### Removed
 - Removed src/mta-bridge (TcpTableServer, MtaIngestClient, SmtpDeliveryServer) and its tests, the postfix/mta-bridge/postfix-tls-init Docker Compose services, and the postfix/mta-bridge/mail-tls-certs/mail-tls-policy Helm templates - this functionality now lives in the standalone [postfix-bridge](https://github.com/rapidmx/postfix-bridge) repo, deployed alongside this one instead of built into its image
 - Removed the smtp-server/@types/smtp-server dependencies, no longer used now that SmtpDeliveryServer moved out
@@ -344,7 +666,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed test from .dockerignore, fixing yarn build's lint step failing outright when the build context is missing the test directory its tsconfig.eslint.json requires
 - Removed docker-compose.mail.yml's partial server: service block, since include: only supports merging resources that don't already exist in the including file and hard-errors ("services.server conflicts with imported resource") on a Compose version newer than whatever this had only ever been tested against locally
 
-[Unreleased]: https://github.com/rapidmx/server/compare/v1.0.0-beta.2...HEAD
+[Unreleased]: https://github.com/rapidmx/server/compare/v1.0.0-beta.3...HEAD
+[1.0.0-beta.3]: https://github.com/rapidmx/server/compare/v1.0.0-beta.2...v1.0.0-beta.3
 [1.0.0-beta.2]: https://github.com/rapidmx/server/compare/v1.0.0-beta.1...v1.0.0-beta.2
 [1.0.0-beta.1]: https://github.com/rapidmx/server/compare/v1.0.0-beta.0...v1.0.0-beta.1
 [1.0.0-beta.0]: https://github.com/rapidmx/server/releases/tag/v1.0.0-beta.0
