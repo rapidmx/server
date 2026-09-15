@@ -15,7 +15,12 @@ import { createViteConfig } from "@rapidrest/react/vite";
 // local to this repo (not part of the web-client/react-shared split - see .claude/NOTES.md).
 export default async function () {
     const config = await createViteConfig({
-        appDir: ["node_modules/@rapidmx/web-client/apps/www", "node_modules/@rapidmx/web-client/apps/admin", "apps/book"],
+        appDir: [
+            "node_modules/@rapidmx/web-client/apps/www",
+            "node_modules/@rapidmx/web-client/apps/admin",
+            "node_modules/@rapidmx/web-client/apps/escrow",
+            "apps/book",
+        ],
         plugins: [tailwindcss()],
     });
     return {

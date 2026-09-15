@@ -5290,3 +5290,44 @@ copy of the working-tree script (applies cleanly, result identical), `bash -n`, 
 warnings; one SC2024 disabled with a reason), and harness runs of the awk against the stock Fedora nginx.conf
 (idempotent, restores byte-for-byte), the Gateway heredoc for public/.local/TLS-off/.localdomain domains, and
 recordInstalled/installedBy/uninstall with stubbed sudo/helm/kubectl.
+
+## 2026-09-15 — Production hydration: escrow console missing from the Vite build, web-client manifest keys never matched
+
+Verified against a real `yarn build` plus `NODE_ENV=production node dist/src/server.js` (scratchpad launcher: in-memory
+Mongo and Redis via `mongodb-memory-server`/`redis-memory-server`, `datastores__*__url` env vars, non-default secrets).
+Before the fix, `/`, `/admin` and `/escrow` all returned 500; `/book`, `/book/<slug>` and `/book/manage/<token>` were 200
+with working bundles.
+
+1. **www and admin (and escrow) - real.** In production `webClientAppDir()` points at
+   `node_modules/@rapidmx/web-client/dist/apps/<app>`, so the compiled page is `.../dist/apps/www/index.js`, but Vite's
+   manifest names the entry after its source, `node_modules/@rapidmx/web-client/apps/www/index.tsx`.
+   `ReactRoute.resolveClientUrls()` anchors at `appDir` and never matched: log "Manifest entry
+   ".../dist/apps/www/index.js" not found", then "hydrate=true requires react.manifestPath ...". Every web-client page
+   was a 500 in production, most likely since the web-client split (dev and tests use the source dir, so nothing caught it).
+   `apps/book` was fine: its appDir is repo-local and the compiled `dist/apps/book/...` path still contains `apps/book`.
+2. **Escrow console - real.** `apps/escrow` wasn't in `vite.config.ts`'s appDir list, so it had no client entries at all.
+   Would have 500'd even with fix 1.
+
+**Fixes**
+- `@rapidrest/react` (`D:/github/RapidREST/react`, uncommitted, needs publishing): `resolveClientUrls()` normalizes
+  `appDir` to cwd-relative posix (so `./x` and absolute dirs anchor too) and, when the name lookup under `appDir` misses,
+  retries with `appDir`'s last `dist` path segment removed (`node_modules/pkg/dist/apps/www` -> `node_modules/pkg/apps/www`).
+  An entry named after `appDir` itself still wins. Works the same for plugin app dirs shipped as a compiled `dist/`
+  mirror next to their sources. Unit tests in `test/ReactRoute.test.ts`; lint + 264 tests at 100% coverage.
+- Server consumes it as a yarn patch: `.yarn/patches/@rapidrest-react-npm-2.0.0-beta.2-8c0baa03dc.patch`
+  (`dist/lib/ReactRoute.js`, `dist/types/ReactRoute.d.ts`, copied from that repo's build). Drop the patch once a release
+  with the fix is published. The old `@rapidrest-react-npm-2.0.0-beta.0-*.patch` file is unreferenced.
+- `vite.config.ts`: added `node_modules/@rapidmx/web-client/apps/escrow`.
+- `test/routes/ReactRouteHydration.test.ts`: builds a fixture manifest from `vite.config.ts`'s own hydration inputs
+  (named like Vite names them), constructs every ReactRoute (mongo and sql www/admin/escrow/book) as a compiled runtime
+  would, and checks each source page's compiled module resolves to its own bundle. Fails for www/admin/escrow without the
+  patch, and for escrow without the vite.config entry.
+
+**Pre-existing, not fixed:** `apps/book` pages still get no stylesheet (see the web-client split entry above - book
+never imports `app.css`).
+
+Verified: production run after the fix - `/`, `/admin`, `/escrow`, `/escrow/audit-log`, `/calendar`,
+`/settings/booking-types/abc`, `/admin/mailboxes/abc`, `/book`, `/book/some-slug`, `/book/manage/some-token` all 200 with
+the props script and module bundle injected, and every same-origin bundle and stylesheet URL 200. `yarn tsc --noEmit`,
+`yarn lint`, `yarn test` 343/343 (31 files, exit 0). `tsc -p tsconfig.test.json` still reports its 36 pre-existing
+errors, none in the new test.

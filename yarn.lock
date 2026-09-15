@@ -2071,6 +2071,35 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@rapidrest/react@patch:@rapidrest/react@npm%3A2.0.0-beta.2#~/.yarn/patches/@rapidrest-react-npm-2.0.0-beta.2-8c0baa03dc.patch":
+  version: 2.0.0-beta.2
+  resolution: "@rapidrest/react@patch:@rapidrest/react@npm%3A2.0.0-beta.2#~/.yarn/patches/@rapidrest-react-npm-2.0.0-beta.2-8c0baa03dc.patch::version=2.0.0-beta.2&hash=b1174a"
+  dependencies:
+    cross-spawn: "npm:^7.0.6"
+  peerDependencies:
+    "@rapidrest/core": 5.x
+    "@rapidrest/service-core": 1.x
+    "@vitejs/plugin-react": ">=4.0.0"
+    nodemon: ">=3.0.0"
+    react: 19.x
+    react-dom: 19.x
+    tsx: ">=4.0.0"
+    vite: ">=5.0.0"
+  peerDependenciesMeta:
+    "@vitejs/plugin-react":
+      optional: true
+    nodemon:
+      optional: true
+    tsx:
+      optional: true
+    vite:
+      optional: true
+  bin:
+    rapidreact: dist/cli/cli.js
+  checksum: 10c0/f2099ce3ee47ea359bcd359f955d269b3ce15248e3214242dd37bd89575540af9c32abe663ce704f0662e55e4eff6c933e3930c42ac78adbad9dec11bf5a5e90
+  languageName: node
+  linkType: hard
+
 "@rapidrest/service-core@npm:^2.1.0":
   version: 2.1.0
   resolution: "@rapidrest/service-core@npm:2.1.0"
@@ -9999,7 +10028,7 @@ __metadata:
     "@rapidmx/web-client": "patch:@rapidmx/web-client@npm%3A0.4.0#~/.yarn/patches/@rapidmx-web-client-npm-0.4.0-bf47c7c6fa.patch"
     "@rapidrest/cli": "npm:^2.0.0"
     "@rapidrest/core": "npm:^5.2.2"
-    "@rapidrest/react": "npm:2.0.0-beta.2"
+    "@rapidrest/react": "patch:@rapidrest/react@npm%3A2.0.0-beta.2#~/.yarn/patches/@rapidrest-react-npm-2.0.0-beta.2-8c0baa03dc.patch"
     "@rapidrest/service-core": "npm:^2.1.0"
     "@swc/core": "npm:^1.16.2"
     "@tailwindcss/vite": "npm:^4.3.3"
