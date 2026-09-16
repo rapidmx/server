@@ -4,16 +4,26 @@
 import config from "../../src/config.mongo.js";
 import { Logger } from "@rapidrest/core";
 import { ObjectFactory } from "@rapidrest/service-core";
-import { PostfixSendmailTransport } from "@rapidmx/restapi";
+import { PostfixSendmailTransport, SesMailTransport } from "@rapidmx/restapi";
 import { ClamAvScanProvider, RspamdSpamScanProvider } from "@rapidmx/restapi/scan";
 import { registerMailProviders } from "../../src/dev/registerMailProviders.js";
 import { DevBypassAvScanProvider, DevBypassSpamScanProvider, DevScanBypass } from "../../src/dev/DevScanBypass.js";
 import { DevLocalDeliveryTransport } from "../../src/dev/DevLocalDeliveryTransport.js";
 import { DevLocalDeliveryTransportMongo } from "../../src/dev/DevLocalDeliveryTransportMongo.js";
 
-function recordRegistrations(environment: string | undefined): Record<string, any> {
+/** A config whose only set key is `mail:transport:provider`, when `provider` is given. */
+function transportConfig(provider?: string): { get(key: string): unknown } {
+    return { get: (key: string) => (key === "mail:transport:provider" ? provider : undefined) };
+}
+
+function recordRegistrations(environment: string | undefined, provider?: string): Record<string, any> {
     const registered: Record<string, any> = {};
-    registerMailProviders({ register: (clazz: any, fqn?: string) => (registered[fqn!] = clazz) }, DevLocalDeliveryTransportMongo, environment);
+    registerMailProviders(
+        { register: (clazz: any, fqn?: string) => (registered[fqn!] = clazz) },
+        DevLocalDeliveryTransportMongo,
+        environment,
+        transportConfig(provider),
+    );
     return registered;
 }
 
@@ -28,6 +38,17 @@ describe("registerMailProviders", () => {
         }
     });
 
+    it("registers SesMailTransport when mail:transport:provider is ses, and Postfix for any other value", () => {
+        expect(recordRegistrations("production", "ses").MailTransport).toBe(SesMailTransport);
+        for (const provider of [undefined, "", "postfix", "Ses", "sendmail"]) {
+            expect(recordRegistrations("production", provider).MailTransport).toBe(PostfixSendmailTransport);
+        }
+    });
+
+    it("keeps the development transport whatever the configured provider is", () => {
+        expect(recordRegistrations("development", "ses").MailTransport).toBe(DevLocalDeliveryTransportMongo);
+    });
+
     it("registers the development wrappers for dev, development and test", () => {
         for (const environment of ["dev", "development", "test"]) {
             expect(recordRegistrations(environment)).toEqual({
@@ -40,7 +61,7 @@ describe("registerMailProviders", () => {
 
     it("resolves the unwrapped providers from a real ObjectFactory in production", async () => {
         const objectFactory = new ObjectFactory(config, Logger());
-        registerMailProviders(objectFactory, DevLocalDeliveryTransportMongo, "production");
+        registerMailProviders(objectFactory, DevLocalDeliveryTransportMongo, "production", config);
 
         const spam: any = await objectFactory.newInstance("SpamScanProvider", { name: "default" });
         const av: any = await objectFactory.newInstance("AvScanProvider", { name: "default" });
@@ -56,7 +77,7 @@ describe("registerMailProviders", () => {
 
     it("resolves the development wrappers, each around its real implementation, from a real ObjectFactory", async () => {
         const objectFactory = new ObjectFactory(config, Logger());
-        registerMailProviders(objectFactory, DevLocalDeliveryTransportMongo, "development");
+        registerMailProviders(objectFactory, DevLocalDeliveryTransportMongo, "development", config);
 
         const spam: any = await objectFactory.newInstance("SpamScanProvider", { name: "default" });
         const av: any = await objectFactory.newInstance("AvScanProvider", { name: "default" });

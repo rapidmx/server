@@ -1,7 +1,7 @@
 {{- /* See auth-server's own 3_gateways/api.yaml doc comment for why this is gated on gateway.create. */}}
 {{- $tls := eq (include "server.tlsEnabled" $) "true" }}
 {{- $httpsListener := include "server.httpsListener" $ }}
-{{- $authHost := $.Values.authServer.host }}
+{{- $authHost := (include "rrst.render" (dict "value" $.Values.authServer.host "context" $)) }}
 {{- $authHttpsListener := include "server.authHttpsListener" $ }}
 {{- $ownsGateway := eq (include "server.ownsGateway" $) "true" }}
 {{- include "server.assertAuthServerRouting" $ }}
@@ -29,12 +29,12 @@ spec:
   - name: https
     protocol: HTTPS
     port: 443
-    hostname: {{ $.Values.host | quote }}
+    hostname: {{ (include "rrst.render" (dict "value" $.Values.service.host "context" $)) | quote }}
     tls:
       mode: Terminate
       certificateRefs:
       - kind: Secret
-        name: {{ $.Values.host }}-tls-cert
+        name: {{ (include "rrst.render" (dict "value" $.Values.service.host "context" $)) }}-tls-cert
     allowedRoutes:
       namespaces:
         from: All
@@ -68,7 +68,7 @@ spec:
     namespace: {{ tpl $.Values.gateway.namespace $ }}
     sectionName: {{ ternary $httpsListener "http" $tls }}
   hostnames:
-  - {{ $.Values.host | quote }}
+  - {{ (include "rrst.render" (dict "value" $.Values.service.host "context" $)) | quote }}
   rules:
   # /internal/* (the MTA hand-off API postfix-bridge calls inside the cluster, authenticated by mail.ingestSecret) is
   # never served publicly: a rule with no backendRefs and no filters answers 404. It shares the server's port with the
@@ -106,7 +106,7 @@ spec:
     namespace: {{ tpl $.Values.gateway.namespace $ }}
     sectionName: http
   hostnames:
-  - {{ $.Values.host | quote }}
+  - {{ (include "rrst.render" (dict "value" $.Values.service.host "context" $)) | quote }}
   rules:
   - filters:
     - type: RequestRedirect

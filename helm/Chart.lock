@@ -14,5 +14,5 @@ dependencies:
 - name: postfix-bridge
   repository: oci://ghcr.io/rapidmx/charts
   version: 1.1.0
-digest: sha256:e57fcdb6b89b3a36ce8c5c98821a864c9ba35ed58f1365142bb47ba8f91ae5cf
-generated: "2026-09-15T14:40:26.0538606-07:00"
+digest: sha256:3d9a01d038361e556d513d7784f6057ba81a3d131cd1e72602059d4fe036e738
+generated: "2026-09-15T22:14:37.8553235-07:00"

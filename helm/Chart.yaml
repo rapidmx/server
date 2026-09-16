@@ -39,6 +39,7 @@ dependencies:
     alias: authServer
   - name: postfix-bridge
     repository: oci://ghcr.io/rapidmx/charts
-    version: 1.1.0
+    # 1.2.0 for ingestSecretRef, which the OpenBao path needs (see values.yaml's postfixBridge.ingestSecretRef).
+    version: 1.2.0
     condition: postfixBridge.create
     alias: postfixBridge

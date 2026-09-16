@@ -95,6 +95,49 @@ placeholders. Without cert-manager, set `postfixBridge.tls.certManager.enabled=f
 `mail.dkim.storage` volume, so with the default `ReadWriteOnce` both pods must run on the same node. Set `postfixBridge.create=false` to install postfix-bridge as its
 own release instead; the release notes (`helm get notes`) then say how to connect it.
 
+On AWS, set `mail.transport.provider=ses` with `postfixBridge.create=false` to send through SES instead of Postfix
+(`mail.transport.ses.region`, and inbound mail through [`ses-bridge`](https://github.com/rapidmx/ses-bridge)); the render
+fails if both are on at once. The pod gets its AWS credentials from `serviceAccount.create` with an
+`eks.amazonaws.com/role-arn` annotation (IRSA) or from the node's own role, and `mail.ingestService.enabled` adds an
+internal load balancer for `/internal/mta`, which ses-bridge's Lambda calls from inside the VPC - the public Gateway
+still answers 404 for `/internal`. Restrict it with `mail.ingestService.loadBalancerSourceRanges`.
+
+Set `global.domain` to the deployment's mail domain (e.g. `example.com`): mail is addressed `@<domain>`, the server is
+served at `service.host` (`mail.<domain>` by default), the auth-server at `authServer.host` (set it to `auth.<domain>` —
+it can't default to a template, because the auth-server subchart reads its own `host` literally), and the JWT audience
+and issuer are the domain and that auth host on both sides. Postfix's MX name and sender domains follow the same value.
+
+#### Secrets and OpenBao
+
+With `global.openbao.enabled` this release keeps its secrets in [OpenBao](https://openbao.org): the JWT signing secret
+shared with auth-server, the cookie, session and escrow audit keys, the postfix-bridge ingest secret, and the certificate
+authority for end-to-end encrypted mail (`mail:pki:backend`, an OpenBao PKI mount instead of the local CA on disk). [External Secrets](https://external-secrets.io) copies the values into the Kubernetes Secrets the pods already
+load, so nothing in the application changes. The bundled auth-server reads the same vault path, so both sides share one
+JWT secret without either value being passed in.
+
+**OpenBao is a prerequisite, like cert-manager - the chart doesn't install it**, which is why the value is off by
+default: a plain `helm install` shouldn't assume a vault is there. `single_node_install.sh` and `deploy/aws` do install
+one and turn it on (`--openbao true` / `RAPIDMX_OPENBAO`, on by default there): they install it, initialise it, keep the unseal
+key in a Kubernetes Secret with an unsealer Deployment that re-unseals the vault after any restart, write this release's
+secrets (each value once - never rewritten, so an upgrade doesn't invalidate sessions or re-key the escrow chain), set up
+the PKI mount and issuing role, and create the two token Secrets. External Secrets has to be there too; its CRDs are
+cluster-wide, so the chart can't bring it, and the render fails with the exact command when it's missing.
+
+Point `global.openbao.address` at an OpenBao you already run to use that one instead (`auth.method: kubernetes` avoids
+storing a token at all). It has to hold, under `global.openbao.kvMount` at `global.openbao.secretsPath`
+(`<release>/secrets` by default), the fields `auth_secret`, `cookie_secret`, `session__secret`,
+`escrow_audit_hmac_key` and `mail_ingest_secret`; `global.openbao.auth.tokenSecret` names a Secret whose `token` may read
+them. For the encryption CA, a PKI mount (`openbao.pki.mount`) with an issuing role (`openbao.pki.role`) that accepts an
+email address as the common name, and `openbao.pki.tokenSecret` naming a Secret whose `mail__pki__openbao__token` may
+`update` on `<mount>/sign/<role>` and `<mount>/revoke` - the server signs client CSRs, so the CA key never leaves the
+vault. Leave `openbao.pki.tokenSecret` empty to keep the local CA on the `pki-data` volume.
+
+Keeping the unseal key in a Secret is what makes the deployment heal itself after a reboot, at the cost that anyone who
+can read Secrets in the vault's namespace can unseal it (roughly what those Secrets exposed before). A cluster with a KMS
+to auto-unseal from should run its own vault and be pointed at instead.
+
+Left off (the chart's default), everything stays in Kubernetes Secrets, in which case:
+
 The chart needs two secrets you supply, and refuses to render without them: `global.authSecret` (the JWT secret, shared
 with the bundled auth-server) and `global.mailIngestSecret` (shared with postfix-bridge). Pass the same values
 again on every upgrade. Cookie, session and escrow audit (`mail.escrow.auditHmacKey`) secrets are generated on install and
@@ -103,7 +146,8 @@ until you set `cookies.secret`, `sessions.secret` and `mail.escrow.auditHmacKey`
 `secrets.existingSecret` at a Secret you manage. Outbound mail is relayed to postfix-bridge's `postfix`
 Service (`mail.relay.*`). Behind a Gateway this chart doesn't create, set `gateway.httpsListener` to the listener that
 terminates TLS for `host` with the `<host>-tls-cert` Secret (the render fails without it while `gateway.tls` is
-true; set `gateway.tls=false` to serve plain HTTP). With a public `host`, set `authServer.host` (e.g. `auth.<host>`),
+true; set `gateway.tls=false` to serve plain HTTP). The usual naming is `host: mail.<domain>` with
+`authServer.host: auth.<domain>` - with a public `host`, set `authServer.host`,
 the auth-server's public name that sign-in redirects to; on someone else's Gateway also set `authServer.gateway.name`
 and `authServer.gateway.namespace` to that Gateway and `gateway.authHttpsListener` to its HTTPS listener for that host
 (the render fails while these don't line up). Set `mail.trustedAuthservId` to the authserv-id your inbound MTA stamps:
@@ -114,7 +158,7 @@ requires a token with a trusted role, so scrape it with a bearer token rather th
 #### From GHCR
 
 ```bash
-helm install --create-namespace --namespace mail-server mail-server oci://ghcr.io/rapidmx/charts/server --version 1.0.0-beta.3   --set global.authSecret="$(openssl rand -hex 32)" --set global.mailIngestSecret="$(openssl rand -hex 32)"   --set host=mail.example.com --set authServer.host=auth.mail.example.com   --set postfixBridge.hostname=mail.example.com --set postfixBridge.domains=example.com
+helm install --create-namespace --namespace mail-server mail-server oci://ghcr.io/rapidmx/charts/server --version 1.0.0-beta.3   --set global.authSecret="$(openssl rand -hex 32)" --set global.mailIngestSecret="$(openssl rand -hex 32)"   --set global.domain=example.com --set authServer.host=auth.example.com
 ```
 
 #### From Local
@@ -178,12 +222,29 @@ environment, including ingress with TLS support. Simply run the script from any 
 It installs k3s, helm, [Envoy Gateway](https://gateway.envoyproxy.io/) (a shared Gateway `envoy-gateway-system/shared-gateway`
 whose Service is only reachable inside the cluster), nginx on the host forwarding ports 80 and 443 to that Gateway with
 the PROXY protocol (so the server sees real client addresses), cert-manager with a Let's Encrypt `letsencrypt-prod`
-ClusterIssuer, and this chart with `authServer.host` set to `auth.<domain>` and Postfix on port 25 (through k3s'
-ServiceLB) as `<domain>`, sending mail for `--mail-domains` (default `<domain>`). Both `<domain>` and `auth.<domain>`
-must resolve to the machine; point your mail domains' MX records at `<domain>`. With `--tls false` Postfix gets a
+ClusterIssuer, and this chart. `--domain` is the mail domain (e.g. `example.com`): the server is served at
+`mail.<domain>`, the auth-server at `auth.<domain>`, and mail is addressed `@<domain>`. `--mail-host` and `--auth-host`
+change those two names, as a label (`--mail-host rapidmx` gives `rapidmx.<domain>`) or a whole host name. Postfix
+listens on port 25 (through k3s' ServiceLB) as the server's host name and sends mail for
+`--mail-domains` (default `<domain>`). Both host names must resolve to the machine, and your mail domains' MX records
+point at `mail.<domain>`. With `--tls false` Postfix gets a
 self-signed certificate. When a host firewall is active (ufw
 on Ubuntu/Debian, firewalld on RHEL/Fedora) it opens SMTP/HTTP/HTTPS and allows k3s' pod and service networks; under SELinux it also allows nginx to relay. Set `CHART=./helm` to install the chart from a checkout instead of the published one, and
 `ENVOY_GATEWAY_VERSION` to pick another Envoy Gateway release. `--uninstall` removes only what the script installed.
+
+#### AWS
+
+`deploy/aws/` deploys the same stack on AWS instead: one CloudFormation template that creates the network, IAM role and
+EC2 instance, whose user data runs `deploy/aws/bootstrap.sh`. See [deploy/aws/README.md](deploy/aws/README.md).
+
+```bash
+aws cloudformation deploy --stack-name rapidmx --template-file deploy/aws/rapidmx-server.yaml \
+  --capabilities CAPABILITY_IAM --parameter-overrides Domain=mail.example.com HostedZoneId=Z123EXAMPLE
+```
+
+There is no nginx there: Envoy's Service is a Classic Load Balancer forwarding TCP with the PROXY protocol, Envoy still
+terminates TLS, volumes are EBS, and mail goes through SES
+([`ses-bridge`](https://github.com/rapidmx/ses-bridge)) rather than Postfix.
 
 ## Local Development
 

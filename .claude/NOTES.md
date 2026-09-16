@@ -5741,3 +5741,204 @@ not committed:
   the one conflict (mail.ingestSecret) resolved to the global.mailIngestSecret default with a rewritten comment, and the
   mail.relay comment updated for the bundled postfixBridge. js-yaml data identical to before; helm template output
   identical apart from the randomly generated Bitnami passwords. README `1.0.0-beta.3.1` back to `127.0.0.1`.
+
+## 2026-09-15 — AWS deployments: Classic Load Balancer, SES mail, EBS volumes
+
+Decisions taken with the user: both cluster shapes (existing EKS via `--skip-k3s`, or k3s on EC2), TLS still terminated
+at Envoy, mail through `ses-bridge` (no Postfix), `/internal/mta` NOT exposed publicly (the Lambda calls it from inside
+the VPC), and the script installs the EBS CSI driver on the k3s path.
+
+**Server**
+- `mail:transport:provider` (`"postfix"` default, `"ses"`) picks the `MailTransport` through the existing
+  `selectConfigDrivenBackend`, like `mail:blob:backend`. `registerMailProviders(objectFactory, devTransport, environment,
+  config)` - all three workers pass `config`. A development NODE_ENV still gets the dev transport whatever the provider.
+- `SesMailTransport` is exported from `@rapidmx/restapi`'s root (there is no `./transport` subpath export, despite the
+  source layout). Its region/configuration set are `mail:transport:ses:region` / `:configuration_set`; credentials come
+  from the AWS chain only.
+
+**Chart**
+- `mail.transport.provider` / `mail.transport.ses.{region,configurationSet}` render the matching config keys.
+  `server.assertPostfixBridge` refuses `provider: ses` together with `postfixBridge.create` (SES sending while Postfix
+  still receives).
+- `serviceAccount.{create,name,annotations}` (0_config/service-account.yaml, `server.serviceAccountName`) and
+  `serviceAccountName` on the Deployment - for IRSA (`eks.amazonaws.com/role-arn`), which is how SES and the S3 blob
+  backend get credentials on EKS. Off by default, so existing releases keep the namespace's "default" account.
+- `mail.ingestService` (2_services/internal-ingest.yaml): a Service (LoadBalancer, annotated
+  `aws-load-balancer-internal`, optional `loadBalancerSourceRanges`) that serves the API - including `/internal/mta`,
+  which the public Gateway 404s - for ses-bridge's Lambda inside the VPC. Selector `app: <name>`, like api_services.
+
+**AWS deployment lives in `deploy/aws/`, not in single_node_install.sh**
+The `--platform aws` mode was built and tested first, then reverted (`git checkout` of the script) when the user chose a
+CloudFormation-first shape: "perhaps this would all be better as a single cloudformation script ... get rid of anything
+we don't need from the .sh script". `single_node_install.sh` is unchanged from its committed state (bare metal, nginx,
+Postfix). The chart and server changes above stay - they are what the AWS path installs.
+
+- **`deploy/aws/bootstrap.sh`** - AWS-only, env-var driven, runs as root from EC2 user data, reads nothing from stdin.
+  k3s (`--disable=servicelb --disable-cloud-controller --kubelet-arg=cloud-provider=external --node-name=<IMDSv2
+  local-hostname>`), helm, aws-cloud-controller-manager and aws-ebs-csi-driver plus a gp3 StorageClass, Envoy Gateway
+  with a LoadBalancer Envoy Service (CLB annotations: proxy-protocol `*`, backend-protocol tcp, cross-zone,
+  load-balancer-source-ranges from `RAPIDMX_WEB_CIDRS`), the shared Gateway and ClientTrafficPolicy, cert-manager and
+  the letsencrypt-prod ClusterIssuer, then the chart with SES values. Waits for the load balancer, optionally upserts
+  the two CNAMEs in `RAPIDMX_HOSTED_ZONE_ID` (installing the AWS CLI when needed), and writes
+  `/var/lib/rapidmx-installer/summary.txt` (0600: load balancer, DNS, ses-bridge command, both secrets), echoing it to
+  the boot log without the secret-bearing lines. No uninstall, no nginx, no firewall handling (security groups), no
+  progress bar. Region, VPC CIDR (the default ingest source range) and node name come from IMDSv2.
+- **`deploy/aws/rapidmx-server.yaml`** - parameters Domain, AcmeEmail, HostedZoneId, ChartVersion, InstanceType,
+  VolumeSize, KeyName, LatestAmiId (AL2023 SSM public parameter), VpcId/SubnetId, AllowedWebCidr, AllowedSshCidr,
+  ClusterName, BootstrapUrl. Creates its own VPC/subnet/IGW tagged `kubernetes.io/role/elb=1` and
+  `kubernetes.io/cluster/<name>` when VpcId is empty (Conditions), an instance role (SSM core, the managed
+  AmazonEBSCSIDriverPolicy, the cloud controller's ELB/EC2 statements, ses:SendEmail, Route 53 only with a zone), a
+  security group tagged for the cloud controller to add the load balancer's rules to (SSH only when asked - port 80/443
+  is the load balancer's own group), and the instance whose user data exports the RAPIDMX_* vars, runs bootstrap.sh and
+  cfn-signals. `CreationPolicy` timeout PT45M, so a failed install fails the stack.
+- **Why the web CIDR isn't on the instance security group:** traffic arrives at the node ports from the load balancer's
+  own group, which the cloud controller creates and fills from the Service's source ranges - hence
+  `service.beta.kubernetes.io/load-balancer-source-ranges` in the script rather than an ingress rule here (cfn-lint
+  caught the parameter being unused, which is how this was noticed).
+- **Not done:** ses-bridge's CDK stack still puts its Lambda outside the VPC with a public `MTA_INGEST_BASE_URL`; it
+  needs VPC + security group support to reach the internal ingest load balancer. An AMI-baking mode was discussed and
+  deferred.
+
+Verified: `yarn tsc --noEmit`, `yarn lint`, `yarn vitest run` 360/360; `helm lint`; `helm template` with the values
+bootstrap.sh writes (no postfixBridge resources, SES config keys, gp3 on all three PVCs, the internal-ingest Service
+with the VPC CIDR) and with the default postfix values (none of those); `cfn-lint` on the template (clean apart from two
+W1030 warnings about the deliberately optional SubnetId); `bash -n` and shellcheck clean on bootstrap.sh; a harness run
+of bootstrap.sh end to end with stubbed curl/kubectl/helm/IMDS, which is how the summary's sed bug (a path used as the
+s/// delimiter) was found. Nothing was run against real AWS - no account was used here.
+
+## 2026-09-15 — mail.<domain> / auth.<domain> everywhere, and the AWS loose ends
+
+- **Host naming (was a bug).** `--domain mail.example.com` used to produce `auth.mail.example.com` for sign-in.
+  `--domain` (and `RAPIDMX_DOMAIN`) is now the *mail domain*, e.g. example.com: the server is `mail.<domain>`, the
+  auth-server `auth.<domain>`, mail is addressed `@<domain>`, Let's Encrypt registers `admin@<domain>`, Postfix HELOs as
+  `mail.<domain>` and its sender domains default to `<domain>`. `--host`/`--auth-host` (`RAPIDMX_SERVER_HOST`/
+  `RAPIDMX_AUTH_HOST`) override the two host names; the chart's `host`/`authServer.host` are unchanged, this is only
+  what the installers pass. CloudFormation's `Domain` parameter is the mail domain too, and its outputs and Route 53
+  records follow. The default `--domain cluster.local` now means mail.cluster.local / auth.cluster.local.
+- **BootstrapUrl** defaults to `main` (the tagged releases predate `deploy/aws`), documented as something to pin to a
+  release tag.
+- **ses-bridge** (`../ses-bridge`, uncommitted): the ingest Lambda can now run in a VPC - see that repo's NOTES entry.
+  Its subnets need egress for the handler's S3 reads and SES bounces, which the server template's single public subnet
+  doesn't provide (no NAT, no endpoints); that gap is documented, not solved.
+
+Verified: `bash -n` and shellcheck clean on both scripts; harness runs of single_node_install.sh (`--domain example.com`
+-> helm `host=mail.example.com`, `authServer.host=auth.example.com`, Gateway listeners for both, postfixBridge
+hostname mail.example.com with domains example.com) and of deploy/aws/bootstrap.sh (same hosts, summary and Route 53
+records); `cfn-lint` clean apart from the two SubnetId warnings.
+
+## 2026-09-15 — `global.domain` drives the host names and the JWT claims
+
+Replaces the half-measure in the previous entry (a `--domain` that was the server's own host name).
+
+- **Chart:** `global.domain` (the mail domain, `global` so the subcharts see it) and `service.host`
+  (`'mail.{{ .Values.global.domain }}'`), replacing the top-level `host`. Templates render it with the chart's existing
+  `rrst.render` helper (`include "rrst.render" (dict "value" $.Values.service.host "context" $)`) - no host-specific
+  helper, which was a first attempt JP corrected. `server.assertHost`, included with the other asserts in
+  1_deployments/service.yaml, fails with a pointer when the old `host` value is set and requires service.host.
+  `auth.audience` is the domain and `auth.issuer` is `{{ .Values.authServer.host }}`, mirrored under `authServer.auth`
+  as `{{ .Values.host }}` (the subchart's own host), so both sides always agree - including when the auth host is
+  overridden. `postfixBridge.hostname`/`domains` default to `mail.<domain>`/`<domain>` (the 1.1.0 subchart tpl's them).
+- **authServer.host stays a literal** (`auth.localhost`, set explicitly by the installers): the auth-server subchart
+  reads its own `host` without `tpl`, so a templated default would render as the literal template text in its Gateway
+  and certificate. Its `auth.audience`/`auth.issuer` ARE tpl'd, which is why the claims can be templates. Making
+  `host` tpl-able in that chart would let this default from `global.domain` too - not done.
+- **Installers:** `--domain`/`RAPIDMX_DOMAIN` is the mail domain; `--mail-host`/`--auth-host`
+  (`RAPIDMX_MAIL_HOST`/`RAPIDMX_AUTH_HOST`) take a label ("rapidmx" -> rapidmx.<domain>) or a whole host name
+  (`hostFor()`, which switches on a dot). They pass `global.domain`, `service.host` and `authServer.host`.
+  CloudFormation has `MailHost`/`AuthHost` parameters, constrained to a single label because its outputs build
+  `<label>.<domain>` and the template can't test for a dot.
+- ACME registration is `admin@<domain>` (it was `admin@<the host's parent>`).
+
+Verified: `helm lint`; `helm template` with `global.domain=example.com` - audience `example.com` and issuer
+`auth.example.com` on both sides, and issuer `rapidrest.example.com` on both when `authServer.host` is overridden;
+mx_hostname, auth_server_url, Postfix HELO and sender domains all follow; the old `host` value fails with the pointer.
+Installer harness with `--mail-host rapidmx --auth-host rapidrest` (helm gets rapidmx./rapidrest., Gateway listeners
+match) and its captured values rendered against the chart; bootstrap harness with `RAPIDMX_MAIL_HOST=rapidmx`.
+shellcheck clean on both scripts, cfn-lint clean apart from the two SubnetId warnings.
+
+## 2026-09-15 — OpenBao as the secret vault, with External Secrets delivering the values
+
+Decisions from JP: OpenBao holds the PKI CA *and* all chart secrets; unseal key in a Kubernetes Secret everywhere;
+delivery through External Secrets (not the agent injector).
+
+- **Bundled vault** (`openbao` dependency 0.29.4, `openbao.create`, on by default; `templates/4_vault/openbao.yaml`):
+  an init Job (post-install/upgrade hook) with two containers - the OpenBao image has `bao` but no kubectl, the kubectl
+  image the reverse - so the `bao` half writes what must be stored into an emptyDir and the kubectl half creates the
+  Secrets. It initialises with one unseal key, stores key + root token in `<release>-openbao-keys`, enables kv v2, and
+  **generates each secret once** (`bao kv get` first), so upgrades never re-key anything. On the server it also creates
+  the PKI mount, a root certificate and the issuing role, and mints a token limited to issue/revoke - written to
+  `<release>-openbao-pki` with `mail__pki__backend=openbao`, loaded by the Deployment as an optional secretRef.
+  An unsealer Deployment polls seal-status and unseals after any restart (a pod restart, upgrade, eviction or node
+  reboot all start OpenBao sealed - that is per process start, not per node).
+- **Delivery** (`templates/4_vault/external-secrets.yaml`): a SecretStore (vault provider, token auth with the
+  release's read-only token) and ExternalSecrets that produce exactly the Secrets the pods already load
+  (`-jwt-auth` with the claims as template literals, `-service-secrets`, `-mail-ingest-secret`). The chart's own
+  templates for those are skipped when the vault owns them, and `global.authSecret`/`global.mailIngestSecret` stop
+  being required (`server.assertSuppliedSecrets`).
+- **Cross-chart sharing:** the server publishes its vault's coordinates in `global.openbao`
+  (address/kvMount/secretsPath/tokenSecret, all templates the subchart renders), and the auth-server chart uses them
+  instead of bundling its own vault (`auth-server.usesParentVault`). Both then read the same `auth_secret`, which is
+  what keeps signing and verification in step - the reason the auth-server chart couldn't just generate its own.
+- **postfix-bridge** gained `ingestSecretRef` (uncommitted, needs a 1.2.0 release): with the secret in the vault there
+  is no value to hand it, so it reads the server's Secret instead. The server chart pins the dependency to 1.2.0 and
+  fails the render with a version check (`.Subcharts.postfixBridge.Chart.Version`) if an older one is bundled.
+- **External Secrets is a prerequisite**, not a dependency: its CRDs are cluster-wide. Both installers and the AWS
+  bootstrap now install it (chart 2.10.0, `installCRDs=true`), and the charts fail the render with the exact command
+  when `external-secrets.io` isn't served (`.Capabilities.APIVersions.Has`).
+- **Guard:** `openbao.create` and `global.openbao.enabled` must agree - the subcharts only see `global`, so the render
+  fails rather than silently half-enabling the vault.
+
+Verified (rendering only - there is no cluster here, and none of the init/unseal shell has ever run): `helm lint` on
+both charts; `helm template --api-versions external-secrets.io/v1` for the server with the vault on (3 ExternalSecrets,
+1 SecretStore, the vault StatefulSet, Job and unsealer; the three chart-rendered Secrets gone; postfix-bridge reading
+`<release>-mail-ingest-secret`), with the vault off (unchanged from before), and the mismatch/CRD/subchart-version
+guards each failing with their message; the auth-server chart standalone with the vault on (its own vault + 2
+ExternalSecrets), standalone with it off, and as a subchart of the server (no second vault, its ExternalSecrets reading
+the parent's `r-server/secrets` path). Harness runs of both installers show the external-secrets step and its uninstall.
+
+## 2026-09-15 — OpenBao moved out of the charts: a prerequisite the installers set up
+
+JP: "let's assume openbao is pre-installed like cert-manager instead of as a chart dependency ... then update the
+installers and add a flag to toggle installation, just like cert-manager". This reverses the bundled design above.
+
+- **Defaults split (JP):** `global.openbao.enabled` is **false** in both charts and **true** in all three installers,
+  which pass `--set global.openbao.enabled=true` explicitly. A bare `helm install` must not assume a vault (or External
+  Secrets) is in the cluster; the scripts know, because they just put it there.
+- **Charts only consume a vault now.** The `openbao` dependency, `openbao.create` and `templates/4_vault/openbao.yaml`
+  (init Job + unsealer) are gone from both charts, along with the helpers that generated their shell
+  (`openbaoInitScript`/`openbaoStoreScript`/`openbaoSeedSpec`, `server.externalVault`, `auth-server.usesParentVault`/
+  `bundlesVault`/`vaultTokenSecret`). What's left is `global.openbao` (enabled/address/kvMount/secretsPath/auth) plus
+  the SecretStore and ExternalSecrets, in both charts - `auth-server` gained the same `auth.method: token|kubernetes`
+  choice the server had. The server keeps `openbao.pki.{enabled,mount,role,tokenSecret}`; an empty `tokenSecret` keeps
+  the local CA.
+- **The installers do the vault work** behind `--openbao <true|false>` (`RAPIDMX_OPENBAO`, the `EnableOpenBao` stack
+  parameter), mirroring `--tls`/cert-manager, in `single_node_install.sh`, `deploy/aws/bootstrap.sh` and auth-server's
+  `scripts/k3s_install.sh`: install the chart (standalone, file storage, injector off), wait for the pod to *answer*
+  (a sealed vault is never Ready), `operator init -key-shares=1`, store key + root token in `openbao-keys`, unseal over
+  stdin, apply an `openbao-unsealer` Deployment, then seed the release's secrets, write the read policies, create the
+  PKI mount/root/role and mint the two periodic tokens into `<fullname>-openbao-eso` and `<fullname>-openbao-pki`.
+  `OPENBAO_ADDRESS`/`RAPIDMX_OPENBAO_ADDRESS` skips all of that and just points the chart at your own vault.
+  `--openbao false` also skips external-secrets (nothing needs it then); `installedBy openbao` drives the uninstall.
+- **Everything the vault is told runs inside its own pod over stdin** (`kubectl exec -i -- sh -s` with a heredoc), so
+  no root token or secret ever reaches a process list on either side. Seeding reads `bao kv get` first, so a value the
+  vault already has always wins - which is also how an existing Kubernetes-Secrets install migrates without signing
+  anyone out: the installer reads the release's current Secrets and seeds *those* values.
+- **The PKI role matches what the server actually calls.** `OpenBaoPkiCertificateAuthority` (in `@rapidmx/restapi`)
+  only POSTs `<mount>/sign/<role>` with `csr` + `common_name` (an email address) and `<mount>/revoke` with a serial, so
+  the role is `allow_any_name=true enforce_hostnames=false use_csr_common_name=false key_type=any
+  ext_key_usage=EmailProtection key_usage=KeyAgreement,KeyEncipherment ttl=9528h` (397 days, the local CA's validity)
+  and the token's policy is `update` on those two paths only.
+- **Bug found on the way:** `0_config/service-config.yaml` wrote `mail__pki__openbao__url`, but the class reads
+  `mail:pki:openbao:address` - the chart's vault URL never reached the CA, which silently fell back to
+  `http://127.0.0.1:8200`. Fixed.
+- **Tokens are periodic with a 10-year period** (`bao auth tune -max-lease-ttl=87600h token/` first): nothing in the
+  deployment renews them, and External Secrets doesn't, so a token with an ordinary TTL would quietly take the
+  deployment down a month in.
+
+Verified (still rendering and stubs only - no cluster): `helm lint` and `helm template --api-versions
+external-secrets.io/v1` on both charts, standalone and with the server's bundled auth-server, both reading the same
+`rapidmx-server/secrets` path and the same `-openbao-eso` token Secret; `bash -n` on all three installers; stubbed
+dry-runs of `installOpenbao` (manifest and command sequence) and `prepareOpenbao` (the exact script sent to the pod,
+including single-quote escaping of the root token). The bundled `auth-server-1.0.0-beta.2.tgz` in `helm/charts` was
+repackaged from the sibling checkout - the previous snapshot still carried the removed vault templates and rendered a
+`<nil>` token reference.

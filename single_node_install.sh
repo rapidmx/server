@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
 # set -e
 IS_WSL=false
+# The mail domain, e.g. example.com: mail is addressed @<domain>, the server is served at mail.<domain> and the
+# auth-server at auth.<domain>. MAIL_HOST/AUTH_HOST (--mail-host/--auth-host) change those two names, as a bare label
+# ("rapidmx" -> rapidmx.<domain>) or a whole host name.
 DOMAIN="cluster.local"
+MAIL_HOST=${MAIL_HOST:-mail}
+AUTH_HOST=${AUTH_HOST:-auth}
 TLS=true
 VERSION="1.0.0-beta.3"
 NAMESPACE="rapidmx-server"
@@ -10,6 +15,33 @@ NAMESPACE="rapidmx-server"
 CHART=${CHART:-oci://ghcr.io/rapidmx/charts/server}
 # Envoy Gateway release (https://github.com/envoyproxy/gateway/releases). Pinned: v0.0.0-latest tracks main.
 ENVOY_GATEWAY_VERSION=${ENVOY_GATEWAY_VERSION:-v1.9.1}
+# External Secrets release (https://github.com/external-secrets/external-secrets), which the charts' OpenBao support
+# needs: it copies the vault's values into the Kubernetes Secrets the pods read.
+EXTERNAL_SECRETS_VERSION=${EXTERNAL_SECRETS_VERSION:-2.10.0}
+# OpenBao (https://openbao.org) is where the release keeps its secrets - the JWT secret it shares with the auth-server,
+# the cookie, session and escrow audit keys and the postfix-bridge ingest secret - and the CA that issues certificates
+# for end-to-end encrypted mail. Like cert-manager it's installed here rather than by the chart, because it's a cluster
+# service several releases can share. --openbao false keeps every secret in Kubernetes Secrets instead.
+OPENBAO=true
+OPENBAO_VERSION=${OPENBAO_VERSION:-0.29.4}
+OPENBAO_NAMESPACE=${OPENBAO_NAMESPACE:-openbao}
+# The image the unsealer runs; only needs the `bao` CLI, so it's the same one the vault uses.
+OPENBAO_IMAGE=${OPENBAO_IMAGE:-openbao/openbao:2.6.2}
+OPENBAO_STORAGE_SIZE=${OPENBAO_STORAGE_SIZE:-1Gi}
+# An OpenBao this cluster already runs, e.g. http://openbao.openbao.svc:8200. Set it and this script installs none,
+# leaving the kv path, the PKI mount and the two token Secrets for you to create - see "Secrets and OpenBao" in
+# README.md for what the chart expects to find.
+OPENBAO_ADDRESS=${OPENBAO_ADDRESS:-}
+OPENBAO_POD=openbao-0
+OPENBAO_LOCAL_ADDRESS=http://127.0.0.1:8200
+# Holds the unseal key and the root token: this is what makes the vault unseal itself after a restart, and what an
+# attacker who can read Secrets in that namespace would get.
+OPENBAO_KEYS_SECRET=openbao-keys
+# The kv v2 mount, the PKI mount and the issuing role, which must match the chart's global.openbao.kvMount and
+# openbao.pki.mount/role.
+OPENBAO_KV_MOUNT=${OPENBAO_KV_MOUNT:-secret}
+OPENBAO_PKI_MOUNT=${OPENBAO_PKI_MOUNT:-pki}
+OPENBAO_PKI_ROLE=${OPENBAO_PKI_ROLE:-rapidmx-encryption}
 GATEWAY_NAMESPACE=envoy-gateway-system
 GATEWAY_NAME=shared-gateway
 # Let's Encrypt account email for the ClusterIssuer. Defaults to admin@<domain> (a bare host name isn't a valid domain).
@@ -42,7 +74,7 @@ FIREWALL_RULES="$STATE_DIR/firewall"
 # Internal vars
 LINES=$(tput lines 2>/dev/null || echo 24)
 COLS=$(tput cols 2>/dev/null || echo 80)
-total_steps=7
+total_steps=8
 current=0
 current_step="Initializing..."
 previous_step=""
@@ -179,9 +211,24 @@ function installKubeconfig() {
   fi
 }
 
+# The host name for label $2 in domain $1: a bare label ("mail") becomes mail.<domain>, anything containing a dot is
+# taken as the whole host name.
+function hostFor() {
+  case "$2" in
+    *.*) echo "$2";;
+    *) echo "$2.$1";;
+  esac
+}
+
 # Single-quotes a value for YAML.
 function yamlQuote() {
   local value=${1//\'/\'\'}
+  printf "'%s'" "$value"
+}
+
+# Single-quotes a value for sh, for a command that runs inside the OpenBao pod.
+function shQuote() {
+  local value=${1//\'/\'\\\'\'}
   printf "'%s'" "$value"
 }
 
@@ -305,6 +352,267 @@ function gatewayService() {
     -l "gateway.envoyproxy.io/owning-gateway-name=$GATEWAY_NAME,gateway.envoyproxy.io/owning-gateway-namespace=$GATEWAY_NAMESPACE"
 }
 
+# The secrets the chart needs, reused from an existing install so a re-run never rotates them: re-keying would sign every
+# user out, break the escrow audit log's hash chain and stop postfix-bridge authenticating. An install that kept them in
+# Kubernetes Secrets carries them into the vault this way too.
+function existingSecret() {
+  for name in "$NAMESPACE-$1" "$NAMESPACE-server-$1"; do
+    value=`kubectl -n "$NAMESPACE" get secret "$name" -o jsonpath="{.data.$2}" 2>/dev/null | base64 -d 2>/dev/null`
+    if [[ -n "$value" ]]; then
+      echo "$value"
+      return
+    fi
+  done
+}
+
+# Installs OpenBao and leaves it initialised and unsealed, with the unseal key and root token in $OPENBAO_KEYS_SECRET and
+# a small Deployment beside it that unseals the vault again whenever it comes back sealed - which a pod restart, an
+# upgrade and a node reboot all do. Keeping that key in a Secret is the trade for a vault that heals itself unattended:
+# anyone who can read Secrets in that namespace can unseal it, which is roughly what those Secrets gave away before.
+# A cluster with a KMS to auto-unseal from should run its own vault and be named with OPENBAO_ADDRESS instead.
+function installOpenbao() {
+  addHelmRepo openbao https://openbao.github.io/openbao-helm
+  helm repo update openbao >/dev/null
+  local isNew=false
+  if ! helm status openbao -n "$OPENBAO_NAMESPACE" >/dev/null 2>&1; then
+    isNew=true
+  fi
+  # Standalone with file storage on a PVC: one node, one vault. injector.enabled=false because nothing here uses the
+  # sidecar injector - External Secrets delivers the values instead.
+  if ! helm upgrade --install openbao openbao/openbao --version "$OPENBAO_VERSION" \
+      -n "$OPENBAO_NAMESPACE" --create-namespace \
+      --set injector.enabled=false \
+      --set server.standalone.enabled=true \
+      --set server.dataStorage.enabled=true \
+      --set server.dataStorage.size="$OPENBAO_STORAGE_SIZE"; then
+    echo "There was a problem installing OpenBao."
+    exit 1
+  fi
+  if [[ "$isNew" = "true" ]]; then
+    recordInstalled openbao "$OPENBAO_NAMESPACE"
+  fi
+
+  # A sealed vault never reports Ready, and it is sealed until the next step, so this waits for the pod to answer rather
+  # than for readiness. `bao status` exits non-zero while sealed but still prints the status, which is what's checked.
+  echo "Waiting for OpenBao to start..."
+  local startTime
+  startTime=`date +%s`
+  until kubectl -n "$OPENBAO_NAMESPACE" exec "$OPENBAO_POD" -- bao status -address="$OPENBAO_LOCAL_ADDRESS" -format=json 2>/dev/null | grep -q '"sealed"'; do
+    if [[ $(( `date +%s` - startTime )) -ge 600 ]]; then
+      echo "There was a problem starting OpenBao: $OPENBAO_POD in namespace $OPENBAO_NAMESPACE doesn't answer."
+      exit 1
+    fi
+    sleep 5
+  done
+
+  if kubectl -n "$OPENBAO_NAMESPACE" get secret "$OPENBAO_KEYS_SECRET" >/dev/null 2>&1; then
+    OPENBAO_UNSEAL_KEY=`kubectl -n "$OPENBAO_NAMESPACE" get secret "$OPENBAO_KEYS_SECRET" -o jsonpath='{.data.unseal_key}' | base64 -d`
+    OPENBAO_ROOT_TOKEN=`kubectl -n "$OPENBAO_NAMESPACE" get secret "$OPENBAO_KEYS_SECRET" -o jsonpath='{.data.root_token}' | base64 -d`
+    if [[ -z "$OPENBAO_UNSEAL_KEY" || -z "$OPENBAO_ROOT_TOKEN" ]]; then
+      echo "The $OPENBAO_KEYS_SECRET Secret in namespace $OPENBAO_NAMESPACE has no unseal_key/root_token, so this vault"
+      echo "can't be unsealed or configured from here. Delete the Secret only if the vault's data is gone too, or point"
+      echo "this script at a prepared vault with OPENBAO_ADDRESS."
+      exit 1
+    fi
+  else
+    echo "Initialising OpenBao..."
+    # One key share, because the thing that unseals this vault is a Deployment, not a group of people.
+    local init
+    if ! init=`kubectl -n "$OPENBAO_NAMESPACE" exec "$OPENBAO_POD" -- bao operator init -address="$OPENBAO_LOCAL_ADDRESS" -key-shares=1 -key-threshold=1 -format=json`; then
+      echo "There was a problem initialising OpenBao."
+      exit 1
+    fi
+    OPENBAO_UNSEAL_KEY=`printf '%s' "$init" | tr -d ' \n' | sed -n 's/.*"unseal_keys_b64":\["\([^"]*\)".*/\1/p'`
+    OPENBAO_ROOT_TOKEN=`printf '%s' "$init" | tr -d ' \n' | sed -n 's/.*"root_token":"\([^"]*\)".*/\1/p'`
+    if [[ -z "$OPENBAO_UNSEAL_KEY" || -z "$OPENBAO_ROOT_TOKEN" ]]; then
+      echo "OpenBao was initialised but its unseal key and root token couldn't be read back, so nothing can unseal it."
+      echo "The vault's storage has to be deleted and this script re-run:"
+      echo "  helm uninstall openbao -n $OPENBAO_NAMESPACE && kubectl delete pvc -n $OPENBAO_NAMESPACE --all"
+      exit 1
+    fi
+    # Written from files, so neither value passes through this host's process list.
+    local dir
+    dir=`mktemp -d`
+    chmod 700 "$dir"
+    printf '%s' "$OPENBAO_UNSEAL_KEY" > "$dir/unseal_key"
+    printf '%s' "$OPENBAO_ROOT_TOKEN" > "$dir/root_token"
+    if ! kubectl -n "$OPENBAO_NAMESPACE" create secret generic "$OPENBAO_KEYS_SECRET" \
+        --from-file="$dir/unseal_key" --from-file="$dir/root_token"; then
+      rm -rf "$dir"
+      echo "There was a problem storing OpenBao's unseal key, which leaves a vault nothing can unseal. Remove it and"
+      echo "re-run this script: helm uninstall openbao -n $OPENBAO_NAMESPACE && kubectl delete pvc -n $OPENBAO_NAMESPACE --all"
+      exit 1
+    fi
+    rm -rf "$dir"
+  fi
+
+  if ! kubectl -n "$OPENBAO_NAMESPACE" exec "$OPENBAO_POD" -- bao status -address="$OPENBAO_LOCAL_ADDRESS" -format=json 2>/dev/null | tr -d ' ' | grep -q '"sealed":false'; then
+    echo "Unsealing OpenBao..."
+    # Over stdin ("-"), so the key isn't in the vault pod's process list either.
+    if ! printf '%s' "$OPENBAO_UNSEAL_KEY" | kubectl -n "$OPENBAO_NAMESPACE" exec -i "$OPENBAO_POD" -- bao operator unseal -address="$OPENBAO_LOCAL_ADDRESS" - >/dev/null; then
+      echo "There was a problem unsealing OpenBao."
+      exit 1
+    fi
+  fi
+
+  # The unsealer: it does nothing while the vault is unsealed, and unseals it within ten seconds of it coming back.
+  if ! cat << EOF | kubectl apply -f - >/dev/null
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: openbao-unsealer
+  namespace: $OPENBAO_NAMESPACE
+  labels:
+    app.kubernetes.io/name: openbao-unsealer
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: openbao-unsealer
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: openbao-unsealer
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 100
+        runAsGroup: 1000
+      containers:
+        - name: unsealer
+          image: $OPENBAO_IMAGE
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              while true; do
+                if bao status -format=json 2>/dev/null | tr -d ' ' | grep -q '"sealed":true'; then
+                  if printf '%s' "\$UNSEAL_KEY" | bao operator unseal - >/dev/null 2>&1; then
+                    echo "Unsealed OpenBao."
+                  else
+                    echo "Could not unseal OpenBao; retrying."
+                  fi
+                fi
+                sleep 10
+              done
+          env:
+            - name: BAO_ADDR
+              value: $OPENBAO_ADDRESS
+            - name: UNSEAL_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: $OPENBAO_KEYS_SECRET
+                  key: unseal_key
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 64Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+EOF
+  then
+    echo "There was a problem installing the OpenBao unsealer, so the vault would stay sealed after a restart."
+    exit 1
+  fi
+  echo "OpenBao is running and unsealed."
+}
+
+# Prepares the vault for this release: the kv v2 mount and this release's secrets, the PKI mount, issuing role and root
+# CA the server signs mail encryption certificates from, and a token for each of its two clients - External Secrets
+# (read-only on this release's secrets) and the server itself (sign and revoke on the PKI role, nothing else). It all
+# runs inside the vault's own pod, over stdin, so no token or secret reaches either host's process list; re-running it
+# changes nothing that already exists.
+function prepareOpenbao() {
+  local needEsoToken=true
+  local needPkiToken=true
+  if kubectl -n "$NAMESPACE" get secret "$OPENBAO_ESO_SECRET" >/dev/null 2>&1; then
+    needEsoToken=false
+  fi
+  if kubectl -n "$NAMESPACE" get secret "$OPENBAO_PKI_SECRET" >/dev/null 2>&1; then
+    needPkiToken=false
+  fi
+  local out
+  out=`mktemp "${TMPDIR:-/tmp}/openbao-tokens.XXXXXX"`
+  chmod 600 "$out"
+  if ! kubectl -n "$OPENBAO_NAMESPACE" exec -i "$OPENBAO_POD" -- sh -s > "$out" << EOF
+set -e
+export BAO_ADDR=$OPENBAO_LOCAL_ADDRESS
+export BAO_TOKEN=`shQuote "$OPENBAO_ROOT_TOKEN"`
+
+# The kv v2 engine the chart reads this release's secrets from (its global.openbao.kvMount).
+bao secrets list -format=json | grep -q '"$OPENBAO_KV_MOUNT/"' || bao secrets enable -path=$OPENBAO_KV_MOUNT -version=2 kv > /dev/null
+
+# A value already in the vault always wins, so an upgrade never re-keys anything.
+seed() {
+  if [ -n "\`bao kv get -mount=$OPENBAO_KV_MOUNT -field="\$1" $OPENBAO_SECRETS_PATH 2> /dev/null\`" ]; then
+    return 0
+  fi
+  bao kv patch -mount=$OPENBAO_KV_MOUNT $OPENBAO_SECRETS_PATH "\$1=\$2" > /dev/null 2>&1 ||
+    bao kv put -mount=$OPENBAO_KV_MOUNT $OPENBAO_SECRETS_PATH "\$1=\$2" > /dev/null
+}
+seed auth_secret `shQuote "$AUTH_SECRET"`
+seed cookie_secret `shQuote "$COOKIE_SECRET"`
+seed session__secret `shQuote "$SESSION_SECRET"`
+seed escrow_audit_hmac_key `shQuote "$ESCROW_HMAC_KEY"`
+seed mail_ingest_secret `shQuote "$MAIL_INGEST_SECRET"`
+
+# The PKI backend the server's encryption CA uses: it signs the certificate signing requests browsers generate, so the
+# private keys stay with the clients and the CA key never leaves the vault. The role has to accept an email address as
+# the common name, which is why host name enforcement is off.
+bao secrets list -format=json | grep -q '"$OPENBAO_PKI_MOUNT/"' || bao secrets enable -path=$OPENBAO_PKI_MOUNT -max-lease-ttl=87600h pki > /dev/null
+if [ -z "\`bao read -field=certificate $OPENBAO_PKI_MOUNT/cert/ca 2> /dev/null\`" ]; then
+  bao write -field=certificate $OPENBAO_PKI_MOUNT/root/generate/internal common_name=`shQuote "$DOMAIN Mail Encryption CA"` ttl=87600h > /dev/null
+fi
+bao write $OPENBAO_PKI_MOUNT/roles/$OPENBAO_PKI_ROLE \
+  allow_any_name=true enforce_hostnames=false allow_ip_sans=false \
+  use_csr_common_name=false use_csr_sans=true key_type=any \
+  ext_key_usage=EmailProtection key_usage=KeyAgreement,KeyEncipherment \
+  basic_constraints_valid_for_non_ca=true ttl=9528h max_ttl=9528h > /dev/null
+
+printf 'path "$OPENBAO_KV_MOUNT/data/$OPENBAO_SECRETS_PATH" {\n  capabilities = ["read"]\n}\npath "$OPENBAO_KV_MOUNT/metadata/$OPENBAO_SECRETS_PATH" {\n  capabilities = ["read"]\n}\n' | bao policy write $FULLNAME-secrets-read - > /dev/null
+printf 'path "$OPENBAO_PKI_MOUNT/sign/$OPENBAO_PKI_ROLE" {\n  capabilities = ["update"]\n}\npath "$OPENBAO_PKI_MOUNT/revoke" {\n  capabilities = ["update"]\n}\n' | bao policy write $FULLNAME-pki - > /dev/null
+
+# Periodic tokens with a very long period: nothing here renews them, and a token that expires takes the deployment down
+# with it. They are orphans so revoking the root token doesn't revoke them.
+bao auth tune -max-lease-ttl=87600h token/ > /dev/null
+if [ "$needEsoToken" = "true" ]; then
+  echo "eso_token=\`bao token create -policy=$FULLNAME-secrets-read -orphan -period=87600h -display-name=$FULLNAME-eso -field=token\`"
+fi
+if [ "$needPkiToken" = "true" ]; then
+  echo "pki_token=\`bao token create -policy=$FULLNAME-pki -orphan -period=87600h -display-name=$FULLNAME-pki -field=token\`"
+fi
+EOF
+  then
+    rm -f "$out"
+    echo "There was a problem preparing OpenBao for this release."
+    exit 1
+  fi
+
+  # The Secrets the two tokens are read from. They belong to the release's namespace, which helm hasn't necessarily
+  # created yet.
+  kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+  local dir token
+  dir=`mktemp -d`
+  chmod 700 "$dir"
+  token=`sed -n 's/^eso_token=//p' "$out"`
+  if [[ -n "$token" ]]; then
+    printf '%s' "$token" > "$dir/token"
+    kubectl -n "$NAMESPACE" create secret generic "$OPENBAO_ESO_SECRET" --from-file="$dir/token" >/dev/null
+  fi
+  token=`sed -n 's/^pki_token=//p' "$out"`
+  if [[ -n "$token" ]]; then
+    printf '%s' "$token" > "$dir/mail__pki__openbao__token"
+    kubectl -n "$NAMESPACE" create secret generic "$OPENBAO_PKI_SECRET" --from-file="$dir/mail__pki__openbao__token" >/dev/null
+  fi
+  rm -rf "$dir"
+  rm -f "$out"
+  echo "OpenBao holds this release's secrets at $OPENBAO_KV_MOUNT/$OPENBAO_SECRETS_PATH."
+}
+
 function uninstall() {
   if [[ -z "$KUBECONFIG" && -f "$USER_KUBECONFIG" ]]; then
     export KUBECONFIG="$USER_KUBECONFIG"
@@ -328,6 +636,18 @@ function uninstall() {
     if [[ "`installedBy cluster_issuer`" = "true" ]]; then
       echo "Removing the letsencrypt-prod ClusterIssuer..."
       kubectl delete clusterissuer letsencrypt-prod --ignore-not-found
+    fi
+    local openbaoNamespace
+    openbaoNamespace=`installedBy openbao`
+    if [[ -n "$openbaoNamespace" ]]; then
+      echo "Removing OpenBao, with the unseal key and everything the vault held..."
+      kubectl -n "$openbaoNamespace" delete deployment openbao-unsealer --ignore-not-found
+      helm uninstall openbao -n "$openbaoNamespace"
+      kubectl delete namespace "$openbaoNamespace" --ignore-not-found
+    fi
+    if [[ "`installedBy external_secrets`" = "true" ]]; then
+      echo "Removing external-secrets..."
+      helm uninstall external-secrets -n external-secrets
     fi
     if [[ "`installedBy cert_manager`" = "true" ]]; then
       echo "Removing cert-manager..."
@@ -411,7 +731,7 @@ function uninstall() {
   echo "Uninstall complete! $USER_KUBECONFIG was left in place; delete it if it only held this cluster."
 }
 
-GETOPT=$(getopt -o h --long domain:,mail-domains:,version:,tls:,email:,uninstall,install-cert-manager,skip-k3s,help -- "$@")
+GETOPT=$(getopt -o h --long domain:,mail-host:,auth-host:,mail-domains:,version:,tls:,openbao:,email:,uninstall,install-cert-manager,skip-k3s,help -- "$@")
 if [ $? -ne 0 ]; then
   exit 1
 fi
@@ -420,9 +740,12 @@ while true
 do
     case "$1" in
         --domain) DOMAIN=$2; shift 2;;
+        --mail-host) MAIL_HOST=$2; shift 2;;
+        --auth-host) AUTH_HOST=$2; shift 2;;
         --mail-domains) MAIL_DOMAINS=$2; shift 2;;
         --version) VERSION=$2; shift 2;;
         --tls) TLS=$2; shift 2;;
+        --openbao) OPENBAO=$2; shift 2;;
         --email) ACME_EMAIL=$2; shift 2;;
         --skip-k3s) SKIP_K3S=true; shift;;
         --uninstall) UNINSTALL=true; shift;;
@@ -435,19 +758,29 @@ do
           echo -e "\tenvoy-gateway - Gateway API implementation routing traffic to the services"
           echo -e "\tnginx - Nginx to forward ports 80 and 443 to envoy-gateway"
           echo -e "\tcert-manager - Let's Encrypt certificates (with --tls true)"
+          echo -e "\topenbao - the vault holding the release's secrets and its mail encryption CA (with --openbao true)"
+          echo -e "\texternal-secrets - delivers the chart's OpenBao-held secrets into Kubernetes Secrets"
           echo -e "\tRapidMX server - with auth-server, Postfix and postfix-bridge (SMTP on port 25)"
 
           echo "Usage:"
-          echo -e "\t--domain <domain>\t\tThe server's host name (also Postfix's MX host name); auth-server is auth.<domain>"
+          echo -e "\t--domain <domain>\t\tThe mail domain, e.g. example.com: the server is at mail.<domain>,"
+          echo -e "\t\t\t\tthe auth-server at auth.<domain>, and mail is addressed @<domain>"
+          echo -e "\t--mail-host <name>\t\tThe server's own host name or label (default mail, i.e. mail.<domain>)"
+          echo -e "\t--auth-host <name>\t\tThe auth-server's host name or label (default auth, i.e. auth.<domain>)"
           echo -e "\t--mail-domains <domains>\tComma-separated domains Postfix sends mail for (default <domain>)"
           echo -e "\t--version <version>\t\tThe version of mail-server to deploy"
           echo -e "\t--tls <true|false>\t\tInstalls cert manager and enables TLS ingress support (uses Let's Encrypt)"
+          echo -e "\t--openbao <true|false>\t\tInstalls OpenBao and keeps the release's secrets and encryption CA in it"
+          echo -e "\t\t\t\t(default true; false keeps them in Kubernetes Secrets)"
           echo -e "\t--email <email>\t\tThe Let's Encrypt account email (default admin@<domain>)"
           echo -e "\t--skip-k3s\t\tSkips installation of k3s"
           echo -e "\t--uninstall\t\tUninstalls what this script installed (recorded in $STATE_FILE)"
           echo "Environment:"
           echo -e "\tCHART\t\t\tThe chart to install (default $CHART), e.g. ./helm for a local checkout"
           echo -e "\tENVOY_GATEWAY_VERSION\tThe envoy-gateway release to install (default $ENVOY_GATEWAY_VERSION)"
+          echo -e "\tEXTERNAL_SECRETS_VERSION\tThe external-secrets release to install (default $EXTERNAL_SECRETS_VERSION)"
+          echo -e "\tOPENBAO_VERSION\t\tThe openbao chart to install (default $OPENBAO_VERSION)"
+          echo -e "\tOPENBAO_ADDRESS\t\tAn OpenBao this cluster already runs, used instead of installing one"
           exit 1
           ;;
         --) shift; break;;
@@ -458,10 +791,40 @@ if [[ "$TLS" != "true" && "$TLS" != "false" ]]; then
   echo "--tls must be true or false."
   exit 1
 fi
+if [[ "$OPENBAO" != "true" && "$OPENBAO" != "false" ]]; then
+  echo "--openbao must be true or false."
+  exit 1
+fi
+# With OPENBAO_ADDRESS the vault is yours: this script neither installs nor prepares one, it only points the chart at it.
+OPENBAO_INSTALL=false
+if [[ "$OPENBAO" = "true" && -z "$OPENBAO_ADDRESS" ]]; then
+  OPENBAO_INSTALL=true
+  OPENBAO_ADDRESS="http://openbao.$OPENBAO_NAMESPACE.svc:8200"
+fi
 ACME_EMAIL=${ACME_EMAIL:-admin@$DOMAIN}
 MAIL_DOMAINS=${MAIL_DOMAINS:-$DOMAIN}
+SERVER_HOST=`hostFor "$DOMAIN" "$MAIL_HOST"`
+AUTH_HOST=`hostFor "$DOMAIN" "$AUTH_HOST"`
+# The chart's resource prefix (its "rrst.fullname"): the release name, suffixed with the chart name "server" unless the
+# release name already contains it. The vault's paths and token Secrets are named after it.
+FULLNAME=$NAMESPACE
+if [[ "$NAMESPACE" != *server* ]]; then
+  FULLNAME="$NAMESPACE-server"
+fi
+# Where this release's secrets live in the vault (the chart's global.openbao.secretsPath), and the Secrets holding the
+# tokens that read them: one for External Secrets, one for the server's own PKI client.
+OPENBAO_SECRETS_PATH="$FULLNAME/secrets"
+OPENBAO_ESO_SECRET="$FULLNAME-openbao-eso"
+OPENBAO_PKI_SECRET="$FULLNAME-openbao-pki"
 if [[ "$TLS" = "false" ]]; then
   # No cert-manager step.
+  total_steps=$(( total_steps - 1 ))
+fi
+if [[ "$OPENBAO_INSTALL" = "true" ]]; then
+  # One more step for the vault itself; external-secrets is already counted.
+  total_steps=$(( total_steps + 1 ))
+elif [[ "$OPENBAO" = "false" ]]; then
+  # And none for external-secrets either: without a vault the chart renders its own Kubernetes Secrets.
   total_steps=$(( total_steps - 1 ))
 fi
 
@@ -648,18 +1011,17 @@ if [[ "$ENVOY_GATEWAY_CLASS_NEW" = "true" ]]; then
 fi
 
 # Configure a single shared Gateway. An HTTPS listener can only serve a host with a certificate, so HTTPS listeners are
-# added only when TLS is on and $DOMAIN can get one from Let's Encrypt (not localhost or *.local): "https" for $DOMAIN
-# and "https-auth" for the auth-server's auth.$DOMAIN, terminating TLS with the "<host>-tls-cert" Secrets that the chart
+# added only when TLS is on and the host can get one from Let's Encrypt (not localhost or *.local): "https" for
+# $SERVER_HOST and "https-auth" for $AUTH_HOST, terminating TLS with the "<host>-tls-cert" Secrets that the chart
 # and its auth-server subchart have cert-manager issue in $NAMESPACE. The chart renders the ReferenceGrant that lets this
 # Gateway use them, because it's told the listener names (gateway.httpsListener and gateway.authHttpsListener below).
 # Without them the chart is installed with gateway.tls=false (plain HTTP).
-AUTH_DOMAIN="auth.$DOMAIN"
 HTTPS_LISTENER=""
 AUTH_HTTPS_LISTENER=""
-if [[ "$TLS" = "true" && "$DOMAIN" != "localhost" && ! "$DOMAIN" =~ \.(local|localhost)$ ]]; then
+if [[ "$TLS" = "true" && "$SERVER_HOST" != "localhost" && ! "$SERVER_HOST" =~ \.(local|localhost)$ ]]; then
   HTTPS_LISTENER="https"
   # The auth-server subchart only issues a certificate for a host that doesn't contain ".local".
-  if [[ "$AUTH_DOMAIN" != *.local* ]]; then
+  if [[ "$AUTH_HOST" != *.local* ]]; then
     AUTH_HTTPS_LISTENER="https-auth"
   fi
 fi
@@ -683,7 +1045,7 @@ spec:
     port: 80
     protocol: HTTP
 EOF
-for listener in "$HTTPS_LISTENER:$DOMAIN" "$AUTH_HTTPS_LISTENER:$AUTH_DOMAIN"; do
+for listener in "$HTTPS_LISTENER:$SERVER_HOST" "$AUTH_HTTPS_LISTENER:$AUTH_HOST"; do
   if [[ "${listener%%:*}" != "" ]]; then
 cat << EOF
   - allowedRoutes:
@@ -930,6 +1292,50 @@ EOF
   fi
 fi
 
+# The JWT secret (shared with the auth-server), the ingest secret (shared with postfix-bridge) and the cookie, session
+# and escrow audit keys. Whatever the release already uses is kept - in the vault or in Kubernetes Secrets - so neither a
+# re-run nor the move into OpenBao signs anyone out or breaks the escrow audit log's hash chain.
+AUTH_SECRET=${AUTH_SECRET:-`existingSecret jwt-auth auth__secret`}
+AUTH_SECRET=${AUTH_SECRET:-`openssl rand -hex 32`}
+MAIL_INGEST_SECRET=${MAIL_INGEST_SECRET:-`existingSecret mail-ingest-secret mail__transport__ingest__secret`}
+MAIL_INGEST_SECRET=${MAIL_INGEST_SECRET:-`openssl rand -hex 32`}
+
+if [[ "$OPENBAO" = "true" ]]; then
+  COOKIE_SECRET=`existingSecret service-secrets cookie_secret`
+  COOKIE_SECRET=${COOKIE_SECRET:-`openssl rand -hex 32`}
+  SESSION_SECRET=`existingSecret service-secrets session__secret`
+  SESSION_SECRET=${SESSION_SECRET:-`openssl rand -hex 32`}
+  ESCROW_HMAC_KEY=`existingSecret service-secrets mail__escrow__audit_hmac_key`
+  ESCROW_HMAC_KEY=${ESCROW_HMAC_KEY:-`openssl rand -hex 32`}
+
+  if [[ "$OPENBAO_INSTALL" = "true" ]]; then
+    run_step "Installing OpenBao"
+    installOpenbao
+    prepareOpenbao
+  else
+    echo "Keeping this release's secrets in the OpenBao at $OPENBAO_ADDRESS."
+    echo "It must already hold them at $OPENBAO_KV_MOUNT/$OPENBAO_SECRETS_PATH, with the Secrets $OPENBAO_ESO_SECRET and"
+    echo "$OPENBAO_PKI_SECRET in namespace $NAMESPACE holding tokens that may read them - see README.md."
+  fi
+
+  # External Secrets is what copies the vault's values into the Kubernetes Secrets the pods read (the chart's
+  # externalSecrets values). Its CRDs are cluster-wide, so it can't come from the chart; installCRDs is the chart's own
+  # default but is set here so an existing install without them is corrected.
+  run_step "Installing external-secrets"
+  addHelmRepo external-secrets https://charts.external-secrets.io
+  helm repo update external-secrets >/dev/null
+  if helm status external-secrets -n external-secrets >/dev/null 2>&1; then
+    echo "external-secrets is already installed."
+  elif helm install external-secrets external-secrets/external-secrets --version "$EXTERNAL_SECRETS_VERSION" \
+      -n external-secrets --create-namespace --set installCRDs=true; then
+    recordInstalled external_secrets
+  else
+    echo "There was a problem installing external-secrets."
+    exit 1
+  fi
+  waitForDeployments external-secrets external-secrets
+fi
+
 run_step "Installing RapidMX server"
 # A published chart carries its dependencies; a local checkout may need them fetched (Chart.yaml's "@bitnami" repos).
 CHART_VERSION_ARGS=(--version "$VERSION")
@@ -944,36 +1350,23 @@ if [[ -d "$CHART" ]]; then
   fi
 fi
 
-# The chart requires the JWT secret (shared with auth-server) and the ingest secret (shared with postfix-bridge). Reuse the ones from
-# an existing install, so re-running this script doesn't rotate them; otherwise generate new ones.
-function existingSecret() {
-  for name in "$NAMESPACE-$1" "$NAMESPACE-server-$1"; do
-    value=`kubectl -n "$NAMESPACE" get secret "$name" -o jsonpath="{.data.$2}" 2>/dev/null | base64 -d 2>/dev/null`
-    if [[ -n "$value" ]]; then
-      echo "$value"
-      return
-    fi
-  done
-}
-AUTH_SECRET=${AUTH_SECRET:-`existingSecret jwt-auth auth__secret`}
-AUTH_SECRET=${AUTH_SECRET:-`openssl rand -hex 32`}
-MAIL_INGEST_SECRET=${MAIL_INGEST_SECRET:-`existingSecret mail-ingest-secret mail__transport__ingest__secret`}
-MAIL_INGEST_SECRET=${MAIL_INGEST_SECRET:-`openssl rand -hex 32`}
-
 # Secrets go to helm in a values file only this user can read (deleted on exit), never on the command line, where any
 # local user could read them from the process list.
 VALUES_FILE=`mktemp "${TMPDIR:-/tmp}/mail-server-values.XXXXXX"`
 chmod 600 "$VALUES_FILE"
 {
-  printf 'global:\n  authSecret: %s\n' "`yamlQuote "$AUTH_SECRET"`"
-  printf '  mailIngestSecret: %s\n' "`yamlQuote "$MAIL_INGEST_SECRET"`"
+  if [[ "$OPENBAO" != "true" ]]; then
+    # With OpenBao these live in the vault, and External Secrets - not this file - puts them in front of the pods.
+    printf 'global:\n  authSecret: %s\n' "`yamlQuote "$AUTH_SECRET"`"
+    printf '  mailIngestSecret: %s\n' "`yamlQuote "$MAIL_INGEST_SECRET"`"
+  fi
   # In the values file rather than --set, which would split the domain list on its commas.
-  printf 'postfixBridge:\n  hostname: %s\n  domains: %s\n' "`yamlQuote "$DOMAIN"`" "`yamlQuote "$MAIL_DOMAINS"`"
+  printf 'postfixBridge:\n  hostname: %s\n  domains: %s\n' "`yamlQuote "$SERVER_HOST"`" "`yamlQuote "$MAIL_DOMAINS"`"
   # Without cert-manager (--tls false) Postfix gets a self-signed certificate.
   printf '  tls:\n    certManager:\n      enabled: %s\n' "$TLS"
 } > "$VALUES_FILE"
 
-# gateway.tls only when the Gateway has an HTTPS listener for $DOMAIN: the chart refuses TLS on a Gateway it doesn't own
+# gateway.tls only when the Gateway has an HTTPS listener for $SERVER_HOST: the chart refuses TLS on a Gateway it doesn't own
 # without one.
 GATEWAY_TLS=false
 if [[ -n "$HTTPS_LISTENER" ]]; then
@@ -985,11 +1378,26 @@ fi
 # Sign-in redirects browsers to authServer.host, and the auth-server subchart attaches its own HTTPRoute to
 # authServer.gateway.*, so both follow the shared Gateway too. gateway.hsts stays true (browsers ignore HSTS over plain
 # HTTP anyway): false renders a response header filter chart versions up to 1.0.0-beta.2 wrote for nginx-gateway only.
+# Where the release's secrets come from: the vault, or the Kubernetes Secrets the chart renders itself.
+OPENBAO_ARGS=(--set global.openbao.enabled=false)
+if [[ "$OPENBAO" = "true" ]]; then
+  OPENBAO_ARGS=(--set global.openbao.enabled=true
+    --set global.openbao.address="$OPENBAO_ADDRESS"
+    --set global.openbao.kvMount="$OPENBAO_KV_MOUNT"
+    --set global.openbao.secretsPath="$OPENBAO_SECRETS_PATH"
+    --set global.openbao.auth.method=token
+    --set global.openbao.auth.tokenSecret="$OPENBAO_ESO_SECRET"
+    --set openbao.pki.mount="$OPENBAO_PKI_MOUNT"
+    --set openbao.pki.role="$OPENBAO_PKI_ROLE"
+    --set openbao.pki.tokenSecret="$OPENBAO_PKI_SECRET")
+fi
 if ! helm upgrade --install --create-namespace --namespace "$NAMESPACE" "$NAMESPACE" "$CHART" "${CHART_VERSION_ARGS[@]}" \
-  --set host="$DOMAIN" --set gateway.tls="$GATEWAY_TLS" --set gateway.hsts=true \
+  --set global.domain="$DOMAIN" --set service.host="$SERVER_HOST" \
+  "${OPENBAO_ARGS[@]}" \
+  --set gateway.tls="$GATEWAY_TLS" --set gateway.hsts=true \
   --set gateway.name="$GATEWAY_NAME" --set gateway.namespace="$GATEWAY_NAMESPACE" \
   --set gateway.httpsListener="$HTTPS_LISTENER" --set gateway.authHttpsListener="$AUTH_HTTPS_LISTENER" \
-  --set authServer.host="$AUTH_DOMAIN" --set authServer.gateway.tls="$GATEWAY_TLS" \
+  --set authServer.host="$AUTH_HOST" --set authServer.gateway.tls="$GATEWAY_TLS" \
   --set authServer.gateway.name="$GATEWAY_NAME" --set authServer.gateway.namespace="$GATEWAY_NAMESPACE" \
   -f "$VALUES_FILE"; then
   echo "There was a problem installing the RapidMX server."
@@ -1007,22 +1415,28 @@ if [[ -n "$progress_pid" ]]; then
   wait "$progress_pid"
 fi
 
-# The chart's resource prefix (its "rrst.fullname"): the release name, suffixed with the chart name "server" unless the
-# release name already contains it.
-FULLNAME=$NAMESPACE
-if [[ "$NAMESPACE" != *server* ]]; then
-  FULLNAME="$NAMESPACE-server"
-fi
 echo "Installation complete."
-echo "Postfix listens on port 25 as $DOMAIN and sends mail for $MAIL_DOMAINS. Add each domain in the admin console and"
-echo "point its MX record at $DOMAIN to receive mail for it."
-echo "Re-running this script reuses the release's secrets. To upgrade with helm yourself, pass them again as"
-echo "global.authSecret and global.mailIngestSecret:"
-echo "  kubectl -n $NAMESPACE get secret $FULLNAME-jwt-auth -o jsonpath='{.data.auth__secret}' | base64 -d"
-echo "  kubectl -n $NAMESPACE get secret $FULLNAME-mail-ingest-secret -o jsonpath='{.data.mail__transport__ingest__secret}' | base64 -d"
+echo "The server is at https://$SERVER_HOST, with sign-in at https://$AUTH_HOST."
+echo "Postfix listens on port 25 as $SERVER_HOST and sends mail for $MAIL_DOMAINS. Add each domain in the admin console"
+echo "and point its MX record at $SERVER_HOST to receive mail for it."
+if [[ "$OPENBAO" = "true" ]]; then
+  echo "The release's secrets live in OpenBao at $OPENBAO_KV_MOUNT/$OPENBAO_SECRETS_PATH, and External Secrets keeps them"
+  echo "in the Kubernetes Secrets the pods read, so a helm upgrade doesn't have to pass any of them. Read one with:"
+  echo "  kubectl -n $OPENBAO_NAMESPACE exec -it $OPENBAO_POD -- env BAO_TOKEN=<root token> bao kv get -mount=$OPENBAO_KV_MOUNT $OPENBAO_SECRETS_PATH"
+  if [[ "$OPENBAO_INSTALL" = "true" ]]; then
+    echo "The vault's unseal key and root token are in the $OPENBAO_KEYS_SECRET Secret in namespace $OPENBAO_NAMESPACE, which"
+    echo "the openbao-unsealer Deployment uses to unseal it after a restart. Back that Secret up: without it the vault's"
+    echo "contents can't be recovered."
+  fi
+else
+  echo "Re-running this script reuses the release's secrets. To upgrade with helm yourself, pass them again as"
+  echo "global.authSecret and global.mailIngestSecret:"
+  echo "  kubectl -n $NAMESPACE get secret $FULLNAME-jwt-auth -o jsonpath='{.data.auth__secret}' | base64 -d"
+  echo "  kubectl -n $NAMESPACE get secret $FULLNAME-mail-ingest-secret -o jsonpath='{.data.mail__transport__ingest__secret}' | base64 -d"
+fi
 
-if [[ $DOMAIN =~ \.local(host)?$ || $DOMAIN = "localhost" ]]; then
+if [[ $SERVER_HOST =~ \.local(host)?$ || $SERVER_HOST = "localhost" ]]; then
   echo "Please update the hosts file to resolve the following:"
-  echo -e "\t $DOMAIN"
-  echo -e "\t $AUTH_DOMAIN"
+  echo -e "\t $SERVER_HOST"
+  echo -e "\t $AUTH_HOST"
 fi

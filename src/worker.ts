@@ -79,7 +79,7 @@ objectFactory.register(selectConfigDrivenBackend(config, "mail:blob:backend", "s
 objectFactory.register(MongoTextSearchProvider, "SearchProvider");
 // SpamScanProvider/AvScanProvider/MailTransport: rspamd, ClamAV and Postfix. Under a development NODE_ENV only, wrapped so
 // `yarn dev` can send mail without them running - see dev/registerMailProviders.ts. Any other NODE_ENV fails closed.
-registerMailProviders(objectFactory, DevLocalDeliveryTransportMongo, process.env.NODE_ENV);
+registerMailProviders(objectFactory, DevLocalDeliveryTransportMongo, process.env.NODE_ENV, config);
 const dnsResolverBackend: string = config.get("mail:dns:resolver") || "node";
 objectFactory.register(dnsResolverBackend === "doh-dnssec" ? DohDnssecDnsResolver : NodeDnsResolver, "DnsResolver");
 // Opts into automatic per-domain DKIM key generation (writing into the shared volume the Postfix/rspamd

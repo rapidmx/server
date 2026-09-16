@@ -202,6 +202,21 @@ conf.defaults({
             },
         },
         transport: {
+            // Which `MailTransport` sends outbound mail (see dev/registerMailProviders.ts, and
+            // `mail:blob:backend` above for the same config-driven pattern): `"postfix"` (default)
+            // relays through the `postfix-bridge` deployment's Postfix, `"ses"` hands each message to
+            // AWS SES's SendEmail API (`SesMailTransport`), for a deployment receiving through
+            // `ses-bridge` instead of Postfix. Any other value falls back to `"postfix"`.
+            provider: "postfix",
+            // Only read by `SesMailTransport` (provider `"ses"`). Credentials come from the standard
+            // AWS credential chain (an IAM role in any real deployment), never from config.
+            ses: {
+                // Empty leaves the region to the SDK's own resolution (env var, shared config, instance
+                // metadata).
+                region: "",
+                // Optional SES configuration set for delivery/bounce/complaint event tracking.
+                configuration_set: "",
+            },
             // The internal MTA (Postfix) hand-off contract's bearer secret (see `BaseMailIngestRoute`,
             // mounted at `/internal/mta`). Must match whatever secret Postfix's content-filter/recipient-
             // validation hooks are configured to send.

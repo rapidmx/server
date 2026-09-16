@@ -10,6 +10,8 @@ than leaving extra pods stuck in ContainerCreating on a Multi-Attach error.
 {{- if ne $.Values.mail.dkim.storage.accessMode "ReadWriteMany" }}
 {{- $rwoVolumes = append $rwoVolumes "mail.dkim.storage" }}
 {{- end }}
+{{- include "server.assertHost" $ }}
+{{- include "server.assertSuppliedSecrets" $ }}
 {{- include "server.assertPostfixBridge" $ }}
 {{- if ne $.Values.mail.pki.storage.accessMode "ReadWriteMany" }}
 {{- $rwoVolumes = append $rwoVolumes "mail.pki.storage" }}
@@ -72,6 +74,11 @@ spec:
         checksum/config: {{ include (print $.Template.BasePath "/0_config/service-config.yaml") . | sha256sum }}
         checksum/secrets: {{ print (include (print $.Template.BasePath "/0_config/jwt-auth.yaml") .) (include (print $.Template.BasePath "/0_config/mail-ingest-secret.yaml") .) (include (print $.Template.BasePath "/0_config/service-secrets.yaml") .) (include (print $.Template.BasePath "/0_config/redis.yaml") .) | sha256sum }}
     spec:
+      {{- with include "server.serviceAccountName" $ }}
+      # Only when one is configured (values.yaml's serviceAccount): an AWS IAM role through IRSA, for SES and the S3
+      # blob backend. Otherwise the namespace's "default" ServiceAccount, as before.
+      serviceAccountName: {{ . }}
+      {{- end }}
       {{- if $.Values.service.imagePullSecret }}
       imagePullSecrets:
         - name: {{ $.Values.service.imagePullSecret }}
@@ -128,6 +135,12 @@ spec:
                 name: {{ include "rrst.fullname" . }}-mail-ingest-secret
             - secretRef:
                 name: {{ .Values.secrets.existingSecret | default (printf "%s-service-secrets" (include "rrst.fullname" .)) }}
+            {{- if and (.Values.global.openbao.enabled) .Values.openbao.pki.enabled (include "rrst.render" (dict "value" .Values.openbao.pki.tokenSecret "context" .)) }}
+            # The vault's PKI token (mail__pki__openbao__token), written by the install scripts or by you; the rest of
+            # those settings come from the ConfigMap.
+            - secretRef:
+                name: {{ include "rrst.render" (dict "value" .Values.openbao.pki.tokenSecret "context" .) }}
+            {{- end }}
           env:
             # Outbound relay (scripts/docker-entrypoint.sh writes ~/.msmtprc from these) - see values.yaml's mail.relay.
             - name: SENDMAIL_RELAY_HOST
@@ -137,7 +150,7 @@ spec:
             - name: SENDMAIL_RELAY_TLS
               value: {{ ternary "on" "off" (has (toString $.Values.mail.relay.tls) (list "true" "on")) | quote }}
             - name: SENDMAIL_FROM_ADDRESS
-              value: {{ tpl $.Values.mail.relay.fromAddress $ | default (printf "mailer@%s" ($.Values.mail.mxHostname | default $.Values.host)) | quote }}
+              value: {{ tpl $.Values.mail.relay.fromAddress $ | default (printf "mailer@%s" ($.Values.mail.mxHostname | default (include "rrst.render" (dict "value" $.Values.service.host "context" $)))) | quote }}
             {{- include "server.datastoreEnv" . | trim | nindent 12 }}
           ports:
             - containerPort: 3000

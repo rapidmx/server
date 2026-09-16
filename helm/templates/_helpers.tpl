@@ -115,6 +115,18 @@ Generate list of domains with subdomain and/or path
 {{- include "rrst.domains" (dict "Values" $.Values "system" $System) }}
 {{- end -}}
 {{/*
+Fails the render when the chart is installed with the `host` value earlier versions used (now service.host, defaulting
+to mail.<global.domain>), rather than silently serving a different name. Included from 1_deployments/service.yaml.
+*/}}
+{{- define "server.assertHost" -}}
+{{- if .Values.host -}}
+{{- fail "`host` has moved to `service.host`, and defaults to mail.<global.domain>: set --set global.domain=example.com (and service.host only for a name other than mail.example.com)." -}}
+{{- end -}}
+{{- /* Assigned, not emitted: this include sits among the other asserts and must render nothing. */ -}}
+{{- $_ := required "service.host is required: the server's public host name." .Values.service.host -}}
+{{- end -}}
+
+{{/*
 "true" when `host` can get a real certificate: not localhost, *.localhost or *.local. Usage: include "server.publicHost" "mail.example.com"
 */}}
 {{- define "server.publicHost" -}}
@@ -132,7 +144,7 @@ true
 
 {{/* "true" when tls-certs.yaml issues a cert-manager Certificate for `host`. */}}
 {{- define "server.certificateEnabled" -}}
-{{- if and .Values.gateway.tls (eq (include "server.publicHost" .Values.host) "true") -}}
+{{- if and .Values.gateway.tls (eq (include "server.publicHost" (include "rrst.render" (dict "value" .Values.service.host "context" .))) "true") -}}
 true
 {{- end -}}
 {{- end -}}
@@ -154,7 +166,7 @@ chart version that didn't need this value) would otherwise move the route to the
 and switch every derived public URL (CORS, booking links, autodiscover, mail__auth_server_url) to http://.
 */ -}}
 {{- if not $listener -}}
-{{- fail (printf "gateway.tls is true and %q can get a certificate, but the chart doesn't own Gateway %s/%s, so it doesn't know which of its listeners serves HTTPS. Set gateway.httpsListener to the name of that Gateway's HTTPS listener for this host (terminating TLS with the %s-tls-cert Secret), or set gateway.tls=false to serve plain HTTP." .Values.host (tpl .Values.gateway.namespace .) (tpl .Values.gateway.name .) .Values.host) -}}
+{{- fail (printf "gateway.tls is true and %q can get a certificate, but the chart doesn't own Gateway %s/%s, so it doesn't know which of its listeners serves HTTPS. Set gateway.httpsListener to the name of that Gateway's HTTPS listener for this host (terminating TLS with the %s-tls-cert Secret), or set gateway.tls=false to serve plain HTTP." (include "rrst.render" (dict "value" .Values.service.host "context" .)) (tpl .Values.gateway.namespace .) (tpl .Values.gateway.name .) (include "rrst.render" (dict "value" .Values.service.host "context" .))) -}}
 {{- end -}}
 {{- $listener -}}
 {{- end -}}
@@ -168,8 +180,8 @@ host containing ".local"), and a listener exists - "https-auth" on the chart's o
 someone else's. The subchart's own HTTPRoute only attaches to "http", so 3_gateways/api.yaml routes this one.
 */}}
 {{- define "server.authHttpsListener" -}}
-{{- $host := .Values.authServer.host -}}
-{{- if and .Values.authServer.create (include "server.httpsListener" .) (eq (include "server.publicHost" $host) "true") (not (contains ".local" $host)) (ne $host .Values.host) -}}
+{{- $host := include "rrst.render" (dict "value" .Values.authServer.host "context" .) -}}
+{{- if and .Values.authServer.create (include "server.httpsListener" .) (eq (include "server.publicHost" $host) "true") (not (contains ".local" $host)) (ne $host (include "rrst.render" (dict "value" .Values.service.host "context" .))) -}}
 {{- if eq (include "server.ownsGateway" .) "true" -}}
 https-auth
 {{- else -}}
@@ -189,9 +201,9 @@ parent chart can't pass down - they must be set under authServer too:
 */}}
 {{- define "server.assertAuthServerRouting" -}}
 {{- if .Values.authServer.create -}}
-{{- $authHost := .Values.authServer.host -}}
-{{- if and (eq (include "server.publicHost" .Values.host) "true") (ne (include "server.publicHost" $authHost) "true") -}}
-{{- fail (printf "host %q is public but authServer.host is %q, so sign-in would redirect every browser to a host it can't reach. Set authServer.host to the auth-server's public name, e.g. --set authServer.host=auth.%s (and route it through your Gateway)." .Values.host $authHost .Values.host) -}}
+{{- $authHost := include "rrst.render" (dict "value" .Values.authServer.host "context" .) -}}
+{{- if and (eq (include "server.publicHost" (include "rrst.render" (dict "value" .Values.service.host "context" .))) "true") (ne (include "server.publicHost" $authHost) "true") -}}
+{{- fail (printf "service.host %q is public but authServer.host is %q, so sign-in would redirect every browser to a host it can't reach. Set authServer.host to the auth-server's public name, e.g. --set authServer.host=auth.%s (and route it through your Gateway)." (include "rrst.render" (dict "value" .Values.service.host "context" .)) $authHost (include "rrst.render" (dict "value" .Values.global.domain "context" .))) -}}
 {{- end -}}
 {{- if ne (include "server.ownsGateway" .) "true" -}}
 {{- $gatewayName := tpl .Values.gateway.name . -}}
@@ -206,17 +218,31 @@ parent chart can't pass down - they must be set under authServer too:
 {{- end -}}
 {{- end -}}
 
+{{/* The ServiceAccount the server pod runs as, or empty for the namespace's "default". */}}
+{{- define "server.serviceAccountName" -}}
+{{- if .Values.serviceAccount.create -}}
+{{- tpl (.Values.serviceAccount.name | default "") . | default (include "rrst.fullname" .) -}}
+{{- else -}}
+{{- tpl (.Values.serviceAccount.name | default "") . -}}
+{{- end -}}
+{{- end -}}
+
 {{/*
 Fails the render when the bundled postfix-bridge would run with its placeholder identity on a public deployment: Postfix
-would HELO as mail.localhost with a self-signed certificate, and only accept outbound mail from example.com.
+would HELO as mail.localhost with a self-signed certificate, and only accept outbound mail from example.com. Also refuses
+the two mail transports at once: with SES sending, Postfix would still be receiving mail nothing routes to it.
 */}}
 {{- define "server.assertPostfixBridge" -}}
-{{- if and .Values.postfixBridge.create (eq (include "server.publicHost" .Values.host) "true") -}}
-{{- if eq (include "server.publicHost" .Values.postfixBridge.hostname) "" -}}
-{{- fail (printf "host %q is public but postfixBridge.hostname is %q. Set it to Postfix's public MX host name, e.g. --set postfixBridge.hostname=%s." .Values.host .Values.postfixBridge.hostname (.Values.mail.mxHostname | default .Values.host)) -}}
+{{- if and .Values.postfixBridge.create (eq .Values.mail.transport.provider "ses") -}}
+{{- fail "mail.transport.provider is \"ses\" but postfixBridge.create is true, so this release would both send through SES and run its own Postfix. Set postfixBridge.create=false (inbound mail then comes from ses-bridge), or mail.transport.provider=postfix." -}}
 {{- end -}}
-{{- if eq (toString .Values.postfixBridge.domains) "example.com" -}}
-{{- fail "postfixBridge.domains is still example.com. Set it to the comma-separated domains this deployment sends mail from, e.g. --set postfixBridge.domains=example.com\\,example.org." -}}
+{{- if and .Values.postfixBridge.create (eq (include "server.publicHost" (include "rrst.render" (dict "value" .Values.service.host "context" .))) "true") -}}
+{{- if eq (include "server.publicHost" .Values.postfixBridge.hostname) "" -}}
+{{- fail (printf "host %q is public but postfixBridge.hostname is %q. Set it to Postfix's public MX host name, e.g. --set postfixBridge.hostname=%s." (include "rrst.render" (dict "value" .Values.service.host "context" .)) .Values.postfixBridge.hostname (.Values.mail.mxHostname | default (include "rrst.render" (dict "value" .Values.service.host "context" .)))) -}}
+{{- end -}}
+{{- /* Only a placeholder while it isn't the deployment's own domain, which is what it should usually be. */ -}}
+{{- if and (eq (toString .Values.postfixBridge.domains) "example.com") (ne (toString .Values.global.domain) "example.com") -}}
+{{- fail (printf "postfixBridge.domains is still example.com. Set it to the comma-separated domains this deployment sends mail from, e.g. --set postfixBridge.domains=%s." (toString .Values.global.domain)) -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}
@@ -273,7 +299,7 @@ Usage: include "server.assertStableSecrets" (dict "missing" (list "cookies.secre
 
 {{/* The public base URL of this deployment, e.g. https://mail.example.com. */}}
 {{- define "server.publicUrl" -}}
-{{- printf "%s://%s" (ternary "https" "http" (eq (include "server.tlsEnabled" .) "true")) .Values.host -}}
+{{- printf "%s://%s" (ternary "https" "http" (eq (include "server.tlsEnabled" .) "true")) (include "rrst.render" (dict "value" .Values.service.host "context" .)) -}}
 {{- end -}}
 
 {{/*
@@ -357,5 +383,95 @@ Renders nothing when no bundled database uses a password.
 - name: datastores__{{ $name }}__url
   value: {{ $redisUrl | quote }}
 {{- end }}
+{{- end }}
+{{- end -}}
+
+{{/*
+The vault's address: global.openbao.address, which defaults to the OpenBao the install scripts put in the cluster and is
+pointed at your own when you run one already.
+*/}}
+{{- define "server.openbaoAddress" -}}
+{{- include "rrst.render" (dict "value" .Values.global.openbao.address "context" .) -}}
+{{- end -}}
+
+{{/*
+"true" when OpenBao holds this release's secrets and External Secrets delivers them into the Kubernetes Secrets the pods
+read - in which case this chart doesn't render those Secrets itself, and the values that would otherwise be required
+(global.authSecret, global.mailIngestSecret) are generated in the vault instead.
+*/}}
+{{- define "server.vaultManagedSecrets" -}}
+{{- if and .Values.global.openbao.enabled .Values.externalSecrets.enabled -}}
+true
+{{- end -}}
+{{- end -}}
+
+{{/*
+The External Secrets API version this cluster serves, failing with something actionable when the operator isn't
+installed at all - its CRDs are cluster-wide, so a chart can't bring them along.
+*/}}
+{{- define "server.externalSecretsApiVersion" -}}
+{{- if .Capabilities.APIVersions.Has "external-secrets.io/v1" -}}
+external-secrets.io/v1
+{{- else if .Capabilities.APIVersions.Has "external-secrets.io/v1beta1" -}}
+external-secrets.io/v1beta1
+{{- else -}}
+{{- fail "externalSecrets.enabled is true but this cluster has no External Secrets Operator (no external-secrets.io CRDs). Install it first (helm install external-secrets external-secrets/external-secrets -n external-secrets --create-namespace --set installCRDs=true; single_node_install.sh and deploy/aws do this for you), or set externalSecrets.enabled=false to keep the chart's own Kubernetes Secrets." -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+Fails the render when a secret this chart must have wasn't supplied and nothing else provides it. With OpenBao the vault
+generates them, so only a deployment without it needs these set.
+*/}}
+{{- define "server.assertSuppliedSecrets" -}}
+{{- /* The subcharts only see `global`, so the two switches have to agree by hand. */ -}}
+{{- if eq (include "server.vaultManagedSecrets" .) "true" -}}
+{{- if not (include "rrst.render" (dict "value" .Values.global.openbao.address "context" .)) -}}
+{{- fail "global.openbao.enabled is true but global.openbao.address is empty: point it at the OpenBao this cluster runs (e.g. http://openbao.openbao.svc:8200), which single_node_install.sh and deploy/aws install for you." -}}
+{{- end -}}
+{{- if and (eq .Values.global.openbao.auth.method "token") (not (include "rrst.render" (dict "value" .Values.global.openbao.auth.tokenSecret "context" .))) -}}
+{{- fail "global.openbao.auth.method is \"token\" but global.openbao.auth.tokenSecret is empty: name a Secret holding a token that may read global.openbao.secretsPath, or use method \"kubernetes\"." -}}
+{{- end -}}
+{{- if and (eq .Values.global.openbao.auth.method "kubernetes") (not (include "rrst.render" (dict "value" .Values.global.openbao.auth.kubernetes.role "context" .))) -}}
+{{- fail "global.openbao.auth.method is \"kubernetes\" but global.openbao.auth.kubernetes.role is empty: set the OpenBao role bound to this namespace's ServiceAccount." -}}
+{{- end -}}
+{{- end -}}
+{{- if and (eq (include "server.vaultManagedSecrets" .) "true") .Values.postfixBridge.create -}}
+{{- $version := (.Subcharts.postfixBridge).Chart.Version | default "0.0.0" -}}
+{{- if not (semverCompare ">=1.2.0-0" $version) -}}
+{{- fail (printf "The bundled postfix-bridge is %s, which can't read the ingest secret from the vault's Secret (it needs ingestSecretRef, added in 1.2.0). Upgrade the dependency, or set externalSecrets.enabled=false and supply global.mailIngestSecret yourself." $version) -}}
+{{- end -}}
+{{- end -}}
+{{- if ne (include "server.vaultManagedSecrets" .) "true" -}}
+{{- $_ := include "server.requiredSecret" (dict "value" (tpl .Values.auth.secret .) "name" "auth.secret (or global.authSecret)" "defaults" (list "MyPasswordIsSecure")) -}}
+{{- $_ = include "server.requiredSecret" (dict "value" (tpl .Values.mail.ingestSecret .) "name" "global.mailIngestSecret (or mail.ingestSecret)" "defaults" (list "ChangeMeIngestSecret")) -}}
+{{- end -}}
+{{- end -}}
+
+{{/* The kv v2 mount and the path this release's secrets live at, both from global.openbao. */}}
+{{- define "server.vaultKvMount" -}}
+{{- include "rrst.render" (dict "value" .Values.global.openbao.kvMount "context" .) -}}
+{{- end -}}
+
+{{- define "server.vaultSecretsPath" -}}
+{{- include "rrst.render" (dict "value" .Values.global.openbao.secretsPath "context" .) -}}
+{{- end -}}
+
+{{/*
+How External Secrets authenticates to the vault: a token Secret (the bundled vault's own, or one naming a token you
+created) or Kubernetes auth against a shared vault's mount.
+*/}}
+{{- define "server.vaultAuth" -}}
+{{- $auth := .Values.global.openbao.auth -}}
+{{- if eq $auth.method "kubernetes" -}}
+kubernetes:
+  mountPath: {{ include "rrst.render" (dict "value" $auth.kubernetes.mountPath "context" .) | quote }}
+  role: {{ include "rrst.render" (dict "value" $auth.kubernetes.role "context" .) | quote }}
+  serviceAccountRef:
+    name: {{ include "rrst.render" (dict "value" $auth.kubernetes.serviceAccount "context" .) | default "default" | quote }}
+{{- else -}}
+tokenSecretRef:
+  name: {{ include "rrst.render" (dict "value" $auth.tokenSecret "context" .) | quote }}
+  key: {{ $auth.tokenSecretKey | default "token" | quote }}
 {{- end }}
 {{- end -}}

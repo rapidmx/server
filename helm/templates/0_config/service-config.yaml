@@ -13,7 +13,7 @@ data:
   {{- $publicScheme := ternary "https" "http" (eq (include "server.tlsEnabled" $) "true") }}
   {{- $publicUrl := include "server.publicUrl" $ }}
   {{- $config := $.Values.service.config | default dict }}
-  {{- $corsHosts := list "http://localhost:3000" (printf "%s://%s" $publicScheme $.Values.host) }}
+  {{- $corsHosts := list "http://localhost:3000" (printf "%s://%s" $publicScheme (include "rrst.render" (dict "value" $.Values.service.host "context" $))) }}
   cors__origins: {{ $corsHosts | toJson | quote }}
   # Which proxies' X-Forwarded-For is trusted for the client's address (per-IP rate limits) - see values.yaml's
   # service.trustedProxies.
@@ -29,6 +29,23 @@ data:
   {{- end }}
   # Where message bodies/attachments are stored - see values.yaml's mail.blob.backend.
   mail__blob__backend: {{ $.Values.mail.blob.backend | quote }}
+  {{- if and ($.Values.global.openbao.enabled) $.Values.openbao.pki.enabled (include "rrst.render" (dict "value" $.Values.openbao.pki.tokenSecret "context" $)) }}
+  # The encryption CA lives in the OpenBao this cluster already runs; the token itself comes from the Secret named in
+  # openbao.pki.tokenSecret (see 1_deployments/service.yaml).
+  mail__pki__backend: "openbao"
+  mail__pki__openbao__address: {{ include "server.openbaoAddress" $ | quote }}
+  mail__pki__openbao__mount: {{ $.Values.openbao.pki.mount | quote }}
+  mail__pki__openbao__role: {{ $.Values.openbao.pki.role | quote }}
+  {{- end }}
+  # Which MailTransport sends outbound mail, and SES's own settings when it's the one - see values.yaml's
+  # mail.transport. The AWS credentials SES needs come from the pod's IAM role, never from config.
+  mail__transport__provider: {{ $.Values.mail.transport.provider | quote }}
+  {{- if $.Values.mail.transport.ses.region }}
+  mail__transport__ses__region: {{ tpl $.Values.mail.transport.ses.region $ | quote }}
+  {{- end }}
+  {{- if $.Values.mail.transport.ses.configurationSet }}
+  mail__transport__ses__configuration_set: {{ tpl $.Values.mail.transport.ses.configurationSet $ | quote }}
+  {{- end }}
   # Public URLs derived from `host`, unless set explicitly under service.config: links in the booking plugin's emails
   # (its mail:booking:public_url setting, where this environment variable wins over the value saved in the admin
   # console), the base URL the autodiscover plugin advertises to mail clients, and the MX hostname (read-receipt
@@ -40,7 +57,7 @@ data:
   mail__autodiscover__public_url: {{ $publicUrl | quote }}
   {{- end }}
   {{- if not (hasKey $config "mail__dns__mx_hostname") }}
-  mail__dns__mx_hostname: {{ $.Values.mail.mxHostname | default $.Values.host | quote }}
+  mail__dns__mx_hostname: {{ $.Values.mail.mxHostname | default (include "rrst.render" (dict "value" $.Values.service.host "context" $)) | quote }}
   {{- end }}
   {{- if and $.Values.mail.trustedAuthservId (not (hasKey $config "mail__security__trusted_authserv_id")) }}
   mail__security__trusted_authserv_id: {{ $.Values.mail.trustedAuthservId | quote }}
@@ -50,7 +67,7 @@ data:
   # from inside the cluster - hence the authServer subdomain host, not a Service DNS name. Only rendered
   # when authServer is actually enabled; set mail__auth_server_url directly via service.config otherwise.
   {{- if $.Values.authServer.create }}
-  mail__auth_server_url: {{ printf "%s://%s" (ternary "https" "http" (or (ne (include "server.authHttpsListener" $) "") (and (eq $.Values.authServer.host $.Values.host) (eq $publicScheme "https")))) $.Values.authServer.host | quote }}
+  mail__auth_server_url: {{ printf "%s://%s" (ternary "https" "http" (or (ne (include "server.authHttpsListener" $) "") (and (eq (include "rrst.render" (dict "value" $.Values.authServer.host "context" $)) (include "rrst.render" (dict "value" $.Values.service.host "context" $))) (eq $publicScheme "https")))) (include "rrst.render" (dict "value" $.Values.authServer.host "context" $)) | quote }}
   {{- end }}
   {{- range $k, $v := $.Values.service.config }}
   {{- if kindIs "string" $v }}
