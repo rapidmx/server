@@ -111,7 +111,7 @@ describe("BaseGiphySearchRoute Tests", () => {
 
     it("declares a per-user rate limit on search.", () => {
         const route = Reflect.getMetadata("rrst:route", BaseGiphySearchRoute.prototype, "search");
-        expect(route.rateLimit).toMatchObject({ perUser: true, maxAttempts: 30, windowSeconds: 60 });
+        expect(route.rateLimit).toMatchObject({ perUser: true, maxAttempts: 300, windowSeconds: 60 });
     });
 
     it("uses the default limit when none is given.", async () => {

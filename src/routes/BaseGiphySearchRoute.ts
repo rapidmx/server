@@ -80,8 +80,10 @@ export class BaseGiphySearchRoute {
     private apiKey?: string;
 
     @Auth(["jwt"])
-    // Every search spends this deployment's shared Giphy quota, so each user gets a modest budget of their own.
-    @RateLimit({ perUser: true, maxAttempts: 30, windowSeconds: 60 })
+    // Every search spends this deployment's shared Giphy quota, so each user gets a budget of their own. The GIF
+    // picker searches as the user types (debounced), so a per-minute cap in the tens is spent by normal picking:
+    // 5/s sustained is generous for one person and still bounds what a script can spend.
+    @RateLimit({ perUser: true, maxAttempts: 300, windowSeconds: 60 })
     @Get("/search")
     public async search(@Query("q") query?: string, @Query("limit") limitParam?: string): Promise<GiphyGif[]> {
         // The checked-in placeholder key counts as unset.
