@@ -8,7 +8,7 @@ DOMAIN="cluster.local"
 MAIL_HOST=${MAIL_HOST:-mail}
 AUTH_HOST=${AUTH_HOST:-auth}
 TLS=true
-VERSION="1.0.0-beta.3"
+VERSION="1.0.0-beta.4"
 NAMESPACE="rapidmx-server"
 # The published chart: the CI pushes ./helm (chart name "server") to oci://ghcr.io/<owner>/charts. Set CHART to a local
 # chart directory (e.g. CHART=./helm) to install from a checkout instead; --version is then ignored.

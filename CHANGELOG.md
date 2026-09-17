@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.4] - 2026-09-17
+
+### Added
+- Added global.mailIngestSecret, shared by the server's mail.ingestSecret and postfixBridge's ingestSecret so the two can't disagree, and point postfixBridge's ingestBaseUrl at this release's Service
+- Added mail.ingestService for the internal load balancer ses-bridge's Lambda posts to, restricted by loadBalancerSourceRanges, and serviceAccount.create for the IRSA role SES and the S3 blob backend need
+
+### Changed
+- Treat a scan result as clean under a development NODE_ENV when rspamd or clamd can't be connected to at all, so yarn dev can send mail without docker-compose.mail.yml's scanners, logging a warning with the command that starts them when scanning is first bypassed and then at most every five minutes
+- Keep a reachable engine's verdicts, including its fail-closed results for a protocol error, and let errors from the real providers propagate
+- Deliver sent mail to local mailboxes through the MTA ingest route under a development NODE_ENV when there is no sendmail binary, rejecting other recipients with a warning, instead of every send failing with "The mail transport rejected this message."
+- Register the scan providers and mail transport through registerMailProviders, which registers exactly the real RspamdSpamScanProvider, ClamAvScanProvider and PostfixSendmailTransport for every other NODE_ENV, so production still fails closed
+- Document the development scan bypass and local delivery in the README and the scan config comments
+- Install Postfix and postfix-bridge with the chart as the postfixBridge dependency (postfix-bridge 1.1.0), which postfixBridge.create=false leaves out
+- Mount the server's own DKIM keys claim in Postfix through postfixBridge's dkim.storage.existingClaim, so it signs with the keys the server writes and publishes in DNS
+- Fail the render with a public host while postfixBridge.hostname or postfixBridge.domains are still the mail.localhost and example.com placeholders
+- Say in the chart's NOTES.txt whether postfix-bridge is bundled and how to connect a separately installed one
+- Pass postfixBridge.hostname, domains and tls.certManager.enabled from single_node_install.sh, add --mail-domains, open port 25 in ufw or firewalld, and allow --tls false with a public domain now that Postfix can self-sign
+- Restore the helm values.yaml comments the 1.0.0-beta.3 release commit stripped, and the README's 127.0.0.1 it turned into 1.0.0-beta.3.1
+- Document the bundled mail transport in the README, release notes and NOTES
+- Serve the cluster through Envoy Gateway in single_node_install.sh instead of nginx-gateway-fabric, with a ClusterIP Envoy Service, a ClientTrafficPolicy enabling the PROXY protocol and an nginx stream proxy forwarding 80 and 443 with proxy_protocol on, so the pods see the real client address without a NodePort anyone on the network could spoof it through
+- Record what the installer put there in /var/lib/rapidmx-installer/state and open the ports it needs through ufw or firewalld, whichever the host runs, so --uninstall removes only what the script added
+- Take --domain as the deployment's mail domain and derive the rest from it - the server at mail.<domain>, the auth-server at auth.<domain> (--mail-host and --auth-host to override), the ACME registration at admin@<domain> - passing it to the chart as global.domain with service.host and authServer.host
+- Derive the JWT audience and issuer from global.domain on both sides, so the server and the bundled auth-server agree on the claims without either being configured twice
+- Send outbound mail through AWS SES when mail.transport.provider is "ses", selecting SesMailTransport from the config rather than from NODE_ENV alone, and refuse the render when it is on together with the bundled Postfix
+- Deploy on AWS from deploy/aws: a CloudFormation template and a bootstrap.sh that install k3s with the AWS cloud controller and EBS CSI driver, front Envoy Gateway with a Classic Load Balancer, and install the chart with SES and no nginx, in one curl-to-bash from EC2 user data
+- Keep the release's secrets in OpenBao when global.openbao.enabled - the JWT secret shared with the auth-server, the cookie, session and escrow audit keys and the mail ingest secret - with External Secrets copying them into the Kubernetes Secrets the pods already load, so nothing in the application changes and the bundled auth-server and postfix-bridge read the same values
+- Issue the certificates for end-to-end encrypted mail from an OpenBao PKI mount when openbao.pki.tokenSecret names a token, so the CA key stays in the vault rather than on the pki-data volume
+- Write mail__pki__openbao__address rather than mail__pki__openbao__url, which the certificate authority never read, leaving it on its 127.0.0.1 default whatever the chart was told
+- Expect OpenBao in the cluster like cert-manager rather than installing it from the chart, and default global.openbao.enabled to false so a plain helm install assumes neither a vault nor the External Secrets CRDs are there
+- Install OpenBao from single_node_install.sh and deploy/aws behind --openbao and RAPIDMX_OPENBAO (on by default): initialise it, keep the unseal key in a Secret with an unsealer Deployment that unseals the vault again after a restart, seed this release's secrets once - carrying over the values an existing install already uses - set up the PKI mount and issuing role, and mint the tokens the chart reads them with
+- Document all of it in the README, the release notes, the chart's NOTES.txt and deploy/aws/README.md
+- Raise the GIF search rate limit from 30 to 300 searches a minute per user, since the picker searches as the user types and a cap in the tens is spent by normal picking
+- Resolve @rapidmx/restapi, @rapidmx/react-shared and @rapidmx/web-client through yarn's patch protocol, so this server builds against the in-flight directory, compose-quoting, conversation and admin-settings changes in those packages before a release carries them
+- Serve restapi's directory routes from this server's own Mongo and SQL subclasses at mail/directory, so compose's recipient suggestions come from this deployment's mailboxes, distribution lists and contacts
+- Check both of them in the restapi route surface test
+- Upgraded all rapidmx deps
+- Updated helm deps
+
+
 ## [1.0.0-beta.3] - 2026-09-15
 
 ### Added
@@ -666,7 +705,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed test from .dockerignore, fixing yarn build's lint step failing outright when the build context is missing the test directory its tsconfig.eslint.json requires
 - Removed docker-compose.mail.yml's partial server: service block, since include: only supports merging resources that don't already exist in the including file and hard-errors ("services.server conflicts with imported resource") on a Compose version newer than whatever this had only ever been tested against locally
 
-[Unreleased]: https://github.com/rapidmx/server/compare/v1.0.0-beta.3...HEAD
+[Unreleased]: https://github.com/rapidmx/server/compare/v1.0.0-beta.4...HEAD
+[1.0.0-beta.4]: https://github.com/rapidmx/server/compare/v1.0.0-beta.3...v1.0.0-beta.4
 [1.0.0-beta.3]: https://github.com/rapidmx/server/compare/v1.0.0-beta.2...v1.0.0-beta.3
 [1.0.0-beta.2]: https://github.com/rapidmx/server/compare/v1.0.0-beta.1...v1.0.0-beta.2
 [1.0.0-beta.1]: https://github.com/rapidmx/server/compare/v1.0.0-beta.0...v1.0.0-beta.1

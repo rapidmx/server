@@ -6,7 +6,7 @@ description: >-
   postfix-bridge, https://github.com/rapidmx/postfix-bridge) as a dependency.
 name: server
 version: 1.0.0
-appVersion: 1.0.0-beta.3
+appVersion: 1.0.0-beta.4
 dependencies:
   - name: mongodb
     repository: '@bitnami'
@@ -39,7 +39,6 @@ dependencies:
     alias: authServer
   - name: postfix-bridge
     repository: oci://ghcr.io/rapidmx/charts
-    # 1.2.0 for ingestSecretRef, which the OpenBao path needs (see values.yaml's postfixBridge.ingestSecretRef).
     version: 1.2.0
     condition: postfixBridge.create
     alias: postfixBridge
