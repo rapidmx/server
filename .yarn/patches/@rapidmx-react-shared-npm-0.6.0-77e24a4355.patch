@@ -1,0 +1,1124 @@
+diff --git a/dist/mail/compose/composeQuoting.d.ts b/dist/mail/compose/composeQuoting.d.ts
+index 97d6866c02e0b04e5bc684bc2ae1297f0ba964c8..fc6af9c7c14dcff93d7e6cdbc5bdb8ca77c090e3 100644
+--- a/dist/mail/compose/composeQuoting.d.ts
++++ b/dist/mail/compose/composeQuoting.d.ts
+@@ -1,23 +1,88 @@
+ /**
+- * Builds the quoted-original-message HTML a Reply/Reply All/Forward compose starts with — this app's
+- * own job entirely, same "restapi never composes message bodies" convention as `mailApi.ts`'s
+- * `assembleDraft()`. Quotes `message.bodyPreview` (a plain-text excerpt the server already derives at
+- * ingest time) rather than the message's full rendered HTML body: `MessageDetailPane`'s own body
+- * renders via a sandboxed `<iframe src=".../content">`, so the raw HTML is never available to this
+- * app's own JavaScript to re-embed without a second fetch and its own HTML-in-HTML sanitization pass —
+- * a plain-text quote is a smaller, safer outcome, and no less faithful in practice since
+- * `sanitizeComposeHtml()` (the server-side gate every compose body passes through regardless of origin)
+- * strips active content out of a full HTML quote anyway.
++ * Builds what a Reply/Reply All/Forward compose starts with - its recipients, its quoted original message, and the
++ * body layout around the quote - entirely client-side, same "restapi never composes message bodies" convention as
++ * `mailApi.ts`'s `assembleDraft()`.
++ *
++ * The quote carries the original's full body, as the reader saw it: the caller passes a `QuotedBody` (the message's
++ * sanitized HTML body, its decrypted/verified content, or its plain-text body). HTML is sanitized again here with
++ * the same remote-resource-stripping policy used to display a client-rendered body (`messageBodySanitizer.ts`), plus
++ * a stricter tag list for the editor. `message.bodyPreview` - a server-derived excerpt, truncated - is only the last
++ * resort, when no body could be loaded.
+  */
+-import { Message } from "../mailApi.js";
++import { Message, Recipient } from "../mailApi.js";
++/**
++ * A recipient's display name, without the address the server sometimes leaves in it: an ingested message's `from`
++ * carries the whole `"Bob Allen" <bob@example.com>` From header as its display name, which would otherwise be shown
++ * (and addressed) as `"Bob Allen" <bob@example.com> <bob@example.com>`. A name that is, or ends in, the recipient's
++ * own address is reduced to the part before it; a name that is any other address is dropped entirely.
++ */
++export declare function recipientDisplayName(recipient: Recipient): string | undefined;
++/** The body of the message being quoted, as loaded by the caller. `html` is preferred over `text`; either may be
++ * absent (e.g. an encrypted message this device can't open, or a failed fetch). */
++export interface QuotedBody {
++    /** An HTML body. Sanitized again by the quote builders, so it may come from any source. */
++    html?: string;
++    /** A plain-text body. HTML-escaped by the quote builders. */
++    text?: string;
++}
+ /** Prepends "Re: " unless `subject` already starts with it (any casing) — the same convention every
+  * mail client uses to avoid a "Re: Re: Re: ..." chain. */
+ export declare function replySubject(subject: string): string;
+ /** Same convention as `replySubject()`, for forwards. */
+ export declare function forwardSubject(subject: string): string;
+-/** The quoted body a Reply/Reply All compose starts with, below the resolved signature (if any). */
+-export declare function buildReplyQuote(message: Message): string;
++/** The quoted original a Reply/Reply All compose starts with: an "On <date>, Name <address> wrote:" line and the
++ * original body in a blockquote. `buildComposeBodyHtml()` places it in the body. */
++export declare function buildReplyQuote(message: Message, body?: QuotedBody): string;
+ /** The quoted body a Forward compose starts with — includes the original headers block, matching every
+  * major mail client's own forward convention, since a forward (unlike a reply) has no visible reply
+  * chain of its own to imply who originally sent it. */
+-export declare function buildForwardQuote(message: Message): string;
++export declare function buildForwardQuote(message: Message, body?: QuotedBody): string;
++/**
++ * The HTML a compose body starts with, laid out the way Outlook and Gmail do: an empty paragraph first (where the
++ * caret goes, so typing lands above everything else), then the signature, then a blank line, then the quoted
++ * original. `""` when there is neither a signature nor a quote, which leaves the editor's own single empty
++ * paragraph.
++ *
++ * A quote is always preceded by an empty paragraph of its own, on top of the one that separates it from a
++ * signature: what the reply opens with is the caret's line and then the quote right underneath it, and there has to
++ * be somewhere to press Enter into above the "On ... wrote:" line without first making room for it by hand.
++ */
++export declare function buildComposeBodyHtml(signatureHtml?: string, quotedHtml?: string): string;
++/**
++ * The longest `References` chain `buildReplyThreading()` reports. A chain grows by one entry per reply forever
++ * and the server trims what it actually writes into the header anyway; sending an unbounded one is pointless.
++ * The root is always kept - it is what a conversation is keyed on - and the oldest entries after it are dropped.
++ */
++export declare const MAX_REPLY_REFERENCES = 20;
++/**
++ * What a reply or forward must record about the thread it continues, from the message it is a reply to: the
++ * RFC 5322 `In-Reply-To` (that message's own `messageId`) and the `References` chain (its own chain, with its
++ * `messageId` appended). Pass the result to `createDraft()`.
++ *
++ * Without it a reply is relayed with no threading headers at all - this server composes a reply's MIME from the
++ * structured compose input, which says nothing about what is being replied to - so every recipient's mail server,
++ * and the sender's own Sent Items copy, files it as a brand-new conversation instead of adding it to the thread.
++ */
++export declare function buildReplyThreading(message: Pick<Message, "messageId" | "references">): {
++    inReplyTo: string;
++    references: string[];
++};
++/** The To and Cc a reply starts with. */
++export interface ReplyRecipients {
++    to: Recipient[];
++    cc: Recipient[];
++}
++/**
++ * Who a Reply or Reply All goes to. The replying mailbox itself (`ownAddresses`: its primary address and aliases,
++ * compared case-insensitively) is left out, and no address is repeated.
++ *
++ * A reply to someone else's message goes to its sender. Reply All adds the original To recipients to To and the
++ * original Cc recipients to Cc.
++ *
++ * A reply to a message the mailbox sent itself (e.g. from Sent Items) goes to the original To recipients instead of
++ * back to the mailbox, and Reply All keeps the original Cc as Cc. With no other To recipient, the original Cc
++ * recipients become To. Only a message the mailbox sent to nobody but itself is replied to itself.
++ *
++ * Bcc recipients are never carried over. Display names are kept.
++ */
++export declare function buildReplyRecipients(message: Message, ownAddresses: string[], replyAll: boolean): ReplyRecipients;
+diff --git a/dist/mail/compose/composeQuoting.js b/dist/mail/compose/composeQuoting.js
+index a29f26940bffcd6f7873e86d021344e3d71be8b8..2716abc320bbeb752a4a701724864407f2ddd3b7 100644
+--- a/dist/mail/compose/composeQuoting.js
++++ b/dist/mail/compose/composeQuoting.js
+@@ -3,16 +3,17 @@
+ // SPDX-License-Identifier: MPL-2.0
+ ///////////////////////////////////////////////////////////////////////////////
+ /**
+- * Builds the quoted-original-message HTML a Reply/Reply All/Forward compose starts with — this app's
+- * own job entirely, same "restapi never composes message bodies" convention as `mailApi.ts`'s
+- * `assembleDraft()`. Quotes `message.bodyPreview` (a plain-text excerpt the server already derives at
+- * ingest time) rather than the message's full rendered HTML body: `MessageDetailPane`'s own body
+- * renders via a sandboxed `<iframe src=".../content">`, so the raw HTML is never available to this
+- * app's own JavaScript to re-embed without a second fetch and its own HTML-in-HTML sanitization pass —
+- * a plain-text quote is a smaller, safer outcome, and no less faithful in practice since
+- * `sanitizeComposeHtml()` (the server-side gate every compose body passes through regardless of origin)
+- * strips active content out of a full HTML quote anyway.
++ * Builds what a Reply/Reply All/Forward compose starts with - its recipients, its quoted original message, and the
++ * body layout around the quote - entirely client-side, same "restapi never composes message bodies" convention as
++ * `mailApi.ts`'s `assembleDraft()`.
++ *
++ * The quote carries the original's full body, as the reader saw it: the caller passes a `QuotedBody` (the message's
++ * sanitized HTML body, its decrypted/verified content, or its plain-text body). HTML is sanitized again here with
++ * the same remote-resource-stripping policy used to display a client-rendered body (`messageBodySanitizer.ts`), plus
++ * a stricter tag list for the editor. `message.bodyPreview` - a server-derived excerpt, truncated - is only the last
++ * resort, when no body could be loaded.
+  */
++import { sanitizeQuotedHtml } from "../messageBodySanitizer.js";
+ function escapeHtml(text) {
+     return text
+         .replace(/&/g, "&amp;")
+@@ -27,10 +28,59 @@ function textToHtml(text) {
+         .map((line) => `<p>${line || "&nbsp;"}</p>`)
+         .join("");
+ }
++/**
++ * A recipient's display name, without the address the server sometimes leaves in it: an ingested message's `from`
++ * carries the whole `"Bob Allen" <bob@example.com>` From header as its display name, which would otherwise be shown
++ * (and addressed) as `"Bob Allen" <bob@example.com> <bob@example.com>`. A name that is, or ends in, the recipient's
++ * own address is reduced to the part before it; a name that is any other address is dropped entirely.
++ */
++export function recipientDisplayName(recipient) {
++    const name = recipient.displayName?.trim();
++    if (!name) {
++        return undefined;
++    }
++    const angle = /^(.*)<([^<>]*)>$/.exec(name);
++    const inner = angle ? angle[2].trim() : name;
++    if (!inner.includes("@")) {
++        return name;
++    }
++    if (inner.toLowerCase() !== recipient.address.trim().toLowerCase()) {
++        return undefined;
++    }
++    const before = (angle ? angle[1] : "").trim().replace(/^"(.*)"$/s, "$1").trim();
++    return before || undefined;
++}
++/** The same recipient with `recipientDisplayName()`'s cleaned-up name (absent when nothing is left of it). */
++function cleaned(recipient) {
++    const name = recipientDisplayName(recipient);
++    return name === recipient.displayName ? recipient : { ...recipient, ...(name ? { displayName: name } : { displayName: undefined }) };
++}
+ function displayName(recipient) {
+-    return recipient.displayName || recipient.address;
++    return recipientDisplayName(recipient) || recipient.address;
++}
++/** `Name <address>`, or the bare address when there's no usable display name. */
++function nameAndAddress(recipient) {
++    const name = recipientDisplayName(recipient);
++    return name ? `${name} <${recipient.address}>` : recipient.address;
+ }
+ const QUOTE_STYLE = "border-left:2px solid #ccc;margin:0;padding-left:1em;color:#666;";
++/** Whether sanitized HTML still shows anything: text other than whitespace, or an image. */
++function hasVisibleContent(html) {
++    return /<img\b/i.test(html) || html.replace(/<[^>]*>/g, "").replace(/&nbsp;|\s/g, "") !== "";
++}
++/** The quoted content: the sanitized HTML body, else the text body, else the body preview. */
++function quotedContent(message, body) {
++    if (body?.html) {
++        const sanitized = sanitizeQuotedHtml(body.html);
++        if (hasVisibleContent(sanitized)) {
++            return sanitized;
++        }
++    }
++    if (body?.text?.trim()) {
++        return textToHtml(body.text);
++    }
++    return textToHtml(message.bodyPreview ?? "");
++}
+ /** Prepends "Re: " unless `subject` already starts with it (any casing) — the same convention every
+  * mail client uses to avoid a "Re: Re: Re: ..." chain. */
+ export function replySubject(subject) {
+@@ -40,25 +90,118 @@ export function replySubject(subject) {
+ export function forwardSubject(subject) {
+     return /^fwd:/i.test(subject.trim()) ? subject : `Fwd: ${subject}`;
+ }
+-/** The quoted body a Reply/Reply All compose starts with, below the resolved signature (if any). */
+-export function buildReplyQuote(message) {
++/** The quoted original a Reply/Reply All compose starts with: an "On <date>, Name <address> wrote:" line and the
++ * original body in a blockquote. `buildComposeBodyHtml()` places it in the body. */
++export function buildReplyQuote(message, body) {
+     const when = new Date(message.receivedDate).toLocaleString();
+-    return (`<p>On ${escapeHtml(when)}, ${escapeHtml(displayName(message.from))} wrote:</p>` +
+-        `<blockquote style="${QUOTE_STYLE}">${textToHtml(message.bodyPreview)}</blockquote>`);
++    return (`<p>On ${escapeHtml(when)}, ${escapeHtml(nameAndAddress(message.from))} wrote:</p>` +
++        `<blockquote style="${QUOTE_STYLE}">${quotedContent(message, body)}</blockquote>`);
+ }
+ /** The quoted body a Forward compose starts with — includes the original headers block, matching every
+  * major mail client's own forward convention, since a forward (unlike a reply) has no visible reply
+  * chain of its own to imply who originally sent it. */
+-export function buildForwardQuote(message) {
++export function buildForwardQuote(message, body) {
+     const when = new Date(message.receivedDate).toLocaleString();
+     const to = message.recipients
+         .filter((r) => r.type === "to")
+         .map(displayName)
+         .join(", ");
+     return (`<p>---------- Forwarded message ----------<br>` +
+-        `From: ${escapeHtml(displayName(message.from))}<br>` +
++        `From: ${escapeHtml(nameAndAddress(message.from))}<br>` +
+         `Date: ${escapeHtml(when)}<br>` +
+         `Subject: ${escapeHtml(message.subject || "(no subject)")}<br>` +
+         `To: ${escapeHtml(to)}</p>` +
+-        `<blockquote style="${QUOTE_STYLE}">${textToHtml(message.bodyPreview)}</blockquote>`);
++        `<blockquote style="${QUOTE_STYLE}">${quotedContent(message, body)}</blockquote>`);
++}
++/**
++ * The HTML a compose body starts with, laid out the way Outlook and Gmail do: an empty paragraph first (where the
++ * caret goes, so typing lands above everything else), then the signature, then a blank line, then the quoted
++ * original. `""` when there is neither a signature nor a quote, which leaves the editor's own single empty
++ * paragraph.
++ *
++ * A quote is always preceded by an empty paragraph of its own, on top of the one that separates it from a
++ * signature: what the reply opens with is the caret's line and then the quote right underneath it, and there has to
++ * be somewhere to press Enter into above the "On ... wrote:" line without first making room for it by hand.
++ */
++export function buildComposeBodyHtml(signatureHtml, quotedHtml) {
++    if (!signatureHtml && !quotedHtml) {
++        return "";
++    }
++    const separator = signatureHtml && quotedHtml ? "<p></p>" : "";
++    const aboveQuote = quotedHtml ? "<p></p>" : "";
++    return `<p></p>${signatureHtml ?? ""}${separator}${aboveQuote}${quotedHtml ?? ""}`;
++}
++/**
++ * The longest `References` chain `buildReplyThreading()` reports. A chain grows by one entry per reply forever
++ * and the server trims what it actually writes into the header anyway; sending an unbounded one is pointless.
++ * The root is always kept - it is what a conversation is keyed on - and the oldest entries after it are dropped.
++ */
++export const MAX_REPLY_REFERENCES = 20;
++/**
++ * What a reply or forward must record about the thread it continues, from the message it is a reply to: the
++ * RFC 5322 `In-Reply-To` (that message's own `messageId`) and the `References` chain (its own chain, with its
++ * `messageId` appended). Pass the result to `createDraft()`.
++ *
++ * Without it a reply is relayed with no threading headers at all - this server composes a reply's MIME from the
++ * structured compose input, which says nothing about what is being replied to - so every recipient's mail server,
++ * and the sender's own Sent Items copy, files it as a brand-new conversation instead of adding it to the thread.
++ */
++export function buildReplyThreading(message) {
++    const parent = message.messageId.trim();
++    const chain = [];
++    for (const reference of message.references ?? []) {
++        const id = typeof reference === "string" ? reference.trim() : "";
++        if (id && id !== parent && !chain.includes(id)) {
++            chain.push(id);
++        }
++    }
++    chain.push(parent);
++    // Trimmed from after the root, so the thread's first message (what the conversation is keyed on) and the
++    // most recent ancestors both survive.
++    while (chain.length > MAX_REPLY_REFERENCES) {
++        chain.splice(1, 1);
++    }
++    return { inReplyTo: parent, references: chain };
++}
++/**
++ * Who a Reply or Reply All goes to. The replying mailbox itself (`ownAddresses`: its primary address and aliases,
++ * compared case-insensitively) is left out, and no address is repeated.
++ *
++ * A reply to someone else's message goes to its sender. Reply All adds the original To recipients to To and the
++ * original Cc recipients to Cc.
++ *
++ * A reply to a message the mailbox sent itself (e.g. from Sent Items) goes to the original To recipients instead of
++ * back to the mailbox, and Reply All keeps the original Cc as Cc. With no other To recipient, the original Cc
++ * recipients become To. Only a message the mailbox sent to nobody but itself is replied to itself.
++ *
++ * Bcc recipients are never carried over. Display names are kept.
++ */
++export function buildReplyRecipients(message, ownAddresses, replyAll) {
++    const own = new Set(ownAddresses.map((address) => address.trim().toLowerCase()));
++    const seen = new Set();
++    const take = (recipients) => recipients
++        .filter((recipient) => {
++        const key = recipient.address.trim().toLowerCase();
++        if (!key || own.has(key) || seen.has(key)) {
++            return false;
++        }
++        seen.add(key);
++        return true;
++    })
++        .map(cleaned);
++    const originalTo = message.recipients.filter((r) => r.type === "to");
++    const originalCc = message.recipients.filter((r) => r.type === "cc");
++    if (!own.has(message.from.address.trim().toLowerCase())) {
++        const to = take([message.from, ...(replyAll ? originalTo : [])]);
++        return { to, cc: replyAll ? take(originalCc) : [] };
++    }
++    const to = take(originalTo);
++    const cc = take(originalCc);
++    if (to.length > 0) {
++        return { to, cc: replyAll ? cc : [] };
++    }
++    if (cc.length > 0) {
++        return { to: cc, cc: [] };
++    }
++    return { to: [cleaned(message.from)], cc: [] };
+ }
+diff --git a/dist/mail/conversationsApi.d.ts b/dist/mail/conversationsApi.d.ts
+index 0be23f4d5ebc9c608f72b88bdc02b2bb0fc9b36f..48884a4ff518e6ac5029c68c1f3bdc2d07bf10b3 100644
+--- a/dist/mail/conversationsApi.d.ts
++++ b/dist/mail/conversationsApi.d.ts
+@@ -1,11 +1,10 @@
+ /**
+- * Typed wrapper over `@rapidmx/restapi`'s `GET /messages/conversations` route
+- * (`BaseMessageRoute.conversations()`) — groups a mailbox's messages by RFC 5322 References/In-Reply-To
+- * threading (`Message.conversationId`), one summary row per conversation spanning every folder in the
+- * mailbox, newest activity first. Read-only and computed fresh on every call — a `ConversationSummary`
+- * is never itself persisted.
++ * Typed wrapper over `@rapidmx/restapi`'s conversation endpoints (`BaseMessageRoute.conversations()` and
++ * `conversationMessages()`) — the parent rows of a nested, Outlook-style conversation list, and the child rows
++ * one expands into. Conversations are RFC 5322 References/In-Reply-To threads (`Message.conversationId`),
++ * computed fresh on every call — a `ConversationSummary` is never itself persisted.
+  */
+-import { Recipient } from "./mailApi.js";
++import { Message, MessageListFilter, Recipient } from "./mailApi.js";
+ export interface ConversationSummary {
+     conversationId: string;
+     /** The most recent message's subject line. */
+@@ -22,6 +21,53 @@ export interface ConversationSummary {
+     /** Every distinct participant (deduped by address) across every message in the conversation. */
+     participants: Recipient[];
+     hasAttachments: boolean;
++    /** `true` if any message in the conversation is flagged. */
++    flagged: boolean;
++    /** The most recent message's `uid` — what a collapsed conversation row stands for, so it can be opened
++     * without expanding the conversation first. */
++    latestMessageUid: string;
++    /** The most recent message's sender. */
++    latestFrom: Recipient;
++    /** The most recent message's `bodyPreview` — the snippet a collapsed row shows. */
++    latestPreview: string;
++    /** The most recent message's folder. */
++    latestFolderUid: string;
+ }
+-/** Conversations are computed mailbox-wide, not folder-scoped — there is no `folderUid` filter here. */
+-export declare function listConversations(mailboxUid: string): Promise<ConversationSummary[]>;
++/**
++ * How many of a mailbox's *messages* the server reads, newest first, to build these groups — restapi's
++ * `mail:conversations:scan_limit` default, and also the cap and default for `limit` below. A conversation whose
++ * older messages fall outside that window reports only the part inside it.
++ */
++export declare const CONVERSATION_SCAN_LIMIT = 500;
++export interface ConversationListParams {
++    /** Restricts both the scan and the grouping to one folder — a per-folder conversation view. Without it a
++     * conversation spans every folder in the mailbox. */
++    folderUid?: string;
++    /** The same named filters `listMessages()` takes, applied to the *messages* before they are grouped: so
++     * `unread` yields each conversation's unread messages, and only the conversations that have any. */
++    filter?: MessageListFilter;
++    /** The label filter `listMessages()` takes (`Label.uid`s; a message matching ANY of them), applied at the
++     * same point as `filter` and ANDed with it — so a conversation appears if any of its messages carries any
++     * of these labels, and reports only those messages. At most `MAX_MESSAGE_LABEL_FILTER` of them. */
++    labelUids?: string[];
++    /** Zero-based. */
++    page?: number;
++    /** Capped at `CONVERSATION_SCAN_LIMIT`, which is also the default. */
++    limit?: number;
++}
++/** Lists a mailbox's conversations, newest activity first. Computed mailbox-wide unless `folderUid` narrows
++ * them — folder scope is a filter here, not part of the endpoint. */
++export declare function listConversations(mailboxUid: string, params?: ConversationListParams): Promise<ConversationSummary[]>;
++/** Paging for `listConversationMessages()`. The server defaults `limit` to 100 and caps it at 500. */
++export interface ConversationMessagesParams {
++    page?: number;
++    limit?: number;
++}
++/**
++ * One conversation's messages, oldest first, across every folder in the mailbox — the expanded children of a
++ * conversation row, in one request rather than one per `messageUids` entry.
++ *
++ * `conversationId` is the summary's own `conversationId`, which for a message belonging to no thread is that
++ * message's `uid`; the server resolves either.
++ */
++export declare function listConversationMessages(mailboxUid: string, conversationId: string, params?: ConversationMessagesParams): Promise<Message[]>;
+diff --git a/dist/mail/conversationsApi.js b/dist/mail/conversationsApi.js
+index 6be2ef6cd7ec94468d618bc29521ea516df352fb..050d5a253273448a39dfc134678500530d0a55b9 100644
+--- a/dist/mail/conversationsApi.js
++++ b/dist/mail/conversationsApi.js
+@@ -3,14 +3,42 @@
+ // SPDX-License-Identifier: MPL-2.0
+ ///////////////////////////////////////////////////////////////////////////////
+ /**
+- * Typed wrapper over `@rapidmx/restapi`'s `GET /messages/conversations` route
+- * (`BaseMessageRoute.conversations()`) — groups a mailbox's messages by RFC 5322 References/In-Reply-To
+- * threading (`Message.conversationId`), one summary row per conversation spanning every folder in the
+- * mailbox, newest activity first. Read-only and computed fresh on every call — a `ConversationSummary`
+- * is never itself persisted.
++ * Typed wrapper over `@rapidmx/restapi`'s conversation endpoints (`BaseMessageRoute.conversations()` and
++ * `conversationMessages()`) — the parent rows of a nested, Outlook-style conversation list, and the child rows
++ * one expands into. Conversations are RFC 5322 References/In-Reply-To threads (`Message.conversationId`),
++ * computed fresh on every call — a `ConversationSummary` is never itself persisted.
+  */
+ import { apiFetch } from "../util/api.js";
+-/** Conversations are computed mailbox-wide, not folder-scoped — there is no `folderUid` filter here. */
+-export function listConversations(mailboxUid) {
+-    return apiFetch(`/mail/messages/conversations?mailboxUid=${encodeURIComponent(mailboxUid)}`);
++/**
++ * How many of a mailbox's *messages* the server reads, newest first, to build these groups — restapi's
++ * `mail:conversations:scan_limit` default, and also the cap and default for `limit` below. A conversation whose
++ * older messages fall outside that window reports only the part inside it.
++ */
++export const CONVERSATION_SCAN_LIMIT = 500;
++/** `?mailboxUid=` plus whichever optional params were actually set, each URL-encoded. */
++function conversationQuery(mailboxUid, params) {
++    const query = new URLSearchParams({ mailboxUid });
++    for (const [key, value] of Object.entries(params)) {
++        if (value !== undefined && value !== "") {
++            query.set(key, String(value));
++        }
++    }
++    return query.toString();
++}
++/** Lists a mailbox's conversations, newest activity first. Computed mailbox-wide unless `folderUid` narrows
++ * them — folder scope is a filter here, not part of the endpoint. */
++export function listConversations(mailboxUid, params = {}) {
++    const { labelUids, ...rest } = params;
++    // One comma-separated value, as `messageListQuery()` sends it; an empty selection sends no parameter.
++    return apiFetch(`/mail/messages/conversations?${conversationQuery(mailboxUid, { ...rest, labelUids: labelUids?.length ? labelUids.join(",") : undefined })}`);
++}
++/**
++ * One conversation's messages, oldest first, across every folder in the mailbox — the expanded children of a
++ * conversation row, in one request rather than one per `messageUids` entry.
++ *
++ * `conversationId` is the summary's own `conversationId`, which for a message belonging to no thread is that
++ * message's `uid`; the server resolves either.
++ */
++export function listConversationMessages(mailboxUid, conversationId, params = {}) {
++    return apiFetch(`/mail/messages/conversations/${encodeURIComponent(conversationId)}?${conversationQuery(mailboxUid, { ...params })}`);
+ }
+diff --git a/dist/mail/directoryApi.d.ts b/dist/mail/directoryApi.d.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..1fae5ced89542f26cf5c9fa90297fa74b96dc7b1
+--- /dev/null
++++ b/dist/mail/directoryApi.d.ts
+@@ -0,0 +1,39 @@
++/** What a suggestion names. `"contact"` comes from the caller's contacts, everything else from the server directory. */
++export type RecipientSuggestionKind = "user" | "shared" | "room" | "equipment" | "list" | "contact";
++export interface RecipientSuggestion {
++    displayName: string;
++    address: string;
++    kind: RecipientSuggestionKind;
++}
++/** The shortest trimmed query the server searches for - shorter ones resolve to `[]` without a request. */
++export declare const RECIPIENT_SUGGESTION_MIN_QUERY_LENGTH = 2;
++/** The longest query the server accepts; longer ones are cut to this length. */
++export declare const RECIPIENT_SUGGESTION_MAX_QUERY_LENGTH = 100;
++/** The server's own default and cap for `limit`. */
++export declare const RECIPIENT_SUGGESTION_DEFAULT_LIMIT = 8;
++export declare const RECIPIENT_SUGGESTION_MAX_LIMIT = 20;
++export interface RecipientSuggestionOptions {
++    /** At most this many entries (the server caps it at `RECIPIENT_SUGGESTION_MAX_LIMIT`). */
++    limit?: number;
++    /** Aborts the request, rejecting with the fetch's `AbortError`. */
++    signal?: AbortSignal;
++}
++export interface ContactSuggestionOptions extends RecipientSuggestionOptions {
++    /** Also search this mailbox's contacts (e.g. the shared mailbox being composed from) when the caller may read it.
++     * The caller's own mailboxes are always searched. */
++    mailboxUid?: string;
++}
++/** Searches the server directory. Rejects with a 403 `ApiRequestError` for a caller without a mailbox on the server,
++ * and a 429 one when the caller searches too often. */
++export declare function searchDirectory(query: string, options?: RecipientSuggestionOptions): Promise<RecipientSuggestion[]>;
++/** Searches the caller's contacts (every address of a contact whose name matches, or the addresses that match). */
++export declare function searchContactSuggestions(query: string, options?: ContactSuggestionOptions): Promise<RecipientSuggestion[]>;
++/** Contacts first, then directory entries, without repeating an address (compared case-insensitively; the first
++ * occurrence wins), at most `limit`. */
++export declare function mergeRecipientSuggestions(contacts: RecipientSuggestion[], directory: RecipientSuggestion[], limit?: number): RecipientSuggestion[];
++/**
++ * Contacts and directory suggestions for `query`, merged by `mergeRecipientSuggestions()`. Either source failing (a 403
++ * directory for a caller with no mailbox here, a 429, a network error) still returns the other's entries; only when
++ * both fail does this reject, with the contacts error. An aborted `signal` always rejects with the `AbortError`.
++ */
++export declare function fetchRecipientSuggestions(query: string, options?: ContactSuggestionOptions): Promise<RecipientSuggestion[]>;
+diff --git a/dist/mail/directoryApi.js b/dist/mail/directoryApi.js
+new file mode 100644
+index 0000000000000000000000000000000000000000..53449ed3b2aa1554be7381a9b028964763373173
+--- /dev/null
++++ b/dist/mail/directoryApi.js
+@@ -0,0 +1,98 @@
++///////////////////////////////////////////////////////////////////////////////
++// Copyright (C) 2026 Jean-Philippe Steinmetz
++// SPDX-License-Identifier: MPL-2.0
++///////////////////////////////////////////////////////////////////////////////
++/**
++ * Typed wrappers over `@rapidmx/restapi`'s `BaseDirectoryRoute` - recipient suggestions for compose. `GET
++ * /mail/directory` searches the server's mailboxes (people, shared mailboxes, rooms and equipment) and distribution
++ * lists; `GET /mail/directory/contacts` searches the caller's own contacts. Both match every word of the query against
++ * the start of a name word or of an address, and return only a display name, an address and a kind.
++ */
++import { ApiRequestError, apiFetch } from "../util/api.js";
++/** The shortest trimmed query the server searches for - shorter ones resolve to `[]` without a request. */
++export const RECIPIENT_SUGGESTION_MIN_QUERY_LENGTH = 2;
++/** The longest query the server accepts; longer ones are cut to this length. */
++export const RECIPIENT_SUGGESTION_MAX_QUERY_LENGTH = 100;
++/** The server's own default and cap for `limit`. */
++export const RECIPIENT_SUGGESTION_DEFAULT_LIMIT = 8;
++export const RECIPIENT_SUGGESTION_MAX_LIMIT = 20;
++/** The trimmed query to send, or `undefined` when it's too short to search. */
++function normalizeQuery(query) {
++    const trimmed = query.trim().slice(0, RECIPIENT_SUGGESTION_MAX_QUERY_LENGTH).trim();
++    return trimmed.length >= RECIPIENT_SUGGESTION_MIN_QUERY_LENGTH ? trimmed : undefined;
++}
++/** Keeps only well-formed entries of a response. */
++function wellFormed(body) {
++    return Array.isArray(body)
++        ? body
++            .filter((entry) => entry && typeof entry.address === "string" && entry.address.length > 0)
++            .map((entry) => ({
++            displayName: typeof entry.displayName === "string" ? entry.displayName : "",
++            address: entry.address,
++            kind: entry.kind,
++        }))
++        : [];
++}
++async function fetchSuggestions(path, query, params, signal) {
++    const q = normalizeQuery(query);
++    if (q === undefined) {
++        return [];
++    }
++    const search = new URLSearchParams({ q });
++    for (const [key, value] of Object.entries(params)) {
++        if (value !== undefined) {
++            search.set(key, value);
++        }
++    }
++    return wellFormed(await apiFetch(`${path}?${search.toString()}`, signal ? { signal } : {}));
++}
++/** Searches the server directory. Rejects with a 403 `ApiRequestError` for a caller without a mailbox on the server,
++ * and a 429 one when the caller searches too often. */
++export function searchDirectory(query, options = {}) {
++    return fetchSuggestions("/mail/directory", query, { limit: options.limit?.toString() }, options.signal);
++}
++/** Searches the caller's contacts (every address of a contact whose name matches, or the addresses that match). */
++export function searchContactSuggestions(query, options = {}) {
++    return fetchSuggestions("/mail/directory/contacts", query, { limit: options.limit?.toString(), mailboxUid: options.mailboxUid }, options.signal);
++}
++/** Contacts first, then directory entries, without repeating an address (compared case-insensitively; the first
++ * occurrence wins), at most `limit`. */
++export function mergeRecipientSuggestions(contacts, directory, limit = RECIPIENT_SUGGESTION_DEFAULT_LIMIT) {
++    const seen = new Set();
++    const result = [];
++    for (const entry of [...contacts, ...directory]) {
++        const key = entry.address.trim().toLowerCase();
++        if (result.length >= limit) {
++            break;
++        }
++        if (!seen.has(key)) {
++            seen.add(key);
++            result.push(entry);
++        }
++    }
++    return result;
++}
++function isAbort(error) {
++    return error?.name === "AbortError";
++}
++/**
++ * Contacts and directory suggestions for `query`, merged by `mergeRecipientSuggestions()`. Either source failing (a 403
++ * directory for a caller with no mailbox here, a 429, a network error) still returns the other's entries; only when
++ * both fail does this reject, with the contacts error. An aborted `signal` always rejects with the `AbortError`.
++ */
++export async function fetchRecipientSuggestions(query, options = {}) {
++    const limit = options.limit ?? RECIPIENT_SUGGESTION_DEFAULT_LIMIT;
++    const [contacts, directory] = await Promise.allSettled([
++        searchContactSuggestions(query, { ...options, limit }),
++        searchDirectory(query, { limit, signal: options.signal }),
++    ]);
++    for (const outcome of [contacts, directory]) {
++        if (outcome.status === "rejected" && isAbort(outcome.reason)) {
++            throw outcome.reason;
++        }
++    }
++    if (contacts.status === "rejected" && directory.status === "rejected") {
++        throw contacts.reason instanceof Error ? contacts.reason : new ApiRequestError("Suggestions couldn't be loaded.", 0);
++    }
++    return mergeRecipientSuggestions(contacts.status === "fulfilled" ? contacts.value : [], directory.status === "fulfilled" ? directory.value : [], limit);
++}
+diff --git a/dist/mail/flaggedMessages.d.ts b/dist/mail/flaggedMessages.d.ts
+index e6ec2290fd56d521f6748ac0bf23a6ea0a57b3bf..5ad94a2ea8cf56096a3ff157f49d285c3f7ccd2d 100644
+--- a/dist/mail/flaggedMessages.d.ts
++++ b/dist/mail/flaggedMessages.d.ts
+@@ -1,10 +1,13 @@
+ /**
+  * Backs Tasks' "Flagged email" smart-list (an Outlook To-Do concept: flagged *Messages*, not Tasks,
+- * surfaced into the Tasks app). `Message.flags.flagged` already exists — no new backend field needed —
+- * but there's no way to ask the server for "every flagged message in this mailbox" in one call:
+- * `MessageSQL.flags` is a `simple-json` column, so the generic query-operator DSL this framework's
+- * `find()` relies on elsewhere can't filter on a nested field within it, on either Mongo or SQL
+- * consistently. This fans out one `listMessages()` call per mail folder instead and filters client-side.
++ * surfaced into the Tasks app).
++ *
++ * The server now does the filtering: `listMessages({ filter: "flagged" })` is an indexed database predicate on
++ * the denormalized `Message.flagged` mirror (`flags` itself is one JSON column, which is why this used to read
++ * every message in the mailbox and filter in the browser). What is still client-side is the fan-out: a message
++ * list is folder-scoped, and "every flagged message in this mailbox" spans every mail folder, so this still
++ * makes one paged call per folder and merges the results. The client-side `flags.flagged` check below is kept
++ * as a cheap guard for a row written before the mirror existed, not as the filter.
+  */
+ import { Message } from "./mailApi.js";
+ /** Hard cap on pages read per folder (50,000 messages) - guards against paging forever should a server
+diff --git a/dist/mail/flaggedMessages.js b/dist/mail/flaggedMessages.js
+index cdbfb0b42041450ec40889ee455c862a6b6f3a40..1379444a1cf503d0bfadb933736bf0510ac9ad08 100644
+--- a/dist/mail/flaggedMessages.js
++++ b/dist/mail/flaggedMessages.js
+@@ -4,11 +4,14 @@
+ ///////////////////////////////////////////////////////////////////////////////
+ /**
+  * Backs Tasks' "Flagged email" smart-list (an Outlook To-Do concept: flagged *Messages*, not Tasks,
+- * surfaced into the Tasks app). `Message.flags.flagged` already exists — no new backend field needed —
+- * but there's no way to ask the server for "every flagged message in this mailbox" in one call:
+- * `MessageSQL.flags` is a `simple-json` column, so the generic query-operator DSL this framework's
+- * `find()` relies on elsewhere can't filter on a nested field within it, on either Mongo or SQL
+- * consistently. This fans out one `listMessages()` call per mail folder instead and filters client-side.
++ * surfaced into the Tasks app).
++ *
++ * The server now does the filtering: `listMessages({ filter: "flagged" })` is an indexed database predicate on
++ * the denormalized `Message.flagged` mirror (`flags` itself is one JSON column, which is why this used to read
++ * every message in the mailbox and filter in the browser). What is still client-side is the fan-out: a message
++ * list is folder-scoped, and "every flagged message in this mailbox" spans every mail folder, so this still
++ * makes one paged call per folder and merges the results. The client-side `flags.flagged` check below is kept
++ * as a cheap guard for a row written before the mirror existed, not as the filter.
+  */
+ import { listFolders, listMessages } from "./mailApi.js";
+ /** Folder types that actually hold `Message` records — mirrors `MailShell.tsx`'s own `MAIL_FOLDER_TYPES`
+@@ -30,7 +33,7 @@ async function listFlaggedInFolder(folderUid, seen) {
+     const flagged = [];
+     const seenInFolder = new Set();
+     for (let page = 0; page < FLAGGED_MAX_PAGES_PER_FOLDER; page += 1) {
+-        const batch = await listMessages(folderUid, { limit: PAGE_SIZE, page });
++        const batch = await listMessages(folderUid, { limit: PAGE_SIZE, page, filter: "flagged" });
+         let fresh = 0;
+         for (const message of batch) {
+             if (seenInFolder.has(message.uid)) {
+diff --git a/dist/mail/mailApi.d.ts b/dist/mail/mailApi.d.ts
+index 72d55637e1b27362628254524a6a2d5a7534b50f..4dd265245aaea48f381a33d833a074055405730f 100644
+--- a/dist/mail/mailApi.d.ts
++++ b/dist/mail/mailApi.d.ts
+@@ -302,7 +302,17 @@ export interface Message {
+     receivedDate: string;
+     bodyPreview: string;
+     flags: MessageFlags;
++    /** Server-managed mirror of `flags.read`, which exists only so the *server* can filter and sort on it
++     * (`flags` is one JSON column, so nothing can index into it). Read `flags.read`, not this: it is never
++     * accepted in a request body, and a message stored before these fields existed carries none of them. */
++    read?: boolean;
++    /** Server-managed mirror of `flags.flagged` — see `read`. */
++    flagged?: boolean;
++    /** Server-managed mirror of `from.address`, lowercased and trimmed — see `read`. */
++    fromAddress?: string;
+     importance: MessageImportance;
++    /** Server-managed sortable rank of `importance` (low 0, normal 1, high 2) — see `read`. */
++    importanceRank?: number;
+     hasAttachments: boolean;
+     /** Set once `recallMessage()` has been called on this message — a recall is asynchronous and
+      * best-effort (see that function's own doc comment), so this is the only signal a caller gets;
+@@ -368,14 +378,75 @@ export interface Message {
+     verificationSeal?: string;
+     /** The vault `masterKeyGeneration` `verificationSeal` was written under, as sent to `setMessageVerificationSeal()`. */
+     verificationSealGeneration?: number;
++    /** The `messageId` of the message this one replies to (RFC 5322 `In-Reply-To`, angle brackets stripped) -
++     * parsed from the MIME on a delivered message, and what a compose client passes to `createDraft()` when it
++     * opens a reply. Absent on a message that replies to nothing. */
++    inReplyTo?: string;
++    /** This message's thread, oldest first (RFC 5322 `References`, angle brackets stripped): the thread root's
++     * `messageId`, then each reply's down to the one this message replies to. Empty, or absent on a message
++     * stored before the field existed. See `buildReplyThreading()` in `compose/composeQuoting.ts`. */
++    references?: string[];
++    /** Server-assigned: the thread this message is grouped under in a conversation list (`conversationsApi.ts`).
++     * Derived at delivery/send time from `references`/`inReplyTo`, never accepted in a request body. */
++    conversationId?: string;
+ }
+ export interface MessageReceiptEntry {
+     recipientAddress: string;
+     deliveredAt?: string;
+     readAt?: string;
+ }
+-/** Lists messages in a folder, newest first. */
+-export declare function listMessages(folderUid: string, params?: ListParams): Promise<Message[]>;
++/**
++ * The sort keys `listMessages()` accepts, mirroring `@rapidmx/restapi`'s own `MESSAGE_LIST_SORTS` exactly —
++ * anything else is refused with a 400. This is the whole set this data model can support: Outlook's sort menu
++ * also offers Category, Flag status due date, Size and Type, and a RapidMX `Message` has no field behind any of
++ * those (labels are multi-valued, so there is no single category to order by; there is no follow-up due date,
++ * no stored message size and no message class). "Flag status" is `flagged`.
++ */
++export type MessageListSort = "date" | "sentDate" | "from" | "subject" | "importance" | "flagged";
++/**
++ * Outlook's "Newest on top" (`desc`) / "Oldest on top" (`asc`). Left off, the server picks the direction that
++ * reads naturally for the key — newest/highest/flagged first for `date`/`sentDate`/`importance`/`flagged`, A-Z
++ * for `from`/`subject`.
++ */
++export type MessageSortOrder = "asc" | "desc";
++/**
++ * The named filters `listMessages()` accepts, mirroring `@rapidmx/restapi`'s own `MESSAGE_LIST_FILTERS`
++ * exactly. `focused`/`other` are the Focused Inbox split (only meaningful in the Inbox; `focused` includes a
++ * message carrying no classification at all, which is what absent means).
++ *
++ * Outlook's filter menu additionally offers "To me", "Mentions me" and "Has calendar invites"; none of the
++ * three is a server-side filter here, because nothing on a `Message` records them.
++ */
++export type MessageListFilter = "all" | "unread" | "read" | "flagged" | "hasAttachments" | "focused" | "other";
++/**
++ * The most labels one list request may filter by, matching `@rapidmx/restapi`'s own
++ * `MAX_MESSAGE_LABEL_FILTER_UIDS` — a longer set is refused with a 400, so a label menu offering multiple
++ * selection should stop the user here rather than send it.
++ */
++export declare const MAX_MESSAGE_LABEL_FILTER = 20;
++/** Paging plus the mail list's own sort/filter vocabulary. */
++export interface MessageListParams extends ListParams {
++    sortBy?: MessageListSort;
++    sortOrder?: MessageSortOrder;
++    filter?: MessageListFilter;
++    /**
++     * `Label.uid`s to filter by (list the mailbox's labels with `listLabels()` in `labelsApi.ts`). A message is
++     * listed if it carries ANY of them, which is then ANDed with `filter` — so `{ filter: "unread", labelUids:
++     * [red, blue] }` is "unread, and labelled red or blue". Order is irrelevant and duplicates are ignored. An
++     * empty array is no filter at all, and a uid naming no label (or one belonging to another mailbox) matches
++     * nothing. At most `MAX_MESSAGE_LABEL_FILTER` of them, each a real uid — anything else is a 400.
++     */
++    labelUids?: string[];
++}
++/** Only the sort/filter params actually set, so a default list sends the same URL it always did. */
++export declare function messageListQuery(params: MessageListParams): Record<string, string>;
++/**
++ * Lists messages in a folder — newest received first unless `sortBy`/`sortOrder` say otherwise, and unfiltered
++ * unless `filter`/`labelUids` say otherwise. All of them are applied by the *database*, over the whole folder
++ * rather than over the page this call happens to return, so `page`/`limit` stay correct under a filter and a
++ * sort. Ties are broken by `uid`, so a message never appears on two pages or on neither.
++ */
++export declare function listMessages(folderUid: string, params?: MessageListParams): Promise<Message[]>;
+ export declare function getMessage(uid: string): Promise<Message>;
+ /**
+  * Attempts to recall a message this mailbox previously sent — only valid for a message currently in
+@@ -404,6 +475,48 @@ export declare function classifyMessage(uid: string, classifyAs: MessageClassifi
+  * routes replace the whole record rather than patch individual fields.
+  */
+ export declare function setMessageRead(message: Message, read: boolean): Promise<Message>;
++/** Flags/unflags a message in place — Outlook's flag-status toggle, and what `listMessages({ filter:
++ * "flagged" })` and `listFlaggedMessages()` select on. */
++export declare function setMessageFlagged(message: Message, flagged: boolean): Promise<Message>;
++/** Moves a message into another folder of the same mailbox — how "Move to", "Archive" (to the Archive folder),
++ * "Report junk" (to Junk) and "Delete" (to Deleted Items) are all expressed. */
++export declare function moveMessage(message: Message, folderUid: string): Promise<Message>;
++/**
++ * The most updates `bulkUpdateMessages()` puts in one request, matching `@rapidmx/restapi`'s own
++ * `MAX_BULK_UPDATE` — a longer list is refused with a 400, so the helper below chunks rather than sending it.
++ */
++export declare const MAX_BULK_MESSAGE_UPDATE = 100;
++/** One element of a bulk update: `uid` and the caller's last-known `version` (the server rejects a stale one
++ * with a 409), plus whichever fields are changing. */
++export interface MessageUpdate {
++    uid: string;
++    version: number;
++    [field: string]: unknown;
++}
++/**
++ * Applies `updates` through `PUT /mail/messages`, the bulk form of the single-message update — one request per
++ * `MAX_BULK_MESSAGE_UPDATE` updates instead of one per message, with every permission, folder and legal-hold
++ * check the single-message path makes.
++ *
++ * Deliberately NOT atomic, on either side of the wire: the server applies each element in order and the first
++ * failure (a stale `version`, a refused move) aborts the rest of *that* request, leaving the elements before it
++ * applied; this helper then stops and rejects rather than sending the remaining chunks. So a caller should
++ * refetch the list after a rejection instead of assuming nothing happened, and should send fresh `version`s -
++ * a bulk action over a stale selection is the common way to hit a 409. For a per-element outcome, call the
++ * single-message functions instead.
++ *
++ * Resolves with every message actually updated, in request order.
++ */
++export declare function bulkUpdateMessages(updates: MessageUpdate[]): Promise<Message[]>;
++/** Marks a whole selection read/unread in one pass — see `bulkUpdateMessages()` for the failure semantics. */
++export declare function setMessagesRead(messages: Message[], read: boolean): Promise<Message[]>;
++/** Flags/unflags a whole selection in one pass — see `bulkUpdateMessages()`. */
++export declare function setMessagesFlagged(messages: Message[], flagged: boolean): Promise<Message[]>;
++/** Moves a whole selection into `folderUid` — bulk Move, Archive, Report junk and Delete (to Deleted Items)
++ * are all this call with a different target folder. See `bulkUpdateMessages()`. */
++export declare function moveMessages(messages: Message[], folderUid: string): Promise<Message[]>;
++/** Sets the full `labelUids` list on a whole selection — see `setMessageLabels()` and `bulkUpdateMessages()`. */
++export declare function setMessagesLabels(messages: Message[], labelUids: string[]): Promise<Message[]>;
+ /** Sets a message's full `labelUids` list (not an add/remove delta - the caller computes the complete
+  * new set, same convention as `Note`/`Task` label-like fields elsewhere in restapi). Deleting a label
+  * elsewhere already strips it server-side from every message (`labelsApi.ts#deleteLabel()`'s own doc
+@@ -480,8 +593,24 @@ export interface AssembleDraftInput {
+     subject?: string;
+     html: string;
+ }
+-/** Creates a blank draft `Message` in the given folder (normally the mailbox's Drafts folder) to compose into. */
+-export declare function createDraft(mailboxUid: string, folderUid: string): Promise<Message>;
++/** What a draft records about the thread it belongs to - see `createDraft()`. */
++export interface DraftThreading {
++    /** The `messageId` of the message being replied to (`Message.inReplyTo`). */
++    inReplyTo?: string;
++    /** The thread's `References` chain, oldest first, ending with `inReplyTo` (`Message.references`). */
++    references?: string[];
++}
++/**
++ * Creates a blank draft `Message` in the given folder (normally the mailbox's Drafts folder) to compose into.
++ *
++ * A reply MUST pass `threading` (build it with `buildReplyThreading()` from the message being replied to).
++ * `@rapidmx/restapi` writes those values into the `In-Reply-To`/`References` headers of the MIME it relays and
++ * groups the message into the replied-to message's conversation; a reply created without them is relayed with no
++ * threading headers at all, and every recipient - and the sender's own Sent Items copy - files it as a brand-new
++ * conversation. Nothing else recovers them: this server composes the MIME from the recipients, subject and HTML
++ * passed to `assembleDraft()`, which say nothing about what is being replied to.
++ */
++export declare function createDraft(mailboxUid: string, folderUid: string, threading?: DraftThreading): Promise<Message>;
+ /** Deletes a message - e.g. an unsent draft that's no longer needed because compose switched to a different
+  * sending mailbox. */
+ export declare function deleteMessage(uid: string, version: number): Promise<void>;
+diff --git a/dist/mail/mailApi.js b/dist/mail/mailApi.js
+index e5d2f953f8da3b61b95dac1beb60db3b472ae223..bcaae7c02ec0d339eb47fef13eb0d964070ba2e9 100644
+--- a/dist/mail/mailApi.js
++++ b/dist/mail/mailApi.js
+@@ -120,9 +120,39 @@ export function updateFolder(input) {
+         body: JSON.stringify(input),
+     });
+ }
+-/** Lists messages in a folder, newest first. */
++/**
++ * The most labels one list request may filter by, matching `@rapidmx/restapi`'s own
++ * `MAX_MESSAGE_LABEL_FILTER_UIDS` — a longer set is refused with a 400, so a label menu offering multiple
++ * selection should stop the user here rather than send it.
++ */
++export const MAX_MESSAGE_LABEL_FILTER = 20;
++/** Only the sort/filter params actually set, so a default list sends the same URL it always did. */
++export function messageListQuery(params) {
++    const query = {};
++    if (params.sortBy) {
++        query.sortBy = params.sortBy;
++    }
++    if (params.sortOrder) {
++        query.sortOrder = params.sortOrder;
++    }
++    if (params.filter) {
++        query.filter = params.filter;
++    }
++    // One comma-separated value, the only form the server parses. An empty selection sends no parameter at all
++    // rather than an empty one, so a filter menu with nothing ticked makes the request it always made.
++    if (params.labelUids?.length) {
++        query.labelUids = params.labelUids.join(",");
++    }
++    return query;
++}
++/**
++ * Lists messages in a folder — newest received first unless `sortBy`/`sortOrder` say otherwise, and unfiltered
++ * unless `filter`/`labelUids` say otherwise. All of them are applied by the *database*, over the whole folder
++ * rather than over the page this call happens to return, so `page`/`limit` stay correct under a filter and a
++ * sort. Ties are broken by `uid`, so a message never appears on two pages or on neither.
++ */
+ export function listMessages(folderUid, params = {}) {
+-    return apiFetch(`/mail/messages?${buildQuery(params, { folderUid, sort: JSON.stringify({ receivedDate: "DESC" }) })}`);
++    return apiFetch(`/mail/messages?${buildQuery(params, { folderUid, ...messageListQuery(params) })}`);
+ }
+ export function getMessage(uid) {
+     return apiFetch(`/mail/messages/${encodeURIComponent(uid)}`);
+@@ -168,6 +198,66 @@ export function setMessageRead(message, read) {
+         body: JSON.stringify({ uid: message.uid, version: message.version, flags: { ...message.flags, read } }),
+     });
+ }
++/** Flags/unflags a message in place — Outlook's flag-status toggle, and what `listMessages({ filter:
++ * "flagged" })` and `listFlaggedMessages()` select on. */
++export function setMessageFlagged(message, flagged) {
++    return apiFetch(`/mail/messages/${encodeURIComponent(message.uid)}`, {
++        method: "PUT",
++        body: JSON.stringify({ uid: message.uid, version: message.version, flags: { ...message.flags, flagged } }),
++    });
++}
++/** Moves a message into another folder of the same mailbox — how "Move to", "Archive" (to the Archive folder),
++ * "Report junk" (to Junk) and "Delete" (to Deleted Items) are all expressed. */
++export function moveMessage(message, folderUid) {
++    return apiFetch(`/mail/messages/${encodeURIComponent(message.uid)}`, {
++        method: "PUT",
++        body: JSON.stringify({ uid: message.uid, version: message.version, folderUid }),
++    });
++}
++/**
++ * The most updates `bulkUpdateMessages()` puts in one request, matching `@rapidmx/restapi`'s own
++ * `MAX_BULK_UPDATE` — a longer list is refused with a 400, so the helper below chunks rather than sending it.
++ */
++export const MAX_BULK_MESSAGE_UPDATE = 100;
++/**
++ * Applies `updates` through `PUT /mail/messages`, the bulk form of the single-message update — one request per
++ * `MAX_BULK_MESSAGE_UPDATE` updates instead of one per message, with every permission, folder and legal-hold
++ * check the single-message path makes.
++ *
++ * Deliberately NOT atomic, on either side of the wire: the server applies each element in order and the first
++ * failure (a stale `version`, a refused move) aborts the rest of *that* request, leaving the elements before it
++ * applied; this helper then stops and rejects rather than sending the remaining chunks. So a caller should
++ * refetch the list after a rejection instead of assuming nothing happened, and should send fresh `version`s -
++ * a bulk action over a stale selection is the common way to hit a 409. For a per-element outcome, call the
++ * single-message functions instead.
++ *
++ * Resolves with every message actually updated, in request order.
++ */
++export async function bulkUpdateMessages(updates) {
++    const updated = [];
++    for (let i = 0; i < updates.length; i += MAX_BULK_MESSAGE_UPDATE) {
++        const chunk = updates.slice(i, i + MAX_BULK_MESSAGE_UPDATE);
++        updated.push(...(await apiFetch("/mail/messages", { method: "PUT", body: JSON.stringify(chunk) })));
++    }
++    return updated;
++}
++/** Marks a whole selection read/unread in one pass — see `bulkUpdateMessages()` for the failure semantics. */
++export function setMessagesRead(messages, read) {
++    return bulkUpdateMessages(messages.map((message) => ({ uid: message.uid, version: message.version, flags: { ...message.flags, read } })));
++}
++/** Flags/unflags a whole selection in one pass — see `bulkUpdateMessages()`. */
++export function setMessagesFlagged(messages, flagged) {
++    return bulkUpdateMessages(messages.map((message) => ({ uid: message.uid, version: message.version, flags: { ...message.flags, flagged } })));
++}
++/** Moves a whole selection into `folderUid` — bulk Move, Archive, Report junk and Delete (to Deleted Items)
++ * are all this call with a different target folder. See `bulkUpdateMessages()`. */
++export function moveMessages(messages, folderUid) {
++    return bulkUpdateMessages(messages.map((message) => ({ uid: message.uid, version: message.version, folderUid })));
++}
++/** Sets the full `labelUids` list on a whole selection — see `setMessageLabels()` and `bulkUpdateMessages()`. */
++export function setMessagesLabels(messages, labelUids) {
++    return bulkUpdateMessages(messages.map((message) => ({ uid: message.uid, version: message.version, labelUids })));
++}
+ /** Sets a message's full `labelUids` list (not an add/remove delta - the caller computes the complete
+  * new set, same convention as `Note`/`Task` label-like fields elsewhere in restapi). Deleting a label
+  * elsewhere already strips it server-side from every message (`labelsApi.ts#deleteLabel()`'s own doc
+@@ -279,11 +369,26 @@ export async function uploadAttachment(messageUid, file) {
+     }
+     return responseBody;
+ }
+-/** Creates a blank draft `Message` in the given folder (normally the mailbox's Drafts folder) to compose into. */
+-export function createDraft(mailboxUid, folderUid) {
++/**
++ * Creates a blank draft `Message` in the given folder (normally the mailbox's Drafts folder) to compose into.
++ *
++ * A reply MUST pass `threading` (build it with `buildReplyThreading()` from the message being replied to).
++ * `@rapidmx/restapi` writes those values into the `In-Reply-To`/`References` headers of the MIME it relays and
++ * groups the message into the replied-to message's conversation; a reply created without them is relayed with no
++ * threading headers at all, and every recipient - and the sender's own Sent Items copy - files it as a brand-new
++ * conversation. Nothing else recovers them: this server composes the MIME from the recipients, subject and HTML
++ * passed to `assembleDraft()`, which say nothing about what is being replied to.
++ */
++export function createDraft(mailboxUid, folderUid, threading) {
+     return apiFetch("/mail/messages", {
+         method: "POST",
+-        body: JSON.stringify({ mailboxUid, folderUid, messageId: `${crypto.randomUUID()}@webmail` }),
++        body: JSON.stringify({
++            mailboxUid,
++            folderUid,
++            messageId: `${crypto.randomUUID()}@webmail`,
++            ...(threading?.inReplyTo ? { inReplyTo: threading.inReplyTo } : {}),
++            ...(threading?.references?.length ? { references: threading.references } : {}),
++        }),
+     });
+ }
+ /** Deletes a message - e.g. an unsent draft that's no longer needed because compose switched to a different
+diff --git a/dist/mail/messageBodySanitizer.d.ts b/dist/mail/messageBodySanitizer.d.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..a1faf64dc422a3196ee90069cc9b2a2ad80fff87
+--- /dev/null
++++ b/dist/mail/messageBodySanitizer.d.ts
+@@ -0,0 +1,16 @@
++/** Decodes CSS escapes first (so an escaped `u\72l(` can't hide from the checks below), then drops every
++ * `@import` and neutralizes every `url()`/`image-set()` reference that isn't a `data:`/`cid:` URI. */
++export declare function stripRemoteCssUrls(css: string): string;
++/**
++ * Sanitizes a message body for display (a sandboxed `srcDoc`, behind its own CSP): DOMPurify's defaults plus the
++ * remote-resource stripping above, and no `<link>`, `<meta>` or `<base>`. Returns `""` when there is no DOM to
++ * sanitize with - never the unsanitized input.
++ */
++export declare function sanitizeMessageBodyHtml(html: string): string;
++/**
++ * Sanitizes message HTML for quoting into a compose body: the display policy (`sanitizeMessageBodyHtml()`), without
++ * the tags in `QUOTE_FORBIDDEN_TAGS`, and without any image that isn't embedded as a `data:` URI - a `cid:` image
++ * refers to a part of the original message the reply doesn't carry. Returns `""` when there is no DOM to sanitize
++ * with.
++ */
++export declare function sanitizeQuotedHtml(html: string): string;
+diff --git a/dist/mail/messageBodySanitizer.js b/dist/mail/messageBodySanitizer.js
+new file mode 100644
+index 0000000000000000000000000000000000000000..8460ab35d2ca13c1a90842db6cc192c8b90c8683
+--- /dev/null
++++ b/dist/mail/messageBodySanitizer.js
+@@ -0,0 +1,116 @@
++///////////////////////////////////////////////////////////////////////////////
++// Copyright (C) 2026 Jean-Philippe Steinmetz
++// SPDX-License-Identifier: MPL-2.0
++///////////////////////////////////////////////////////////////////////////////
++/**
++ * Client-side sanitizing for message bodies the server never sanitized (decrypted or verified content) and for
++ * message HTML re-embedded elsewhere (a reply's quote). DOMPurify's defaults drop scripts, `on*` handlers and
++ * `javascript:` URLs; on top of that every remote resource reference is removed, so rendering or quoting a body
++ * can't ping a tracker. Only `data:` and `cid:` references survive.
++ */
++import DOMPurify from "dompurify";
++const EMBEDDED_URI = /^\s*(?:data|cid):/i;
++/** Attributes whose value makes the browser fetch a resource (as opposed to a user-clicked link). */
++const RESOURCE_URI_ATTRIBUTES = new Set(["src", "srcset", "background", "poster", "lowsrc", "dynsrc", "xlink:href", "action", "formaction"]);
++/** Decodes CSS escapes first (so an escaped `u\72l(` can't hide from the checks below), then drops every
++ * `@import` and neutralizes every `url()`/`image-set()` reference that isn't a `data:`/`cid:` URI. */
++export function stripRemoteCssUrls(css) {
++    return css
++        .replace(/\\([0-9a-f]{1,6})\s?/gi, (_match, hex) => String.fromCodePoint(Math.min(parseInt(hex, 16), 0x10ffff)))
++        .replace(/\\(.)/g, "$1")
++        .replace(/@import[^;]*;?/gi, "")
++        .replace(/(?:-webkit-)?image-set\((?:[^()]|\([^()]*\))*\)/gi, (match) => [...match.matchAll(/(["'])(.*?)\1/g)].every(([, , uri]) => EMBEDDED_URI.test(uri)) ? match : "none")
++        .replace(/url\(\s*(["']?)(.*?)\1\s*\)/gi, (match, _quote, uri) => (EMBEDDED_URI.test(uri) ? match : "none"));
++}
++let bodyPurifier;
++/** A dedicated DOMPurify instance (hooks registered here never leak into any other DOMPurify caller) that
++ * additionally strips every remote resource reference - see `stripRemoteCssUrls()`. `undefined` without a DOM
++ * (server-side rendering), where DOMPurify can't sanitize at all. */
++function getBodyPurifier() {
++    if (bodyPurifier) {
++        return bodyPurifier;
++    }
++    if (typeof window === "undefined") {
++        return undefined;
++    }
++    const purifier = DOMPurify(window);
++    if (!purifier.isSupported) {
++        return undefined;
++    }
++    purifier.addHook("uponSanitizeElement", (node, data) => {
++        if (data.tagName === "style") {
++            // An element's `textContent` is always a string (only documents/doctypes yield null).
++            node.textContent = stripRemoteCssUrls(node.textContent);
++        }
++    });
++    purifier.addHook("uponSanitizeAttribute", (node, data) => {
++        const name = data.attrName.toLowerCase();
++        if (name === "style") {
++            data.attrValue = stripRemoteCssUrls(data.attrValue);
++            return;
++        }
++        const isNavigationLink = name === "href" && ["a", "area"].includes(node.nodeName.toLowerCase());
++        if (RESOURCE_URI_ATTRIBUTES.has(name) || (name === "href" && !isNavigationLink)) {
++            const candidates = name === "srcset" ? data.attrValue.split(/,\s+/) : [data.attrValue];
++            if (!candidates.every((candidate) => EMBEDDED_URI.test(candidate))) {
++                data.keepAttr = false;
++            }
++        }
++    });
++    bodyPurifier = purifier;
++    return purifier;
++}
++/** Tags a displayed body may never carry, whatever else is allowed. */
++const DISPLAY_FORBIDDEN_TAGS = ["link", "meta", "base"];
++/**
++ * Sanitizes a message body for display (a sandboxed `srcDoc`, behind its own CSP): DOMPurify's defaults plus the
++ * remote-resource stripping above, and no `<link>`, `<meta>` or `<base>`. Returns `""` when there is no DOM to
++ * sanitize with - never the unsanitized input.
++ */
++export function sanitizeMessageBodyHtml(html) {
++    return getBodyPurifier()?.sanitize(html, { FORBID_TAGS: DISPLAY_FORBIDDEN_TAGS }) ?? "";
++}
++/** On top of the display policy: nothing that styles, frames or submits from inside the compose editor. */
++const QUOTE_FORBIDDEN_TAGS = [
++    ...DISPLAY_FORBIDDEN_TAGS,
++    "style",
++    "title",
++    "form",
++    "input",
++    "button",
++    "select",
++    "option",
++    "textarea",
++    "iframe",
++    "frame",
++    "frameset",
++    "object",
++    "embed",
++    "audio",
++    "video",
++    "source",
++    "track",
++    "svg",
++    "math",
++];
++/**
++ * Sanitizes message HTML for quoting into a compose body: the display policy (`sanitizeMessageBodyHtml()`), without
++ * the tags in `QUOTE_FORBIDDEN_TAGS`, and without any image that isn't embedded as a `data:` URI - a `cid:` image
++ * refers to a part of the original message the reply doesn't carry. Returns `""` when there is no DOM to sanitize
++ * with.
++ */
++export function sanitizeQuotedHtml(html) {
++    const purifier = getBodyPurifier();
++    if (!purifier) {
++        return "";
++    }
++    const fragment = purifier.sanitize(html, { FORBID_TAGS: QUOTE_FORBIDDEN_TAGS, RETURN_DOM_FRAGMENT: true });
++    for (const image of Array.from(fragment.querySelectorAll("img"))) {
++        if (!/^\s*data:/i.test(image.getAttribute("src") ?? "")) {
++            image.remove();
++        }
++    }
++    const container = document.createElement("div");
++    container.appendChild(fragment);
++    return container.innerHTML;
++}

@@ -5,8 +5,10 @@
 // them through its own subclasses of restapi's concrete Mongo and SQL routes, so this checks the handlers are inherited
 // at the paths the web client calls, and that the abstract model classes those handlers need are set.
 import "reflect-metadata";
+import { DirectoryRoute as DirectoryRouteMongo } from "../../src/mongo/routes/DirectoryRoute.js";
 import { KeyLookupRoute as KeyLookupRouteMongo } from "../../src/mongo/routes/KeyLookupRoute.js";
 import { MessageRoute as MessageRouteMongo } from "../../src/mongo/routes/MessageRoute.js";
+import { DirectoryRoute as DirectoryRouteSql } from "../../src/sql/routes/DirectoryRoute.js";
 import { KeyLookupRoute as KeyLookupRouteSql } from "../../src/sql/routes/KeyLookupRoute.js";
 import { MessageRoute as MessageRouteSql } from "../../src/sql/routes/MessageRoute.js";
 
@@ -47,5 +49,18 @@ describe("restapi route surface", () => {
         expect(Reflect.getMetadata("rrst:routePaths", routeClass.prototype)).toContain("/api/mail/messages");
         expect(declaredMethods(routeClass)).toContain("put /:id/verification-seal");
         expect(new routeClass().keyVaultClass).toBeTypeOf("function");
+    });
+
+    it.each([
+        ["mongo", DirectoryRouteMongo],
+        ["sql", DirectoryRouteSql],
+    ])("%s DirectoryRoute serves recipient suggestions under mail/directory", (_name, routeClass) => {
+        expect(Reflect.getMetadata("rrst:routePaths", routeClass.prototype)).toContain("/api/mail/directory");
+        // `@Get()` declares the route's own base path as an empty path.
+        expect(declaredMethods(routeClass)).toEqual(expect.arrayContaining(["get ", "get /contacts"]));
+        const route: any = new routeClass();
+        for (const modelClass of [route.mailboxClass, route.folderClass, route.erasureRequestClass]) {
+            expect(modelClass).toBeTypeOf("function");
+        }
     });
 });
