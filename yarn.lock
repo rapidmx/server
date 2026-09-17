@@ -1810,9 +1810,9 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@rapidmx/react-shared@npm:0.6.0":
-  version: 0.6.0
-  resolution: "@rapidmx/react-shared@npm:0.6.0"
+"@rapidmx/react-shared@npm:^0.7.0":
+  version: 0.7.0
+  resolution: "@rapidmx/react-shared@npm:0.7.0"
   dependencies:
     "@emoji-mart/data": "npm:^1.2.1"
     "@peculiar/x509": "npm:^2.1.0"
@@ -1827,34 +1827,13 @@ __metadata:
   peerDependencies:
     react: 19.x
     react-dom: 19.x
-  checksum: 10c0/52de1b5acb6ec731600af0019733317ec7b16b2a14dd56f808de80a2ea5a4dbadb7a1af536f960e7c7ea8ccb114fdbf980b72144dbd4ba5570a69a3a6d4dd81b
+  checksum: 10c0/51dba8fb49f32c8d2d2533cc628d429dd57e51aebb810e1d50b82e5ea145d4254c341e96b10e83e088a1db6a12d427875e933e19f09b02ee9fa57308a3aaef85
   languageName: node
   linkType: hard
 
-"@rapidmx/react-shared@patch:@rapidmx/react-shared@npm%3A0.6.0#~/.yarn/patches/@rapidmx-react-shared-npm-0.6.0-77e24a4355.patch":
-  version: 0.6.0
-  resolution: "@rapidmx/react-shared@patch:@rapidmx/react-shared@npm%3A0.6.0#~/.yarn/patches/@rapidmx-react-shared-npm-0.6.0-77e24a4355.patch::version=0.6.0&hash=96e845"
-  dependencies:
-    "@emoji-mart/data": "npm:^1.2.1"
-    "@peculiar/x509": "npm:^2.1.0"
-    asn1js: "npm:^3.0.10"
-    date-fns: "npm:^4.4.0"
-    dompurify: "npm:^3.4.15"
-    hash-wasm: "npm:^4.12.0"
-    pkijs: "npm:^3.4.0"
-    react-icons: "npm:^5.7.0"
-    reflect-metadata: "npm:^0.2.2"
-    rrule: "npm:^2.8.1"
-  peerDependencies:
-    react: 19.x
-    react-dom: 19.x
-  checksum: 10c0/bc710adfdf1b298a9f4f060012b3ce24d0710f3f052cfe44b7cf66519efe2b3a6afdb07039fa52c3033417d140de9453e3c3b424b122bda3cf9da45c16302f68
-  languageName: node
-  linkType: hard
-
-"@rapidmx/restapi@npm:0.12.0":
-  version: 0.12.0
-  resolution: "@rapidmx/restapi@npm:0.12.0"
+"@rapidmx/restapi@npm:^0.13.0":
+  version: 0.13.0
+  resolution: "@rapidmx/restapi@npm:0.13.0"
   dependencies:
     "@peculiar/x509": "npm:^2.1.0"
     acme-client: "npm:^5.4.0"
@@ -1886,56 +1865,18 @@ __metadata:
       optional: true
     pdf-parse:
       optional: true
-  checksum: 10c0/24e8d88e957c8da763462a86562e812f46fd6df09eeae3135fb4879f4abfc046dd456a9c1cd9f04d911c2c9f9cb914da3cde2176fceba52819023d8a9ea3ce41
+  checksum: 10c0/807537d4a97cb9d9fd3341ad0adb4e1244384daa584e53332b2808a99419af995fdfa171ee1982154eb355313bc3f5a1e376f30e8a82f514217e361d5dbb4ba6
   languageName: node
   linkType: hard
 
-"@rapidmx/restapi@patch:@rapidmx/restapi@npm%3A0.12.0#~/.yarn/patches/@rapidmx-restapi-npm-0.12.0-4ee47279ab.patch":
-  version: 0.12.0
-  resolution: "@rapidmx/restapi@patch:@rapidmx/restapi@npm%3A0.12.0#~/.yarn/patches/@rapidmx-restapi-npm-0.12.0-4ee47279ab.patch::version=0.12.0&hash=d0a872"
-  dependencies:
-    "@peculiar/x509": "npm:^2.1.0"
-    acme-client: "npm:^5.4.0"
-    html-to-text: "npm:^10.0.1"
-    mailparser: "npm:^3.9.23"
-    nodemailer: "npm:^10.0.1"
-    pst-extractor: "npm:^1.12.0"
-    sanitize-html: "npm:^2.17.7"
-    semver: "npm:^7.8.5"
-  peerDependencies:
-    "@aws-sdk/client-s3": 3.x
-    "@aws-sdk/client-ses": 3.x
-    "@aws-sdk/client-sesv2": 3.x
-    "@opensearch-project/opensearch": ">=3.0.0"
-    "@rapidrest/core": 5.x
-    "@rapidrest/service-core": ^2.1.0
-    mammoth: ">=1.8.0"
-    pdf-parse: ">=1.1.1"
-  peerDependenciesMeta:
-    "@aws-sdk/client-s3":
-      optional: true
-    "@aws-sdk/client-ses":
-      optional: true
-    "@aws-sdk/client-sesv2":
-      optional: true
-    "@opensearch-project/opensearch":
-      optional: true
-    mammoth:
-      optional: true
-    pdf-parse:
-      optional: true
-  checksum: 10c0/a69ed56d5a07e3be7a376660af96c2c53b74366cd04bb6cb0f85eb93b9b385d9381975635c492c6c861db455d4f78dc82d1dbd76d09132bb8134cb2fac325605
-  languageName: node
-  linkType: hard
-
-"@rapidmx/web-client@npm:0.6.0":
-  version: 0.6.0
-  resolution: "@rapidmx/web-client@npm:0.6.0"
+"@rapidmx/web-client@npm:^0.7.0":
+  version: 0.7.0
+  resolution: "@rapidmx/web-client@npm:0.7.0"
   dependencies:
     "@dnd-kit/core": "npm:^6.3.1"
     "@journeyapps/wa-sqlite": "npm:^2.0.4"
     "@peculiar/x509": "npm:^2.1.0"
-    "@rapidmx/react-shared": "npm:^0.6.0"
+    "@rapidmx/react-shared": "npm:^0.7.0"
     "@tiptap/core": "npm:^3.31.3"
     "@tiptap/extension-highlight": "npm:^3.31.3"
     "@tiptap/extension-image": "npm:^3.31.3"
@@ -1957,40 +1898,7 @@ __metadata:
   peerDependencies:
     react: 19.x
     react-dom: 19.x
-  checksum: 10c0/45730e4163367fc61b637d1805d52cb81c5de294fe77faa15c7fb23f3be4b7493cc96f4a861f724a5d43250c6b778a020b339e943ce6e956c47dab094ea27a39
-  languageName: node
-  linkType: hard
-
-"@rapidmx/web-client@patch:@rapidmx/web-client@npm%3A0.6.0#~/.yarn/patches/@rapidmx-web-client-npm-0.6.0-a9a38d9557.patch":
-  version: 0.6.0
-  resolution: "@rapidmx/web-client@patch:@rapidmx/web-client@npm%3A0.6.0#~/.yarn/patches/@rapidmx-web-client-npm-0.6.0-a9a38d9557.patch::version=0.6.0&hash=38de4a"
-  dependencies:
-    "@dnd-kit/core": "npm:^6.3.1"
-    "@journeyapps/wa-sqlite": "npm:^2.0.4"
-    "@peculiar/x509": "npm:^2.1.0"
-    "@rapidmx/react-shared": "npm:^0.6.0"
-    "@tiptap/core": "npm:^3.31.3"
-    "@tiptap/extension-highlight": "npm:^3.31.3"
-    "@tiptap/extension-image": "npm:^3.31.3"
-    "@tiptap/extension-placeholder": "npm:^3.31.3"
-    "@tiptap/extension-table": "npm:^3.31.3"
-    "@tiptap/extension-text-align": "npm:^3.31.3"
-    "@tiptap/extension-text-style": "npm:^3.31.3"
-    "@tiptap/extensions": "npm:^3.31.3"
-    "@tiptap/pm": "npm:^3.31.3"
-    "@tiptap/react": "npm:^3.31.3"
-    "@tiptap/starter-kit": "npm:^3.31.3"
-    asn1js: "npm:^3.0.10"
-    date-fns: "npm:^4.4.0"
-    dompurify: "npm:^3.4.15"
-    hash-wasm: "npm:^4.12.0"
-    pkijs: "npm:^3.4.0"
-    react-icons: "npm:^5.7.0"
-    reflect-metadata: "npm:^0.2.2"
-  peerDependencies:
-    react: 19.x
-    react-dom: 19.x
-  checksum: 10c0/e154e6c9167fd5a3ef74a0189eb219369875f452047f75ef6848489175c34b70da6a8393652f3cbd6a34db4df4a247abf4b5e8b2b8e64a096cf9b7b6b13da8e5
+  checksum: 10c0/97b23a17fb94dccca10097327176a893913ba95da9cb819eefdc742474aa841253f068dcd4cd6d3c2bde88eca6484acb62f66821ee50df24b84ef59ceb42e686
   languageName: node
   linkType: hard
 
@@ -9996,9 +9904,9 @@ __metadata:
   resolution: "server@workspace:."
   dependencies:
     "@aws-sdk/client-s3": "npm:^3.906.0"
-    "@rapidmx/react-shared": "patch:@rapidmx/react-shared@npm%3A0.6.0#~/.yarn/patches/@rapidmx-react-shared-npm-0.6.0-77e24a4355.patch"
-    "@rapidmx/restapi": "patch:@rapidmx/restapi@npm%3A0.12.0#~/.yarn/patches/@rapidmx-restapi-npm-0.12.0-4ee47279ab.patch"
-    "@rapidmx/web-client": "patch:@rapidmx/web-client@npm%3A0.6.0#~/.yarn/patches/@rapidmx-web-client-npm-0.6.0-a9a38d9557.patch"
+    "@rapidmx/react-shared": "npm:^0.7.0"
+    "@rapidmx/restapi": "npm:^0.13.0"
+    "@rapidmx/web-client": "npm:^0.7.0"
     "@rapidrest/cli": "npm:^2.0.0"
     "@rapidrest/core": "npm:^5.2.2"
     "@rapidrest/react": "npm:2.0.0-beta.3"
