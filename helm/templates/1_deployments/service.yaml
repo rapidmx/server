@@ -12,6 +12,7 @@ than leaving extra pods stuck in ContainerCreating on a Multi-Attach error.
 {{- end }}
 {{- include "rapidmx.assertSuppliedSecrets" $ }}
 {{- include "rapidmx.assertPostfixBridge" $ }}
+{{- $podTLS := eq (include "rrst.podTLS" $) "true" }}
 {{- if ne $.Values.mail.pki.storage.accessMode "ReadWriteMany" }}
 {{- $rwoVolumes = append $rwoVolumes "mail.pki.storage" }}
 {{- end }}
@@ -145,6 +146,15 @@ spec:
               value: {{ ternary "on" "off" (has (toString $.Values.mail.relay.tls) (list "true" "on")) | quote }}
             - name: SENDMAIL_FROM_ADDRESS
               value: {{ tpl $.Values.mail.relay.fromAddress $ | default (printf "mailer@%s" ($.Values.mail.mxHostname | default (include "rrst.render" (dict "value" $.Values.service.host "context" $)))) | quote }}
+            {{- if $podTLS }}
+            # global.gateway.tlsTermination: pod - @rapidrest/service-core reads these (env separator "__") as its
+            # `ssl` config block and switches its one HTTP listener to TLS (uWS's SSLApp / Bun's tls option). The
+            # cert/key come from the cert-manager Certificate in 0_config/tls-certs.yaml, mounted below.
+            - name: ssl__key
+              value: /etc/rapidmx/tls/tls.key
+            - name: ssl__cert
+              value: /etc/rapidmx/tls/tls.crt
+            {{- end }}
           ports:
             - containerPort: 3000
           # Plugin changes restart the server process inside the container, one pod at a time (see
@@ -154,15 +164,28 @@ spec:
             httpGet:
               path: /api/status
               port: 3000
+              {{- if $podTLS }}
+              scheme: HTTPS
+              {{- end }}
             periodSeconds: 5
             failureThreshold: 2
           {{- with $.Values.service.startupProbe }}
           startupProbe:
+            {{- if $podTLS }}
+            {{- $httpGet := merge (dict "scheme" "HTTPS") (.httpGet | default dict) }}
+            {{- toYaml (merge (dict "httpGet" $httpGet) .) | nindent 12 }}
+            {{- else }}
             {{- toYaml . | nindent 12 }}
+            {{- end }}
           {{- end }}
           {{- with $.Values.service.livenessProbe }}
           livenessProbe:
+            {{- if $podTLS }}
+            {{- $httpGet := merge (dict "scheme" "HTTPS") (.httpGet | default dict) }}
+            {{- toYaml (merge (dict "httpGet" $httpGet) .) | nindent 12 }}
+            {{- else }}
             {{- toYaml . | nindent 12 }}
+            {{- end }}
           {{- end }}
           {{- if gt (int $.Values.service.preStopSleepSeconds) 0 }}
           # Keeps the pod serving while it's still being removed from the Gateway's endpoints.
@@ -192,9 +215,23 @@ spec:
             # its UI, when it starts.
             - name: plugins
               mountPath: /app/plugins
+            {{- if $podTLS }}
+            - name: tls-cert
+              mountPath: /etc/rapidmx/tls
+              readOnly: true
+            {{- end }}
       volumes:
         - name: plugins
           emptyDir: {}
+        {{- if $podTLS }}
+        # cert-manager renews this Secret in place 15 days before its 90-day expiry, and kubelet updates the mounted
+        # files live - but the framework's uWS/Bun TLS listener only reads them at startup, so the pod itself needs
+        # restarting for a renewal to actually take effect. Recycle pods (e.g. `kubectl rollout restart`) within that
+        # 15-day window, or ahead of it on your own schedule.
+        - name: tls-cert
+          secret:
+            secretName: {{ (include "rrst.render" (dict "value" $.Values.host "context" $)) }}-tls-cert
+        {{- end }}
         - name: dkim-keys
           persistentVolumeClaim:
             claimName: {{ include "rrst.fullname" . }}-dkim-keys

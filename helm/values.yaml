@@ -19,6 +19,16 @@ global:
     className: envoy
     hsts: true
     tls: true
+    # "gateway" (default): the Gateway decrypts client TLS and forwards plain HTTP to the pod, as today. "pod": the
+    # Gateway passes TLS straight through by SNI (Gateway API TLSRoute, experimental channel) and the pod itself
+    # terminates it via RapidREST's built-in `ssl` config - see 1_deployments/service.yaml and 3_gateways/service.yaml.
+    # Every caller of the service (the public Gateway, postfix-bridge's ingestBaseUrl, ses-bridge's ingestService LB,
+    # and the pod's own liveness/readiness probes) switches to HTTPS together, since the pod exposes one listener that
+    # is either all-HTTP or all-HTTPS, never both.
+    tlsTermination: gateway
+    # Extra dnsNames the pod's certificate should also cover, beyond `host` and (in "pod" mode) the internal Service
+    # DNS name - e.g. a fixed hostname given to mail.ingestService's LoadBalancer.
+    tlsExtraDnsNames: []
   jwt:
     audience: >-
       {{ include "rrst.render" (dict "value" .Values.global.domain "context" .)
@@ -155,8 +165,13 @@ postfixBridge:
       {{ if .Values.global.openbao.enabled }}{{ ternary .Release.Name (printf
       "%s-server" .Release.Name) (contains "server" .Release.Name)
       }}-mail-ingest-secret{{ end }}
+  # https when the server pod terminates its own TLS (global.gateway.tlsTermination: pod) and has a real certificate -
+  # see that value's own comment. Its Certificate (helm/templates/0_config/tls-certs.yaml) covers the internal Service
+  # DNS name below precisely so this connection's hostname verification succeeds.
   ingestBaseUrl: >-
-    http://{{ ternary .Release.Name (printf "%s-server" .Release.Name) (contains
+    {{ if and .Values.global.gateway.tls (eq .Values.global.gateway.tlsTermination "pod") (ne (toString
+    .Values.global.domain) "localhost") (not (contains ".local" (toString .Values.global.domain))) }}https{{ else
+    }}http{{ end }}://{{ ternary .Release.Name (printf "%s-server" .Release.Name) (contains
     "server" .Release.Name) }}-services/internal/mta
   hostname: mail.{{ .Values.global.domain }}
   domains: '{{ .Values.global.domain }}'
@@ -175,6 +190,10 @@ mail:
     ses:
       region: ''
       configurationSet: ''
+  # With global.gateway.tlsTermination: pod, ses-bridge's Lambda must call this LoadBalancer over HTTPS too (the pod's
+  # one listener is all-HTTPS then) and its hostname must be one of the pod certificate's dnsNames - add it to
+  # global.gateway.tlsExtraDnsNames (e.g. a fixed hostname from an external-dns annotation here), since the LB's
+  # own AWS-assigned DNS name isn't known at chart-render time.
   ingestService:
     enabled: false
     type: LoadBalancer

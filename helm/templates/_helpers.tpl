@@ -137,6 +137,29 @@ true
 {{-   end -}}
 {{- end -}}
 
+{{/*
+"true" when this chart's own `.Values.host` will actually get a TLS certificate: global.gateway.tls is on and the
+rendered host isn't localhost or *.local - matches what the ACME HTTP-01 solver in tls-certs.yaml can reach. Usage:
+include "rrst.certificate" $
+*/}}
+{{- define "rrst.certificate" -}}
+{{-   $host := include "rrst.render" (dict "value" .Values.host "context" .) -}}
+{{-   if and .Values.global.gateway.tls (ne $host "localhost") (not (contains ".local" $host)) -}}
+true
+{{-   end -}}
+{{- end -}}
+
+{{/*
+"true" when TLS is terminated inside the service pod itself (global.gateway.tlsTermination: pod) rather than at the
+Envoy/nginx Gateway - only meaningful when a certificate is actually issued (see rrst.certificate). Usage:
+include "rrst.podTLS" $
+*/}}
+{{- define "rrst.podTLS" -}}
+{{-   if and (eq (include "rrst.certificate" .) "true") (eq .Values.global.gateway.tlsTermination "pod") -}}
+true
+{{-   end -}}
+{{- end -}}
+
 {{/******************************** SECRETS ********************************/}}
 
 {{/*

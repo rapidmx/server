@@ -12,5 +12,8 @@ spec:
       targetPort: 3000
       name: nodejs
       protocol: TCP
+      {{- if eq (include "rrst.podTLS" $) "true" }}
+      appProtocol: https
+      {{- end }}
   selector:
     app: {{ include "rrst.name" . }}

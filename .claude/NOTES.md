@@ -5942,3 +5942,65 @@ dry-runs of `installOpenbao` (manifest and command sequence) and `prepareOpenbao
 including single-quote escaping of the root token). The bundled `auth-server-1.0.0-beta.2.tgz` in `helm/charts` was
 repackaged from the sibling checkout - the previous snapshot still carried the removed vault templates and rendered a
 `<nil>` token reference.
+
+### 2026-09-18 — Pod-terminated TLS (global.gateway.tlsTermination: pod)
+
+RapidREST supports terminating TLS itself (`@rapidrest/service-core`'s `Server.js`: `config.get("ssl")` -
+`{key,cert,ca,passphrase}` file paths, read via nconf's `ssl__key`/`ssl__cert__` env vars - see
+`config.defaults.ts`'s own doc comment on the `__` separator convention). Added a chart-level opt-in to use that
+instead of the Gateway (Envoy) decrypting, defaulting to today's behavior (`gateway`).
+
+- **Key constraint that shaped the whole design:** the framework opens exactly one listener per process - either
+  plain HTTP (`uWS.App()`) or TLS (`uWS.SSLApp()`), never both. So `tlsTermination: pod` isn't just a Gateway change:
+  *every* caller of port 3000 becomes HTTPS-only at once - the public Gateway, kubelet's three probes,
+  postfix-bridge's `ingestBaseUrl`, and (if enabled) `mail.ingestService`'s external LB. Confirmed via `AskUserQuestion`
+  that this full end-to-end scope (not a partial/dual-listener approach, which isn't possible without a
+  `@rapidrest/service-core` change) is what was wanted.
+- **Gateway forwarding: TLSRoute passthrough, not BackendTLSPolicy re-encryption.** The https Gateway listener
+  switches `protocol: HTTPS`+`mode: Terminate`+`certificateRefs` to `protocol: TLS`+`mode: Passthrough` (no cert refs -
+  Envoy never decrypts), and a new `TLSRoute` (`gateway.networking.k8s.io/v1alpha2` - still the Gateway API
+  *experimental* channel, so the cluster's CRDs must include it) forwards raw bytes by SNI to the same
+  `<fullname>-services` Service/port. The plain-HTTP listener's `HTTPRoute` rule switches from forwarding
+  (the pod can't answer plain HTTP once `ssl` config is set) to a 301 `RequestRedirect` to https. cert-manager's own
+  ACME HTTP-01 solver route still gets answered correctly on that listener - a more specific `/.well-known/...` path
+  match takes precedence over the catch-all `/` redirect regardless of which HTTPRoute object registered it (Gateway
+  API route-merging semantics, unrelated to this chart).
+- **Real consequence, called out but not solved here (a code change, not a chart one):** the `Strict-Transport-Security`
+  response-header removal filter (`global.gateway.hsts: false`) only works when Envoy actually decrypts the response -
+  in passthrough mode it can't touch the payload at all. Whatever adds HSTS today (never found in this repo or
+  restapi/service-core - presumably a cluster-level default outside this chart) also stops applying in this mode.
+  `cors__origins`'s http/https scheme selection (`service-config.yaml`) is unrelated and still correct either way.
+- **Internal callers need the cert's SAN to cover their actual connection hostname**, not just `host`. postfix-bridge
+  calls the internal Service by its bare k8s DNS name (`<fullname>-services`), which would fail hostname verification
+  against a cert scoped only to `mail.example.com` - so `tls-certs.yaml`'s `dnsNames` gains
+  `<fullname>-services`/`<fullname>-services.<namespace>.svc.cluster.local` in pod mode, plus a new
+  `global.gateway.tlsExtraDnsNames` list for anything chart-render-time can't predict (e.g.
+  `mail.ingestService`'s AWS-assigned LB hostname - documented as a manual step, not automated). `values.yaml`'s
+  `postfixBridge.ingestBaseUrl` switches `http`→`https` on the same condition, using `global.domain` directly (not
+  `.Values.host`, which doesn't exist in the postfix-bridge subchart's own render context - only `global.*` does).
+- **Cert rotation is a known gap, documented rather than fixed:** cert-manager renews the mounted Secret in place
+  15 days before its 90-day expiry and kubelet updates the mounted files live, but uWS's `SSLApp`/Bun's `tls` option
+  only reads them at process startup - there's no hot-reload path in the framework today. Left as an operator
+  responsibility (a periodic `kubectl rollout restart`) rather than invented a workaround (e.g. a checksum annotation
+  wouldn't help - nothing re-runs `helm upgrade` when cert-manager rotates the Secret out of band).
+- **Bug found on the way, fixed as a prerequisite (unrelated to this feature):** `tls-certs.yaml`'s `issuerRef` read
+  `$.Values.certmanager.name`/`.namespace` - a top-level key that has never existed in `values.yaml` (only
+  `global.certmanager` does, matching every other reference in the same file). This nil-panicked `helm template` for
+  *any* real (non-localhost/.local) host, both before and unrelated to this change - confirmed by reproducing it
+  against an unmodified checkout. Fixed to `$.Values.global.certmanager.*`.
+- Added two helpers to `_helpers.tpl` (`rrst.certificate`, `rrst.podTLS`) rather than re-duplicating the existing
+  inline `$certificate` boolean a third/fourth time across `tls-certs.yaml`/`3_gateways/service.yaml`/
+  `1_deployments/service.yaml`/`2_services/api_services.yaml` - the original two-site duplication (with a
+  cross-referencing comment) was fine at two sites, not at four.
+
+**Verified:** `helm lint`/`helm template` in both modes (`authserver`/`postfixBridge` disabled to work around the
+pre-existing, unrelated auth-server-subchart `nil` `certmanager.name` bug noted elsewhere in this log - not
+retested here). Diffed the gateway-mode (`tlsTermination: gateway`, the default) render against a baseline with only
+the `certmanager` typo fixed and nothing else changed: zero functional diff (two lines of comment placement/blank-line
+whitespace only) - confirms the default path is unaffected byte-for-byte in substance. Pod mode's render checked
+resource-by-resource: `Certificate` dnsNames, `Gateway` listener protocol/mode swap, `HTTPRoute` redirect, new
+`TLSRoute`, `Deployment`'s `ssl__key`/`ssl__cert` env + `tls-cert` volume/mount + all three probes' merged
+`scheme: HTTPS`, `Service`'s `appProtocol: https`, and (with `postfixBridge.create=true`) `ingestBaseUrl` rendering as
+`https://<fullname>-services/internal/mta` in pod mode vs. `http://` in gateway mode. No live cluster available in
+this session, so the actual TLS handshake, ACME issuance and TLSRoute CRD/Envoy Gateway behavior are unverified beyond
+`helm template`-level correctness.

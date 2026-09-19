@@ -1,6 +1,7 @@
 {{- $ownsGateway := and (eq (printf "%s-gateway" (include "rrst.fullname" .)) (tpl $.Values.global.gateway.name $)) (eq $.Release.Namespace (tpl $.Values.global.gateway.namespace $)) }}
 {{- /* Matches tls-certs.yaml: a certificate is only issued for a host that can get one. */}}
-{{- $certificate := and $.Values.global.gateway.tls (ne (include "rrst.render" (dict "value" $.Values.host "context" $)) "localhost") (not (contains ".local" (include "rrst.render" (dict "value" $.Values.host "context" $)))) }}
+{{- $certificate := eq (include "rrst.certificate" $) "true" }}
+{{- $podTLS := eq (include "rrst.podTLS" $) "true" }}
 {{- if $ownsGateway }}
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
@@ -17,16 +18,26 @@ spec:
       namespaces:
         from: All
   {{- if $certificate }}
-  # TLS is terminated on the listener; an HTTPRoute has no `tls` field.
   - name: https
+    {{- if $podTLS }}
+    # Pod-terminated TLS: this listener only passes bytes through by SNI, it never decrypts - so it takes no
+    # certificateRefs, and an HTTPRoute can't attach to it (see the TLSRoute below instead).
+    protocol: TLS
+    {{- else }}
+    # TLS is terminated on the listener; an HTTPRoute has no `tls` field.
     protocol: HTTPS
+    {{- end }}
     port: 443
     hostname: {{ (include "rrst.render" (dict "value" $.Values.host "context" $)) | quote }}
     tls:
+      {{- if $podTLS }}
+      mode: Passthrough
+      {{- else }}
       mode: Terminate
       certificateRefs:
       - kind: Secret
         name: {{ (include "rrst.render" (dict "value" $.Values.host "context" $)) }}-tls-cert
+      {{- end }}
     allowedRoutes:
       namespaces:
         from: All
@@ -46,7 +57,7 @@ spec:
   - name: {{ tpl $.Values.global.gateway.name $ }}
     namespace: {{ tpl $.Values.global.gateway.namespace $ }}
     sectionName: http
-  {{- if and $ownsGateway $certificate }}
+  {{- if and (not $podTLS) $ownsGateway $certificate }}
   - name: {{ tpl $.Values.global.gateway.name $ }}
     namespace: {{ $.Release.Namespace }}
     sectionName: https
@@ -54,6 +65,19 @@ spec:
   hostnames:
   - {{ (include "rrst.render" (dict "value" $.Values.host "context" $)) | quote }}
   rules:
+  {{- if $podTLS }}
+  # The pod only speaks TLS once its ssl config is set (see 1_deployments/service.yaml), so plain HTTP arriving on
+  # this listener can no longer be forwarded to it - send it to the https listener instead.
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /
+    filters:
+    - type: RequestRedirect
+      requestRedirect:
+        scheme: https
+        statusCode: 301
+  {{- else }}
   - matches:
     - path:
         type: PathPrefix
@@ -69,3 +93,29 @@ spec:
         remove:
         - Strict-Transport-Security
     {{- end }}
+  {{- end }}
+{{- if $podTLS }}
+---
+# Passes the raw TLS bytes on to the pod by SNI hostname instead of decrypting them - the pod terminates TLS itself
+# (global.gateway.tlsTermination: pod, see 1_deployments/service.yaml's ssl__key/ssl__cert). TLSRoute is still in the
+# Gateway API's experimental channel (gateway.networking.k8s.io/v1alpha2): the cluster's Gateway API CRDs need that
+# channel installed for this to work. Because Envoy never decrypts this traffic, the HSTS-stripping response-header
+# filter above has no equivalent here - global.gateway.hsts only affects the cors__origins scheme list in this mode.
+apiVersion: gateway.networking.k8s.io/v1alpha2
+kind: TLSRoute
+metadata:
+  name: {{ include "rrst.fullname" . }}-tlsroute
+spec:
+  parentRefs:
+  {{- if and $ownsGateway $certificate }}
+  - name: {{ tpl $.Values.global.gateway.name $ }}
+    namespace: {{ $.Release.Namespace }}
+    sectionName: https
+  {{- end }}
+  hostnames:
+  - {{ (include "rrst.render" (dict "value" $.Values.host "context" $)) | quote }}
+  rules:
+  - backendRefs:
+    - name: {{ include "rrst.fullname" . }}-services
+      port: 80
+{{- end }}

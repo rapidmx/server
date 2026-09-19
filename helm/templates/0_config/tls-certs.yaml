@@ -20,7 +20,8 @@ acme:
           name: {{ tpl $.Values.global.gateway.name $ }}
           namespace: {{ tpl $.Values.global.gateway.namespace $ }}
 {{- end -}}
-{{- if and $.Values.global.gateway.tls (ne (include "rrst.render" (dict "value" $.Values.host "context" $)) "localhost") (not (contains ".local" (include "rrst.render" (dict "value" $.Values.host "context" $)))) }}
+{{- $podTLS := eq (include "rrst.podTLS" $) "true" }}
+{{- if eq (include "rrst.certificate" $) "true" }}
 ---
 apiVersion: cert-manager.io/v1
 kind: Certificate
@@ -48,9 +49,19 @@ spec:
   # At least one of a DNS Name, URI, or IP address is required.
   dnsNames:
   - {{ (include "rrst.render" (dict "value" $.Values.host "context" $)) }}
+  {{- if $podTLS }}
+  # global.gateway.tlsTermination: pod - the Gateway passes TLS straight through by SNI (see 3_gateways/service.yaml),
+  # so this pod-mounted certificate is the only one any caller ever sees, including in-cluster callers that reach it
+  # by its Service DNS name directly (e.g. postfix-bridge's ingestBaseUrl) rather than by `host` above.
+  - {{ include "rrst.fullname" $ }}-services
+  - {{ include "rrst.fullname" $ }}-services.{{ $.Release.Namespace }}.svc.cluster.local
+  {{-   range $.Values.global.gateway.tlsExtraDnsNames }}
+  - {{ . }}
+  {{-   end }}
+  {{- end }}
   # Issuer references are always required.
   issuerRef:
-    name: {{ tpl $.Values.certmanager.name $ }}
-    namespace: {{ tpl $.Values.certmanager.namespace $ }}
+    name: {{ tpl $.Values.global.certmanager.name $ }}
+    namespace: {{ tpl $.Values.global.certmanager.namespace $ }}
     kind: Issuer
 {{- end }}
