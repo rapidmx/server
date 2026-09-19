@@ -6004,3 +6004,57 @@ resource-by-resource: `Certificate` dnsNames, `Gateway` listener protocol/mode s
 `https://<fullname>-services/internal/mta` in pod mode vs. `http://` in gateway mode. No live cluster available in
 this session, so the actual TLS handshake, ACME issuance and TLSRoute CRD/Envoy Gateway behavior are unverified beyond
 `helm template`-level correctness.
+
+
+### 2026-09-19 - First real-cluster TLS shakeout (powerlevel.gg, single-node k3s + nginx + Envoy Gateway + cert-manager)
+
+Ran `single_node_install.sh` (`CHART=./helm`) against a real host in both `--gateway shared` (default) and the new
+`--gateway chart` modes, with Let's Encrypt HTTP-01, and checked `http(s)://{mail,auth}.powerlevel.gg` in Edge
+(Playwright, `channel: msedge`). Everything below was broken on `main` before this session; `helm template` alone had
+hidden all of it (the nil-pointer and schema failures only show up with real values / a real API server).
+
+- **`global.gateway.*` is the chart's source of truth** (JP confirmed). The script still passed the old
+  `gateway.*`/`authserver.gateway.*`/`gateway.httpsListener` values and used `GATEWAY_NAME`/`GATEWAY_NAMESPACE`/
+  `gatewayService`, none of which were defined - so the GatewayClass' `parametersRef` pointed at a namespace that didn't
+  exist and no Gateway was ever created. The script also carried an uncommitted second, hard-coded `shared-gateway`
+  block that re-applied the Gateway *without* its HTTPS listeners; removed.
+- **Two modes, chosen with `--gateway shared|chart` / `GATEWAY_MODE`.** `shared`: script creates
+  `envoy-gateway-system/shared-gateway` (http + `https` + `https-auth` listeners, PROXY-protocol ClientTrafficPolicy on the
+  whole Gateway). `chart`: the chart creates a Gateway per host in the release namespace; they can't each get their own
+  Service (nginx forwards to one address), so the script uses a second GatewayClass `envoy-merged` whose EnvoyProxy has
+  `mergeGateways: true` - one Envoy Service for both. `--gateway chart` after `--gateway shared` deletes the shared Gateway
+  (only if `state` says the script made it). Chart mode configures nginx *after* helm (the Gateways don't exist before).
+- **Envoy Gateway limit worth remembering:** in a merged deployment a ClientTrafficPolicy on a Gateway's *HTTP* listener is
+  rejected ("applied to multiple http (non https) listeners ... on the same port") - even a single one, even one per
+  Gateway. So chart mode scopes the policy to `sectionName: https` and nginx sends **no** PROXY header on port 80: plain-HTTP
+  requests show nginx's address, not the client's, in chart mode only. HTTPS (the real traffic) keeps real client IPs.
+  The script's reverse-proxy check used to accept any HTTP answer; Envoy answers **400** on a PROXY-header mismatch, which it
+  passed - now a 400 fails (or keeps waiting).
+- **Chart bugs fixed (parent and auth-server subchart):** the parent Issuer's ownership check compared `<fullname>-issuer`
+  with a name defaulted to `<fullname>-letsencrypt`, so no Issuer was ever created (values default now `-issuer`, which is
+  also the subchart's default; the parent's `global` overrides the subchart's, so both charts use `<fullname>-issuer` in
+  their own context); both Issuer manifests were mis-indented (`name:`/`acme:` at the wrong level) and shared one ACME
+  account-key Secret (now `<issuer>-account-key`); `issuerRef.namespace` is not a cert-manager field (server-side apply
+  rejects it); the auth-server's Certificate read `$.Values.certmanager.*` (nil panic) and both `4_vault/external-secrets.yaml`
+  read `$.Values.externalSecrets.*` (it's under `global`). `c80ca7f` had also dropped the parent's mail-ingest-secret
+  ExternalSecret and the escrow audit key from service-secrets when it replaced the file with the auth-server's copy -
+  the server pod sat in `CreateContainerConfigError`; restored.
+- **Shared Gateway with TLS:** the HTTPRoute now names no listener when the Gateway isn't the chart's own (it attaches to every
+  listener accepting the host - http, and https once the cert exists), and the chart renders a `ReferenceGrant` (v1beta1) in the
+  release namespace so the Gateway in another namespace can read `<host>-tls-cert`. Envoy leaves the Service at port 80 only
+  until the certs exist, so the script no longer waits for 443 on the Service; nginx forwards it regardless.
+- **IPv6:** `mail.`/`auth.powerlevel.gg` have AAAA records and the host has that address, but the nginx `stream` block only
+  listened on IPv4 - Let's Encrypt and browsers try IPv6 first. The script now adds `listen [::]:80/443` when the host has IPv6.
+- **OpenBao:** `bao operator unseal -` (stdin) does not work - OpenBao takes the key as an argument only (Vault's `-` is passed
+  literally). Both the script's unseal and the `openbao-unsealer` Deployment failed; the script now feeds a shell in the pod
+  over stdin so the key stays off the host's process list, and the unsealer passes `$UNSEAL_KEY` as the argument.
+- **auth-server is a local patch only:** `helm/charts/auth-server-1.0.0-beta.11.tgz` is git-ignored and was repacked from the
+  sibling checkout (`d:\github\rapidrest\auth-server`, *uncommitted* edits to `templates/0_config/tls-certs.yaml`,
+  `templates/3_gateways/service.yaml`, `templates/4_vault/external-secrets.yaml`). A CI build pulls the published beta.11 and
+  will hit these bugs again until JP versions/publishes the sibling. The pristine tarball is not recoverable from git.
+- **Test-harness gotchas:** headless Edge on JP's machine goes through the ESET SSL filter, so the certificate the browser
+  reports is ESET's, not Let's Encrypt's - check real certs with `openssl s_client -servername`. And `pgrep -f` inside an
+  `ssh host '...'` matches its own command line, so it can't be used to wait for a background job.
+- **Not changed, worth a decision:** with TLS on, plain `http://` still serves the app and the sign-in page (the
+  HTTPRoute's http rule forwards; nothing redirects to https). Also `postfixBridge.create` defaults to `false`, so the
+  script's Postfix messaging and `--mail-domains` do nothing on a default install.

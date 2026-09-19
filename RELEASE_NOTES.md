@@ -1,5 +1,29 @@
 # Release Notes
 
+## Unreleased
+
+### Features
+
+- **`single_node_install.sh --gateway shared|chart`:** `shared` (the default) has the script create one Gateway,
+  `envoy-gateway-system/shared-gateway`, with an HTTPS listener per host that the chart's routes attach to; `chart` has
+  the chart create a Gateway for each of its hosts, which the script merges into one Envoy Service for nginx. Both get
+  Let's Encrypt certificates through cert-manager, and re-running the script switches between them.
+- **A Gateway the chart doesn't create can terminate TLS:** with `global.gateway.name` and `global.gateway.namespace` set,
+  the chart's routes attach to every listener of that Gateway that accepts the host, and the chart renders the
+  ReferenceGrant that lets it read each `<host>-tls-cert` Secret.
+
+### Fixes
+
+- **cert-manager Issuers were never created,** because `global.certmanager.name` defaulted to `<fullname>-letsencrypt` while
+  the chart only created an Issuer named `<fullname>-issuer`; the default is now `-issuer`. The Issuer manifest was
+  also mis-indented, so it wouldn't have applied, and `issuerRef` carried a `namespace` cert-manager rejects.
+- **The vault-managed secrets were incomplete:** the mail ingest secret and the escrow audit key were missing from the
+  ExternalSecrets, so the server pod never started with `global.openbao.enabled`.
+- **single_node_install.sh** passed values the chart no longer reads (`gateway.*`), never created a Gateway, waited for
+  a port 443 that only exists once the certificates do, and only listened on IPv4 for hosts with AAAA records, which
+  Let's Encrypt tries first. Its OpenBao unseal and the unsealer Deployment passed the key as `-`, which OpenBao takes
+  literally.
+
 ## v1.0.0-beta.4
 
 ### Breaking changes

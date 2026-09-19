@@ -6,7 +6,7 @@ global:
     url: redis://redis-master
   certmanager:
     email: 'admin@{{ tpl $.Values.global.domain . }}' 
-    name: '{{ include "rrst.fullname" . }}-letsencrypt'
+    name: '{{ include "rrst.fullname" . }}-issuer'
     namespace: '{{ .Release.Namespace }}'
   corsHosts:
     - localhost:3000

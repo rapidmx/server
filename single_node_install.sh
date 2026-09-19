@@ -10,6 +10,14 @@ AUTH_HOST=${AUTH_HOST:-auth}
 TLS=true
 VERSION="1.0.0-beta.4"
 NAMESPACE="rapidmx-server"
+# How the release is exposed through Envoy Gateway. "shared": this script creates one Gateway ($GATEWAY_NAME in
+# $GATEWAY_NAMESPACE) with a listener per host and the chart's routes attach to it. "chart": the chart creates its own
+# Gateways (one per host) in $NAMESPACE.
+GATEWAY_MODE=${GATEWAY_MODE:-shared}
+# Where Envoy Gateway runs, and so where the Envoy pods and Services it provisions are.
+ENVOY_NAMESPACE=${ENVOY_NAMESPACE:-envoy-gateway-system}
+GATEWAY_NAME=shared-gateway
+GATEWAY_NAMESPACE=$ENVOY_NAMESPACE
 # The published chart: the CI pushes ./helm (chart name "server") to oci://ghcr.io/<owner>/charts. Set CHART to a local
 # chart directory (e.g. CHART=./helm) to install from a checkout instead; --version is then ignored.
 CHART=${CHART:-oci://ghcr.io/rapidmx/charts/server}
@@ -214,6 +222,43 @@ function hostFor() {
     *.*) echo "$2";;
     *) echo "$2.$1";;
   esac
+}
+
+# A field (a jsonpath such as .spec.clusterIP) of the Envoy Service envoy-gateway provisioned for the Gateway(s) that
+# $ENVOY_SELECTOR selects.
+function gatewayService() {
+  kubectl -n "$ENVOY_NAMESPACE" get svc -l "$ENVOY_SELECTOR" -o jsonpath="{.items[0]$1}" 2>/dev/null
+}
+
+# Waits (up to 5 minutes) for that Service to be a ClusterIP Service with port 80, and sets GATEWAY_IP and GATEWAY_ADDRESS
+# (the address bracketed when it's IPv6). It doesn't wait for port 443: whether that appears before the HTTPS listeners
+# have their certificates is up to envoy-gateway, and the certificates are issued through this Service.
+function waitForGatewayService() {
+  local startTime type
+  echo "Waiting for the Gateway's Envoy Service..."
+  GATEWAY_IP=""
+  startTime=`date +%s`
+  while [[ $(( `date +%s` - startTime )) -lt 300 ]]; do
+    GATEWAY_IP=`gatewayService .spec.clusterIP`
+    type=`gatewayService .spec.type`
+    if [[ -n "$GATEWAY_IP" && "$type" = "ClusterIP" && -n "`gatewayService '.spec.ports[?(@.port==80)].port'`" ]]; then
+      break
+    fi
+    GATEWAY_IP=""
+    sleep 2
+  done
+  if [[ -z "$GATEWAY_IP" ]]; then
+    echo "There was a problem setting up the Gateway: its Envoy Service isn't a ClusterIP Service with port 80."
+    if [[ "$type" = "NodePort" ]]; then
+      echo "An earlier version of this script made it a NodePort Service. Delete it (envoy-gateway recreates it) and re-run:"
+      echo "  kubectl -n $ENVOY_NAMESPACE delete svc -l $ENVOY_SELECTOR"
+    fi
+    exit 1
+  fi
+  GATEWAY_ADDRESS=$GATEWAY_IP
+  if [[ "$GATEWAY_IP" = *:* ]]; then
+    GATEWAY_ADDRESS="[$GATEWAY_IP]"
+  fi
 }
 
 # Single-quotes a value for YAML.
@@ -438,8 +483,10 @@ function installOpenbao() {
 
   if ! kubectl -n "$OPENBAO_NAMESPACE" exec "$OPENBAO_POD" -- bao status -address="$OPENBAO_LOCAL_ADDRESS" -format=json 2>/dev/null | tr -d ' ' | grep -q '"sealed":false'; then
     echo "Unsealing OpenBao..."
-    # Over stdin ("-"), so the key isn't in the vault pod's process list either.
-    if ! printf '%s' "$OPENBAO_UNSEAL_KEY" | kubectl -n "$OPENBAO_NAMESPACE" exec -i "$OPENBAO_POD" -- bao operator unseal -address="$OPENBAO_LOCAL_ADDRESS" - >/dev/null; then
+    # `bao operator unseal` takes the key only as an argument (it refuses stdin and, unlike Vault, "-"), so a shell in the
+    # pod reads it from stdin and passes it on: it isn't in this host's process list.
+    if ! printf '%s\n' "$OPENBAO_UNSEAL_KEY" | kubectl -n "$OPENBAO_NAMESPACE" exec -i "$OPENBAO_POD" -- \
+        sh -c 'read -r key && exec bao operator unseal -address="$1" "$key"' sh "$OPENBAO_LOCAL_ADDRESS" >/dev/null; then
       echo "There was a problem unsealing OpenBao."
       exit 1
     fi
@@ -477,7 +524,7 @@ spec:
             - |
               while true; do
                 if bao status -format=json 2>/dev/null | tr -d ' ' | grep -q '"sealed":true'; then
-                  if printf '%s' "\$UNSEAL_KEY" | bao operator unseal - >/dev/null 2>&1; then
+                  if bao operator unseal "\$UNSEAL_KEY" >/dev/null 2>&1; then
                     echo "Unsealed OpenBao."
                   else
                     echo "Could not unseal OpenBao; retrying."
@@ -622,6 +669,7 @@ function uninstall() {
     if [[ -n "$release" ]]; then
       echo "Removing the RapidMX server release (including its data volumes)..."
       helm uninstall "$release" -n "$release"
+      kubectl -n "$release" delete clienttrafficpolicy --all --ignore-not-found
     fi
     if [[ "`installedBy cluster_issuer`" = "true" ]]; then
       echo "Removing the letsencrypt-prod ClusterIssuer..."
@@ -707,7 +755,7 @@ function uninstall() {
   echo "Uninstall complete! $USER_KUBECONFIG was left in place; delete it if it only held this cluster."
 }
 
-GETOPT=$(getopt -o h --long domain:,mail-host:,auth-host:,mail-domains:,version:,tls:,openbao:,email:,uninstall,install-cert-manager,skip-k3s,help -- "$@")
+GETOPT=$(getopt -o h --long domain:,mail-host:,auth-host:,mail-domains:,version:,tls:,gateway:,openbao:,email:,uninstall,install-cert-manager,skip-k3s,help -- "$@")
 if [ $? -ne 0 ]; then
   exit 1
 fi
@@ -721,6 +769,7 @@ do
         --mail-domains) MAIL_DOMAINS=$2; shift 2;;
         --version) VERSION=$2; shift 2;;
         --tls) TLS=$2; shift 2;;
+        --gateway) GATEWAY_MODE=$2; shift 2;;
         --openbao) OPENBAO=$2; shift 2;;
         --email) ACME_EMAIL=$2; shift 2;;
         --skip-k3s) SKIP_K3S=true; shift;;
@@ -746,6 +795,8 @@ do
           echo -e "\t--mail-domains <domains>\tComma-separated domains Postfix sends mail for (default <domain>)"
           echo -e "\t--version <version>\t\tThe version of mail-server to deploy"
           echo -e "\t--tls <true|false>\t\tInstalls cert manager and enables TLS ingress support (uses Let's Encrypt)"
+          echo -e "\t--gateway <shared|chart>\tshared (default): one Gateway made by this script that the release's routes"
+          echo -e "\t\t\t\tattach to; chart: the chart makes a Gateway for each of its hosts"
           echo -e "\t--openbao <true|false>\t\tInstalls OpenBao and keeps the release's secrets and encryption CA in it"
           echo -e "\t\t\t\t(default true; false keeps them in Kubernetes Secrets)"
           echo -e "\t--email <email>\t\tThe Let's Encrypt account email (default admin@<domain>)"
@@ -768,6 +819,10 @@ if [[ "$TLS" != "true" && "$TLS" != "false" ]]; then
 fi
 if [[ "$OPENBAO" != "true" && "$OPENBAO" != "false" ]]; then
   echo "--openbao must be true or false."
+  exit 1
+fi
+if [[ "$GATEWAY_MODE" != "shared" && "$GATEWAY_MODE" != "chart" ]]; then
+  echo "--gateway must be shared or chart."
   exit 1
 fi
 # With OPENBAO_ADDRESS the vault is yours: this script neither installs nor prepares one, it only points the chart at it.
@@ -945,18 +1000,18 @@ fi
 
 # Install envoy gateway
 run_step "Installing envoy-gateway"
-if helm status eg -n "$GATEWAY_NAMESPACE" >/dev/null 2>&1; then
+if helm status eg -n "$ENVOY_NAMESPACE" >/dev/null 2>&1; then
   # Not upgraded here: helm doesn't upgrade CRDs, see https://gateway.envoyproxy.io/docs/install/install-helm/.
   echo "envoy-gateway is already installed."
 elif helm install eg oci://docker.io/envoyproxy/gateway-helm --version "$ENVOY_GATEWAY_VERSION" \
-    -n "$GATEWAY_NAMESPACE" --create-namespace; then
+    -n "$ENVOY_NAMESPACE" --create-namespace; then
   recordInstalled envoy_gateway
 else
   echo "There was a problem installing envoy-gateway..."
   exit 1
 fi
 echo "Checking envoy-gateway has started..."
-if ! kubectl wait --timeout=5m -n "$GATEWAY_NAMESPACE" deployment/envoy-gateway --for=condition=Available; then
+if ! kubectl wait --timeout=5m -n "$ENVOY_NAMESPACE" deployment/envoy-gateway --for=condition=Available; then
   echo "There was a problem installing envoy-gateway..."
   exit 1
 fi
@@ -965,16 +1020,32 @@ echo "envoy-gateway is running!"
 # The Gateway's Envoy Service is a ClusterIP: only this host's nginx (below) forwards to it, using the PROXY protocol so
 # Envoy puts each client's real address in X-Forwarded-For (the server's rate limits and audit log use it). A NodePort
 # would expose Envoy on every interface, where anyone could send a PROXY header claiming any address.
-if ! kubectl get gatewayclass envoy >/dev/null 2>&1; then
+#
+# GATEWAY_MODE says whose Gateway the release's routes attach to. "shared": one Gateway ($GATEWAY_NAME in
+# $GATEWAY_NAMESPACE), created below with a listener per host. "chart": the chart creates a Gateway for each host (mail
+# and auth) in $NAMESPACE. nginx forwards to a single Service either way, so the class those Gateways use merges them into
+# one Envoy deployment (mergeGateways) instead of giving each its own Service.
+GATEWAY_CLASS=envoy
+ENVOY_PROXY=bare-metal-proxy
+MERGE_GATEWAYS=false
+ENVOY_SELECTOR="gateway.envoyproxy.io/owning-gateway-name=$GATEWAY_NAME,gateway.envoyproxy.io/owning-gateway-namespace=$GATEWAY_NAMESPACE"
+if [[ "$GATEWAY_MODE" = "chart" ]]; then
+  GATEWAY_CLASS=envoy-merged
+  ENVOY_PROXY=bare-metal-merged-proxy
+  MERGE_GATEWAYS=true
+  ENVOY_SELECTOR="gateway.envoyproxy.io/owning-gatewayclass=$GATEWAY_CLASS"
+fi
+if ! kubectl get gatewayclass "$GATEWAY_CLASS" >/dev/null 2>&1; then
   ENVOY_GATEWAY_CLASS_NEW=true
 fi
 if ! kubectl apply -f - << EOF
 apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: EnvoyProxy
 metadata:
-  name: bare-metal-proxy
-  namespace: $GATEWAY_NAMESPACE
+  name: $ENVOY_PROXY
+  namespace: $ENVOY_NAMESPACE
 spec:
+  mergeGateways: $MERGE_GATEWAYS
   provider:
     type: Kubernetes
     kubernetes:
@@ -984,50 +1055,54 @@ spec:
 apiVersion: gateway.networking.k8s.io/v1
 kind: GatewayClass
 metadata:
-  name: envoy
+  name: $GATEWAY_CLASS
 spec:
   controllerName: gateway.envoyproxy.io/gatewayclass-controller
   parametersRef:
     group: gateway.envoyproxy.io
     kind: EnvoyProxy
-    name: bare-metal-proxy
-    namespace: $GATEWAY_NAMESPACE
+    name: $ENVOY_PROXY
+    namespace: $ENVOY_NAMESPACE
 EOF
 then
-  echo "There was a problem configuring the envoy GatewayClass..."
+  echo "There was a problem configuring the $GATEWAY_CLASS GatewayClass..."
   exit 1
 fi
 if [[ "$ENVOY_GATEWAY_CLASS_NEW" = "true" ]]; then
   recordInstalled envoy_gateway_class
 fi
 
-# Configure a single shared Gateway. An HTTPS listener can only serve a host with a certificate, so HTTPS listeners are
-# added only when TLS is on and the host can get one from Let's Encrypt (not localhost or *.local): "https" for
-# $SERVER_HOST and "https-auth" for $AUTH_HOST, terminating TLS with the "<host>-tls-cert" Secrets that the chart
-# and its auth-server subchart have cert-manager issue in $NAMESPACE. The chart renders the ReferenceGrant that lets this
-# Gateway use them, because it's told the listener names (gateway.httpsListener and gateway.authHttpsListener below).
-# Without them the chart is installed with gateway.tls=false (plain HTTP).
+# TLS is set up only when it's on and the host can get a certificate from Let's Encrypt (not localhost or *.local): the
+# chart then has cert-manager issue "<host>-tls-cert" Secrets in $NAMESPACE for $SERVER_HOST and $AUTH_HOST, and the
+# Gateway terminates TLS with them.
+GATEWAY_TLS=false
 HTTPS_LISTENER=""
 AUTH_HTTPS_LISTENER=""
 if [[ "$TLS" = "true" && "$SERVER_HOST" != "localhost" && ! "$SERVER_HOST" =~ \.(local|localhost)$ ]]; then
+  GATEWAY_TLS=true
   HTTPS_LISTENER="https"
   # The auth-server subchart only issues a certificate for a host that doesn't contain ".local".
   if [[ "$AUTH_HOST" != *.local* ]]; then
     AUTH_HTTPS_LISTENER="https-auth"
   fi
 fi
-if ! kubectl -n "$GATEWAY_NAMESPACE" get gateway "$GATEWAY_NAME" >/dev/null 2>&1; then
-  SHARED_GATEWAY_NEW=true
-fi
-{
-cat << EOF
+
+if [[ "$GATEWAY_MODE" = "shared" ]]; then
+  # An HTTPS listener can only serve a host with a certificate, so it's added only when there is one: "https" for
+  # $SERVER_HOST and "https-auth" for $AUTH_HOST. The Gateway is in another namespace than those Secrets, so the chart
+  # renders the ReferenceGrant that lets it read them.
+  if ! kubectl -n "$GATEWAY_NAMESPACE" get gateway "$GATEWAY_NAME" >/dev/null 2>&1; then
+    SHARED_GATEWAY_NEW=true
+  fi
+  {
+  cat << EOF
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:
   name: $GATEWAY_NAME
   namespace: $GATEWAY_NAMESPACE
 spec:
-  gatewayClassName: envoy
+  gatewayClassName: $GATEWAY_CLASS
   listeners:
   - allowedRoutes:
       namespaces:
@@ -1036,9 +1111,9 @@ spec:
     port: 80
     protocol: HTTP
 EOF
-for listener in "$HTTPS_LISTENER:$SERVER_HOST" "$AUTH_HTTPS_LISTENER:$AUTH_HOST"; do
-  if [[ "${listener%%:*}" != "" ]]; then
-cat << EOF
+  for listener in "$HTTPS_LISTENER:$SERVER_HOST" "$AUTH_HTTPS_LISTENER:$AUTH_HOST"; do
+    if [[ "${listener%%:*}" != "" ]]; then
+  cat << EOF
   - allowedRoutes:
       namespaces:
         from: All
@@ -1053,9 +1128,9 @@ cat << EOF
         name: ${listener#*:}-tls-cert
         namespace: $NAMESPACE
 EOF
-  fi
-done
-cat << EOF
+    fi
+  done
+  cat << EOF
 ---
 # Every connection to the Gateway comes from nginx, which sends the PROXY protocol header; others are refused.
 apiVersion: gateway.envoyproxy.io/v1alpha1
@@ -1070,164 +1145,174 @@ spec:
     name: $GATEWAY_NAME
   proxyProtocol: {}
 EOF
-} | kubectl apply -f -
-if [[ "${PIPESTATUS[1]}" -ne 0 ]]; then
-  echo "There was a problem configuring $GATEWAY_NAME..."
-  exit 1
-fi
-if [[ "$SHARED_GATEWAY_NEW" = "true" ]]; then
-  recordInstalled shared_gateway
-fi
-
-# Wait for envoy-gateway to provision the Gateway's Service (with port 443 once there's an HTTPS listener).
-echo "Waiting for $GATEWAY_NAME's Envoy Service..."
-GATEWAY_IP=""
-startTime=`date +%s`
-while [[ $(( `date +%s` - startTime )) -lt 300 ]]; do
-  GATEWAY_IP=`gatewayService .spec.clusterIP`
-  GATEWAY_TYPE=`gatewayService .spec.type`
-  GATEWAY_HTTPS_PORT=`gatewayService '.spec.ports[?(@.port==443)].port'`
-  if [[ -n "$GATEWAY_IP" && "$GATEWAY_TYPE" = "ClusterIP" && ( -z "$HTTPS_LISTENER" || -n "$GATEWAY_HTTPS_PORT" ) ]]; then
-    break
+  } | kubectl apply -f -
+  if [[ "${PIPESTATUS[1]}" -ne 0 ]]; then
+    echo "There was a problem configuring $GATEWAY_NAME..."
+    exit 1
   fi
-  GATEWAY_IP=""
-  sleep 2
-done
-if [[ -z "$GATEWAY_IP" ]]; then
-  echo "There was a problem setting up $GATEWAY_NAME: its Envoy Service isn't a ClusterIP Service with port 80${HTTPS_LISTENER:+ and 443}."
-  if [[ "$GATEWAY_TYPE" = "NodePort" ]]; then
-    echo "An earlier version of this script made it a NodePort Service. Delete it (envoy-gateway recreates it) and re-run:"
-    echo "  kubectl -n $GATEWAY_NAMESPACE delete svc -l gateway.envoyproxy.io/owning-gateway-name=$GATEWAY_NAME"
+  if [[ "$SHARED_GATEWAY_NEW" = "true" ]]; then
+    recordInstalled shared_gateway
   fi
-  exit 1
-fi
-GATEWAY_ADDRESS=$GATEWAY_IP
-if [[ "$GATEWAY_IP" = *:* ]]; then
-  GATEWAY_ADDRESS="[$GATEWAY_IP]"
+  waitForGatewayService
 fi
 
 # Set up nginx reverse proxy
-run_step "Installing nginx reverse proxy"
-if [[ -e /etc/redhat-release ]]; then
-  # RHEL/Fedora package the stream module as nginx-mod-stream (libnginx-mod-stream is Debian's name).
-  if ! rpm -q nginx >/dev/null 2>&1; then
-    echo "Installing nginx for reverse proxy..."
-    if ! sudo dnf install nginx nginx-mod-stream -y; then
-      echo "There was a problem installing nginx reverse proxy."
-      exit 1
+# Sets up nginx to forward ports 80 (and 443 with TLS) to the Gateway's Envoy Service (GATEWAY_ADDRESS).
+function configureNginx() {
+  if [[ -e /etc/redhat-release ]]; then
+    # RHEL/Fedora package the stream module as nginx-mod-stream (libnginx-mod-stream is Debian's name).
+    if ! rpm -q nginx >/dev/null 2>&1; then
+      echo "Installing nginx for reverse proxy..."
+      if ! sudo dnf install nginx nginx-mod-stream -y; then
+        echo "There was a problem installing nginx reverse proxy."
+        exit 1
+      fi
+      recordInstalled nginx dnf
+    elif ! rpm -q nginx-mod-stream >/dev/null 2>&1; then
+      # An nginx built with the stream module (e.g. nginx.org's packages) has no such package; `nginx -t` below tells.
+      echo "Installing the nginx stream module..."
+      sudo dnf install nginx-mod-stream -y
     fi
-    recordInstalled nginx dnf
-  elif ! rpm -q nginx-mod-stream >/dev/null 2>&1; then
-    # An nginx built with the stream module (e.g. nginx.org's packages) has no such package; `nginx -t` below tells.
-    echo "Installing the nginx stream module..."
-    sudo dnf install nginx-mod-stream -y
-  fi
-else
-  if [[ `dpkg-query -W -f='${Status}' nginx 2>/dev/null` != "install ok installed" ]]; then
-    echo "Installing nginx for reverse proxy..."
-    if ! sudo apt-get install nginx libnginx-mod-stream -y; then
-      echo "There was a problem installing nginx reverse proxy."
-      exit 1
+  else
+    if [[ `dpkg-query -W -f='${Status}' nginx 2>/dev/null` != "install ok installed" ]]; then
+      echo "Installing nginx for reverse proxy..."
+      if ! sudo apt-get install nginx libnginx-mod-stream -y; then
+        echo "There was a problem installing nginx reverse proxy."
+        exit 1
+      fi
+      recordInstalled nginx apt
+    elif [[ `dpkg-query -W -f='${Status}' libnginx-mod-stream 2>/dev/null` != "install ok installed" ]]; then
+      echo "Installing the nginx stream module..."
+      sudo apt-get install libnginx-mod-stream -y
     fi
-    recordInstalled nginx apt
-  elif [[ `dpkg-query -W -f='${Status}' libnginx-mod-stream 2>/dev/null` != "install ok installed" ]]; then
-    echo "Installing the nginx stream module..."
-    sudo apt-get install libnginx-mod-stream -y
   fi
-fi
 
-if [[ -n "`activeFirewall`" ]]; then
-  echo "Opening SMTP, HTTP${HTTPS_LISTENER:+ and HTTPS} in `activeFirewall`..."
-  # Port 25 reaches Postfix through k3s' ServiceLB (the chart's "postfix" LoadBalancer Service).
-  firewallOpenPort 25/tcp
-  firewallOpenPort 80/tcp
-  if [[ -n "$HTTPS_LISTENER" ]]; then
-    firewallOpenPort 443/tcp
+  if [[ -n "`activeFirewall`" ]]; then
+    echo "Opening SMTP, HTTP${GATEWAY_TLS:+ and HTTPS} in `activeFirewall`..."
+    # Port 25 reaches Postfix through k3s' ServiceLB (the chart's "postfix" LoadBalancer Service).
+    firewallOpenPort 25/tcp
+    firewallOpenPort 80/tcp
+    if [[ "$GATEWAY_TLS" = "true" ]]; then
+      firewallOpenPort 443/tcp
+    fi
   fi
-fi
-# SELinux (RHEL/Fedora) only lets nginx connect to other hosts' HTTP ports (the Gateway's ports 80 and 443) with this
-# boolean. Debian's AppArmor has no nginx profile by default, so there's nothing to do there.
-if command -v getenforce >/dev/null 2>&1 && [[ `getenforce` = "Enforcing" ]] \
-    && [[ `getsebool httpd_can_network_relay 2>/dev/null` = *off ]]; then
-  echo "Allowing nginx to relay connections (SELinux httpd_can_network_relay)..."
-  if sudo setsebool -P httpd_can_network_relay 1; then
-    recordInstalled selinux_nginx_relay
+  # SELinux (RHEL/Fedora) only lets nginx connect to other hosts' HTTP ports (the Gateway's ports 80 and 443) with this
+  # boolean. Debian's AppArmor has no nginx profile by default, so there's nothing to do there.
+  if command -v getenforce >/dev/null 2>&1 && [[ `getenforce` = "Enforcing" ]] \
+      && [[ `getsebool httpd_can_network_relay 2>/dev/null` = *off ]]; then
+    echo "Allowing nginx to relay connections (SELinux httpd_can_network_relay)..."
+    if sudo setsebool -P httpd_can_network_relay 1; then
+      recordInstalled selinux_nginx_relay
+    fi
   fi
-fi
 
-# Check if we've already written to this file before
-if ! sudo grep -qxF "$NGINX_BEGIN" "$NGINX_CONF" && sudo grep -Eq '^[[:space:]]*stream[[:space:]]*\{' "$NGINX_CONF"; then
-  # Written by an earlier version of this script (without markers) or by hand: don't add a second stream block.
-  echo "$NGINX_CONF already has a stream {} block this script didn't write; make sure it forwards port 80 to" \
-    "$GATEWAY_ADDRESS:80${HTTPS_LISTENER:+ and port 443 to $GATEWAY_ADDRESS:443} with proxy_protocol on, then re-run."
-else
-  if [[ ! -f "$NGINX_CONF.bak" ]]; then
-    echo "Backing up nginx.conf..."
-    sudo cp "$NGINX_CONF" "$NGINX_CONF.bak"
-  fi
-  echo "Writing nginx configuration..."
-  # The stream proxy takes port 80 (and 443) for the Gateway, so no http server may listen there.
-  disablePort80HttpServers
-  # Port 443 is only forwarded when the Gateway has an HTTPS listener (see HTTPS_LISTENER above).
-  HTTPS_SERVER=""
-  if [[ -n "$HTTPS_LISTENER" ]]; then
-    HTTPS_SERVER="
+  # Check if we've already written to this file before
+  if ! sudo grep -qxF "$NGINX_BEGIN" "$NGINX_CONF" && sudo grep -Eq '^[[:space:]]*stream[[:space:]]*\{' "$NGINX_CONF"; then
+    # Written by an earlier version of this script (without markers) or by hand: don't add a second stream block.
+    echo "$NGINX_CONF already has a stream {} block this script didn't write; make sure it forwards port 80 to" \
+      "$GATEWAY_ADDRESS:80${GATEWAY_TLS:+ and port 443 to $GATEWAY_ADDRESS:443} with proxy_protocol on, then re-run."
+  else
+    if [[ ! -f "$NGINX_CONF.bak" ]]; then
+      echo "Backing up nginx.conf..."
+      sudo cp "$NGINX_CONF" "$NGINX_CONF.bak"
+    fi
+    echo "Writing nginx configuration..."
+    # The stream proxy takes port 80 (and 443) for the Gateway, so no http server may listen there.
+    disablePort80HttpServers
+    # The shared Gateway's policy makes Envoy expect the PROXY header on both its ports. The chart's Gateways share one
+    # Envoy, and Envoy Gateway refuses a policy on the HTTP listeners of Gateways that share a port, so only their HTTPS
+    # listeners expect it (see the policies below): plain HTTP reaches Envoy without it, and shows nginx's address rather
+    # than the client's.
+    PROXY_PROTOCOL_80="
+        proxy_protocol on;"
+    if [[ "$GATEWAY_MODE" = "chart" ]]; then
+      PROXY_PROTOCOL_80=""
+    fi
+    # A host name with an AAAA record is tried over IPv6 first, by browsers and by Let's Encrypt alike, so listen there too
+    # when the host has IPv6.
+    LISTEN6_80=""
+    LISTEN6_443=""
+    if [[ -e /proc/net/if_inet6 && "`cat /proc/sys/net/ipv6/conf/all/disable_ipv6 2>/dev/null`" != "1" ]]; then
+      LISTEN6_80="
+        listen [::]:80;"
+      LISTEN6_443="
+        listen [::]:443;"
+    fi
+    # Port 443 is only forwarded when the Gateway has HTTPS listeners (see GATEWAY_TLS above).
+    HTTPS_SERVER=""
+    if [[ "$GATEWAY_TLS" = "true" ]]; then
+      HTTPS_SERVER="
     server {
-        listen 443;
+        listen 443;$LISTEN6_443
         proxy_pass $GATEWAY_ADDRESS:443;
         proxy_protocol on;
     }"
-  fi
-  # Replace the block from an earlier run (the Gateway's Service address may have changed).
-  sudo sed -i "/^$NGINX_BEGIN\$/,/^$NGINX_END\$/d" "$NGINX_CONF"
-  sudo tee -a "$NGINX_CONF" > /dev/null << EOF
+    fi
+    # Replace the block from an earlier run (the Gateway's Service address may have changed).
+    sudo sed -i "/^$NGINX_BEGIN\$/,/^$NGINX_END\$/d" "$NGINX_CONF"
+    sudo tee -a "$NGINX_CONF" > /dev/null << EOF
 $NGINX_BEGIN
 stream {
     server {
-        listen 80;
-        proxy_pass $GATEWAY_ADDRESS:80;
-        proxy_protocol on;
+        listen 80;$LISTEN6_80
+        proxy_pass $GATEWAY_ADDRESS:80;$PROXY_PROTOCOL_80
     }$HTTPS_SERVER
 }
 $NGINX_END
 EOF
-fi
-
-if sudo test -e /etc/nginx/sites-enabled/default; then
-  # Debian's default site listens on port 80. Kept aside so --uninstall can put it back.
-  sudo install -d -m 0755 "$STATE_DIR"
-  sudo mv /etc/nginx/sites-enabled/default "$STATE_DIR/sites-enabled-default"
-  recordInstalled nginx_default_site moved
-fi
-
-if ! sudo nginx -t; then
-  echo "The nginx configuration is invalid (see above). Fix $NGINX_CONF and re-run."
-  exit 1
-fi
-if ! sudo systemctl enable nginx >/dev/null 2>&1 || ! sudo systemctl restart nginx; then
-  echo "There was a problem restarting nginx reverse proxy. Whatever listens on port 80 or 443 now (another web server,"
-  echo "or a server block in /etc/nginx/conf.d/ or /etc/nginx/sites-enabled/ listening there) must be stopped or moved:"
-  sudo ss -ltnp '( sport = :80 or sport = :443 )'
-  exit 1
-fi
-echo "Checking the reverse proxy reaches $GATEWAY_NAME..."
-result=000
-startTime=`date +%s`
-while [[ $(( `date +%s` - startTime )) -lt 300 ]]; do
-  # Any HTTP answer (a 404 before the chart's routes exist) means nginx reaches Envoy and Envoy accepts its PROXY header.
-  result=`curl -s -o /dev/null -w "%{http_code}" http://localhost`
-  if [[ "$result" != "000" ]]; then
-    break
   fi
-  echo "Waiting for the reverse proxy..."
-  sleep 2
-done
-if [[ "$result" = "000" ]]; then
-  echo "There was a problem configuring nginx reverse proxy: http://localhost doesn't answer. Check the Envoy pods with"
-  echo "  kubectl -n $GATEWAY_NAMESPACE get pods -l gateway.envoyproxy.io/owning-gateway-name=$GATEWAY_NAME"
-  exit 1
+
+  if sudo test -e /etc/nginx/sites-enabled/default; then
+    # Debian's default site listens on port 80. Kept aside so --uninstall can put it back.
+    sudo install -d -m 0755 "$STATE_DIR"
+    sudo mv /etc/nginx/sites-enabled/default "$STATE_DIR/sites-enabled-default"
+    recordInstalled nginx_default_site moved
+  fi
+
+  if ! sudo nginx -t; then
+    echo "The nginx configuration is invalid (see above). Fix $NGINX_CONF and re-run."
+    exit 1
+  fi
+  if ! sudo systemctl enable nginx >/dev/null 2>&1 || ! sudo systemctl restart nginx; then
+    echo "There was a problem restarting nginx reverse proxy. Whatever listens on port 80 or 443 now (another web server,"
+    echo "or a server block in /etc/nginx/conf.d/ or /etc/nginx/sites-enabled/ listening there) must be stopped or moved:"
+    sudo ss -ltnp '( sport = :80 or sport = :443 )'
+    exit 1
+  fi
+  echo "Checking the reverse proxy reaches the Gateway..."
+  result=000
+  startTime=`date +%s`
+  while [[ $(( `date +%s` - startTime )) -lt 300 ]]; do
+    # Any HTTP answer but 400 (a 404 before the chart's routes exist) means nginx reaches Envoy and Envoy accepts its PROXY
+    # header. Envoy answers 400 when the header is sent and it isn't expecting one or the other way round, which is what
+    # it does until its Gateway's policy is applied.
+    result=`curl -s -o /dev/null -w "%{http_code}" http://localhost`
+    if [[ "$result" != "000" && "$result" != "400" ]]; then
+      break
+    fi
+    echo "Waiting for the reverse proxy..."
+    sleep 2
+  done
+  if [[ "$result" = "000" || "$result" = "400" ]]; then
+    if [[ "$result" = "400" ]]; then
+      echo "There was a problem configuring nginx reverse proxy: Envoy answers http://localhost with 400, so it doesn't accept"
+      echo "the PROXY protocol header nginx sends (or expects one it doesn't get). Check the ClientTrafficPolicies with"
+      echo "  kubectl get clienttrafficpolicy -A"
+    else
+      echo "There was a problem configuring nginx reverse proxy: http://localhost doesn't answer."
+    fi
+    echo "Check the Envoy pods with"
+    echo "  kubectl -n $ENVOY_NAMESPACE get pods -l $ENVOY_SELECTOR"
+    exit 1
+  fi
+  echo "Reverse proxy is setup."
+}
+
+# In "shared" mode the Gateway is already there; in "chart" mode it comes with the chart, so nginx is set up after it.
+if [[ "$GATEWAY_MODE" = "shared" ]]; then
+  run_step "Installing nginx reverse proxy"
+  configureNginx
 fi
-echo "Reverse proxy is setup."
 
 # The JWT secret (shared with the auth-server), the ingest secret (shared with postfix-bridge) and the cookie, session
 # and escrow audit keys. Whatever the release already uses is kept - in the vault or in Kubernetes Secrets - so neither a
@@ -1303,18 +1388,17 @@ chmod 600 "$VALUES_FILE"
   printf '  tls:\n    certManager:\n      enabled: %s\n' "$TLS"
 } > "$VALUES_FILE"
 
-# gateway.tls only when the Gateway has an HTTPS listener for $SERVER_HOST: the chart refuses TLS on a Gateway it doesn't own
-# without one.
-GATEWAY_TLS=false
-if [[ -n "$HTTPS_LISTENER" ]]; then
-  GATEWAY_TLS=true
-fi
 if ! helm status "$NAMESPACE" -n "$NAMESPACE" >/dev/null 2>&1; then
   RELEASE_NEW=true
 fi
-# Sign-in redirects browsers to authserver.host, and the auth-server subchart attaches its own HTTPRoute to
-# authserver.gateway.*, so both follow the shared Gateway too. gateway.hsts stays true (browsers ignore HSTS over plain
-# HTTP anyway): false renders a response header filter chart versions up to 1.0.0-beta.2 wrote for nginx-gateway only.
+# global.gateway is shared with the auth-server subchart, so both charts attach to the same Gateway ("shared") or each
+# make their own ("chart", where the name and namespace stay at their defaults). Sign-in redirects browsers to
+# authserver.host. global.gateway.hsts stays true (browsers ignore HSTS over plain HTTP anyway): false renders a response
+# header filter chart versions up to 1.0.0-beta.2 wrote for nginx-gateway only.
+GATEWAY_ARGS=(--set global.gateway.className="$GATEWAY_CLASS")
+if [[ "$GATEWAY_MODE" = "shared" ]]; then
+  GATEWAY_ARGS+=(--set global.gateway.name="$GATEWAY_NAME" --set global.gateway.namespace="$GATEWAY_NAMESPACE")
+fi
 # Where the release's secrets come from: the vault, or the Kubernetes Secrets the chart renders itself.
 OPENBAO_ARGS=(--set global.openbao.enabled=false)
 if [[ "$OPENBAO" = "true" ]]; then
@@ -1329,13 +1413,10 @@ if [[ "$OPENBAO" = "true" ]]; then
     --set openbao.pki.tokenSecret="$OPENBAO_PKI_SECRET")
 fi
 if ! helm upgrade --install --create-namespace --namespace "$NAMESPACE" "$NAMESPACE" "$CHART" "${CHART_VERSION_ARGS[@]}" \
-  --set global.domain="$DOMAIN" --set service.host="$SERVER_HOST" \
+  --set global.domain="$DOMAIN" --set host="$SERVER_HOST" --set service.host="$SERVER_HOST" \
   "${OPENBAO_ARGS[@]}" \
-  --set gateway.tls="$GATEWAY_TLS" --set gateway.hsts=true \
-  --set gateway.name="$GATEWAY_NAME" --set gateway.namespace="$GATEWAY_NAMESPACE" \
-  --set gateway.httpsListener="$HTTPS_LISTENER" --set gateway.authHttpsListener="$AUTH_HTTPS_LISTENER" \
-  --set authserver.host="$AUTH_HOST" --set authserver.gateway.tls="$GATEWAY_TLS" \
-  --set authserver.gateway.name="$GATEWAY_NAME" --set authserver.gateway.namespace="$GATEWAY_NAMESPACE" \
+  --set global.gateway.tls="$GATEWAY_TLS" --set global.gateway.hsts=true "${GATEWAY_ARGS[@]}" \
+  --set authserver.host="$AUTH_HOST" \
   -f "$VALUES_FILE"; then
   echo "There was a problem installing the RapidMX server."
   exit 1
@@ -1346,6 +1427,46 @@ fi
 rm -f "$VALUES_FILE"
 VALUES_FILE=""
 
+if [[ "$GATEWAY_MODE" = "chart" ]]; then
+  # The chart's own Gateways are up now. Like the shared one, their HTTPS listeners may only be reached through nginx,
+  # which sends the PROXY protocol header, so each Gateway's is told to expect it. (Not the HTTP ones: see configureNginx.)
+  # The shared Gateway of an earlier "shared" install is removed (its policy goes with it) so it stops holding on to the
+  # listeners' hostnames.
+  if [[ "`installedBy shared_gateway`" = "true" ]]; then
+    kubectl -n "$GATEWAY_NAMESPACE" delete clienttrafficpolicy "$GATEWAY_NAME-proxy-protocol" --ignore-not-found
+    kubectl -n "$GATEWAY_NAMESPACE" delete gateway "$GATEWAY_NAME" --ignore-not-found
+  fi
+  for gateway in `kubectl -n "$NAMESPACE" get gateway -o jsonpath='{.items[*].metadata.name}'`; do
+    if [[ "$GATEWAY_TLS" != "true" ]]; then
+      break
+    fi
+    if ! kubectl apply -f - << EOF
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: ClientTrafficPolicy
+metadata:
+  name: $gateway-proxy-protocol
+  namespace: $NAMESPACE
+spec:
+  targetRefs:
+  - group: gateway.networking.k8s.io
+    kind: Gateway
+    name: $gateway
+    sectionName: https
+  proxyProtocol: {}
+EOF
+    then
+      echo "There was a problem configuring the Gateway $gateway..."
+      exit 1
+    fi
+  done
+  waitForGatewayService
+  run_step "Installing nginx reverse proxy"
+  configureNginx
+else
+  # The chart no longer creates Gateways, so the policies an earlier "chart" install made for them have nothing to target.
+  kubectl -n "$NAMESPACE" delete clienttrafficpolicy --all --ignore-not-found >/dev/null
+fi
+
 # Stop background loop
 running=false
 if [[ -n "$progress_pid" ]]; then
@@ -1353,7 +1474,11 @@ if [[ -n "$progress_pid" ]]; then
 fi
 
 echo "Installation complete."
-echo "The server is at https://$SERVER_HOST, with sign-in at https://$AUTH_HOST."
+SCHEME=http
+if [[ "$GATEWAY_TLS" = "true" ]]; then
+  SCHEME=https
+fi
+echo "The server is at $SCHEME://$SERVER_HOST, with sign-in at $SCHEME://$AUTH_HOST."
 echo "Postfix listens on port 25 as $SERVER_HOST and sends mail for $MAIL_DOMAINS. Add each domain in the admin console"
 echo "and point its MX record at $SERVER_HOST to receive mail for it."
 if [[ "$OPENBAO" = "true" ]]; then

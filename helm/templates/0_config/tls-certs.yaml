@@ -4,22 +4,23 @@
 apiVersion: cert-manager.io/v1
 kind: Issuer
 metadata:
-name: {{ tpl $.Values.global.certmanager.name $ }}
+  name: {{ tpl $.Values.global.certmanager.name $ }}
 spec:
-acme:
-  server: https://acme-v02.api.letsencrypt.org/directory
-  email: {{ tpl $.Values.global.certmanager.email $ }}
-  privateKeySecretRef:
-    name: letsencrypt-issuer-key
-  solvers:
-  - http01:
-      gatewayHTTPRoute:
-        parentRefs:
-        - group: gateway.networking.k8s.io
-          kind: Gateway
-          name: {{ tpl $.Values.global.gateway.name $ }}
-          namespace: {{ tpl $.Values.global.gateway.namespace $ }}
-{{- end -}}
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: {{ tpl $.Values.global.certmanager.email $ }}
+    # Named after the Issuer so the auth-server subchart's own Issuer in this namespace has a separate ACME account key.
+    privateKeySecretRef:
+      name: {{ tpl $.Values.global.certmanager.name $ }}-account-key
+    solvers:
+    - http01:
+        gatewayHTTPRoute:
+          parentRefs:
+          - group: gateway.networking.k8s.io
+            kind: Gateway
+            name: {{ tpl $.Values.global.gateway.name $ }}
+            namespace: {{ tpl $.Values.global.gateway.namespace $ }}
+{{- end }}
 {{- $podTLS := eq (include "rrst.podTLS" $) "true" }}
 {{- if eq (include "rrst.certificate" $) "true" }}
 ---
@@ -62,6 +63,5 @@ spec:
   # Issuer references are always required.
   issuerRef:
     name: {{ tpl $.Values.global.certmanager.name $ }}
-    namespace: {{ tpl $.Values.global.certmanager.namespace $ }}
     kind: Issuer
 {{- end }}

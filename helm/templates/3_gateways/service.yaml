@@ -43,6 +43,24 @@ spec:
         from: All
   {{- end }}
 {{- end }}
+{{- if and (not $ownsGateway) $certificate (not $podTLS) }}
+---
+# The Gateway that terminates TLS for `host` lives in another namespace, so it may only read the certificate Secret in
+# this one because this says so.
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: {{ include "rrst.fullname" . }}-tls-cert
+spec:
+  from:
+  - group: gateway.networking.k8s.io
+    kind: Gateway
+    namespace: {{ tpl $.Values.global.gateway.namespace $ }}
+  to:
+  - group: ""
+    kind: Secret
+    name: {{ (include "rrst.render" (dict "value" $.Values.host "context" $)) }}-tls-cert
+{{- end }}
 ---
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
@@ -54,13 +72,21 @@ metadata:
   name: {{ include "rrst.fullname" . }}-httproute
 spec:
   parentRefs:
+  {{- if $ownsGateway }}
   - name: {{ tpl $.Values.global.gateway.name $ }}
     namespace: {{ tpl $.Values.global.gateway.namespace $ }}
     sectionName: http
-  {{- if and (not $podTLS) $ownsGateway $certificate }}
+  {{- if and (not $podTLS) $certificate }}
   - name: {{ tpl $.Values.global.gateway.name $ }}
     namespace: {{ $.Release.Namespace }}
     sectionName: https
+  {{- end }}
+  {{- else }}
+  # A Gateway this chart doesn't own (global.gateway.name/namespace) has listeners it names itself, so the route names
+  # none: it attaches to whichever listeners accept this hostname - the HTTP one and, once it has a certificate for
+  # `host`, the HTTPS one.
+  - name: {{ tpl $.Values.global.gateway.name $ }}
+    namespace: {{ tpl $.Values.global.gateway.namespace $ }}
   {{- end }}
   hostnames:
   - {{ (include "rrst.render" (dict "value" $.Values.host "context" $)) | quote }}

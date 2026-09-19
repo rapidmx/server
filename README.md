@@ -144,13 +144,15 @@ again on every upgrade. Cookie, session and escrow audit (`mail.escrow.auditHmac
 kept - which needs cluster access, so rendering the chart without it (`helm template`, Argo CD/Flux, `--dry-run`) fails
 until you set `cookies.secret`, `sessions.secret` and `mail.escrow.auditHmacKey` explicitly or point
 `secrets.existingSecret` at a Secret you manage. Outbound mail is relayed to postfix-bridge's `postfix`
-Service (`mail.relay.*`). Behind a Gateway this chart doesn't create, set `gateway.httpsListener` to the listener that
-terminates TLS for `host` with the `<host>-tls-cert` Secret (the render fails without it while `gateway.tls` is
-true; set `gateway.tls=false` to serve plain HTTP). The usual naming is `host: mail.<domain>` with
-`authserver.host: auth.<domain>` - with a public `host`, set `authserver.host`,
-the auth-server's public name that sign-in redirects to; on someone else's Gateway also set `authserver.gateway.name`
-and `authserver.gateway.namespace` to that Gateway and `gateway.authHttpsListener` to its HTTPS listener for that host
-(the render fails while these don't line up). Set `mail.trustedAuthservId` to the authserv-id your inbound MTA stamps:
+Service (`mail.relay.*`). By default the chart creates a Gateway for each of its hosts (`host` and
+`authserver.host`, `global.gateway.className`) and has cert-manager issue their certificates from an Issuer of its own
+(`global.certmanager.*`, Let's Encrypt over HTTP-01 through that Gateway); `global.gateway.tls=false` serves plain HTTP.
+To use one Gateway you already have, point `global.gateway.name` and `global.gateway.namespace` at it (the auth-server
+subchart shares them). The route names no listener, so it attaches to every listener there that accepts the host, and with
+TLS on the chart renders the ReferenceGrant that lets the Gateway read each `<host>-tls-cert` Secret in the release's
+namespace - the Gateway needs an HTTPS listener for each host that terminates TLS with that Secret. The usual naming is
+`host: mail.<domain>` with `authserver.host: auth.<domain>` - with a public `host`, set `authserver.host`, the
+auth-server's public name that sign-in redirects to. Set `mail.trustedAuthservId` to the authserv-id your inbound MTA stamps:
 while it's empty no sender is DKIM-verified, so members-only distribution lists drop all mail, list and forward-rule
 copies get a rewritten From, and forwarded invites are refused. `/api/metrics`
 requires a token with a trusted role, so scrape it with a bearer token rather than `prometheus.io/*` annotations.
@@ -219,10 +221,12 @@ environment, including ingress with TLS support. Simply run the script from any 
 ./single_node_install.sh --domain mail.example.com --email admin@example.com
 ```
 
-It installs k3s, helm, [Envoy Gateway](https://gateway.envoyproxy.io/) (a shared Gateway `envoy-gateway-system/shared-gateway`
-whose Service is only reachable inside the cluster), nginx on the host forwarding ports 80 and 443 to that Gateway with
-the PROXY protocol (so the server sees real client addresses), cert-manager with a Let's Encrypt `letsencrypt-prod`
-ClusterIssuer, and this chart. `--domain` is the mail domain (e.g. `example.com`): the server is served at
+It installs k3s, helm, [Envoy Gateway](https://gateway.envoyproxy.io/) (whose Service is only reachable inside the
+cluster), nginx on the host forwarding ports 80 and 443 to it with the PROXY protocol (so the server sees real client
+addresses), cert-manager, and this chart, which has cert-manager issue the Let's Encrypt certificates. By default
+(`--gateway shared`) the script creates one Gateway, `envoy-gateway-system/shared-gateway`, with an HTTPS listener per host
+and the chart's routes attach to it; with `--gateway chart` the chart creates a Gateway for each host itself, and the
+script merges them into one Envoy Service for nginx to forward to. `--domain` is the mail domain (e.g. `example.com`): the server is served at
 `mail.<domain>`, the auth-server at `auth.<domain>`, and mail is addressed `@<domain>`. `--mail-host` and `--auth-host`
 change those two names, as a label (`--mail-host rapidmx` gives `rapidmx.<domain>`) or a whole host name. Postfix
 listens on port 25 (through k3s' ServiceLB) as the server's host name and sends mail for
