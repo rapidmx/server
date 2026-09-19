@@ -20,11 +20,11 @@ Databases:
 {{- end }}
 
 JWT Auth:
-  Audience: {{ tpl .Values.auth.audience . }}
-  Issuer: {{ tpl .Values.auth.issuer . }}
-  ExpiresIn: {{ tpl .Values.auth.expiresIn . }}
-{{- if eq (include "server.vaultManagedSecrets" .) "true" }}
-  Secret: read from OpenBao at {{ include "server.vaultKvMount" . }}/{{ include "server.vaultSecretsPath" . }} (field
+  Audience: {{ tpl .Values.global.jwt.audience . }}
+  Issuer: {{ tpl .Values.global.jwt.issuer . }}
+  ExpiresIn: {{ tpl .Values.global.jwt.expiresIn . }}
+{{- if eq (include "rrst.vaultManagedSecrets" .) "true" }}
+  Secret: read from OpenBao at {{ include "rrst.vaultKvMount" . }}/{{ include "rrst.vaultSecretsPath" . }} (field
   auth_secret) and delivered by External Secrets into the "{{ include "rrst.fullname" . }}-jwt-auth" Secret. The bundled
   auth-server reads the same path, and an upgrade doesn't have to pass any of it.
 {{- else }}
@@ -38,7 +38,7 @@ JWT Auth:
 Mail transport: Postfix and postfix-bridge are installed with this release. Postfix listens on port 25 of the "postfix"
 Service ({{ dig "postfix" "serviceType" "LoadBalancer" .Values.postfixBridge }}) as {{ .Values.postfixBridge.hostname }} and sends mail for {{ .Values.postfixBridge.domains }} (postfixBridge.domains).
 It receives mail for the domains added in the admin console once their MX records point at it.
-{{- if eq (include "server.vaultManagedSecrets" .) "true" }}
+{{- if eq (include "rrst.vaultManagedSecrets" .) "true" }}
 Postfix authenticates to /internal/mta with the ingest secret OpenBao holds, which both sides read from the
 "{{ include "rrst.fullname" . }}-mail-ingest-secret" Secret, so an upgrade doesn't have to pass it.
 {{- else }}

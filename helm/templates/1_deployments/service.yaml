@@ -10,9 +10,8 @@ than leaving extra pods stuck in ContainerCreating on a Multi-Attach error.
 {{- if ne $.Values.mail.dkim.storage.accessMode "ReadWriteMany" }}
 {{- $rwoVolumes = append $rwoVolumes "mail.dkim.storage" }}
 {{- end }}
-{{- include "server.assertHost" $ }}
-{{- include "server.assertSuppliedSecrets" $ }}
-{{- include "server.assertPostfixBridge" $ }}
+{{- include "rapidmx.assertSuppliedSecrets" $ }}
+{{- include "rapidmx.assertPostfixBridge" $ }}
 {{- if ne $.Values.mail.pki.storage.accessMode "ReadWriteMany" }}
 {{- $rwoVolumes = append $rwoVolumes "mail.pki.storage" }}
 {{- end }}
@@ -52,36 +51,29 @@ spec:
         app.kubernetes.io/instance: {{ include "rrst.fullname" . }}-services
         environment: {{ $.Values.environment }}
         {{- /*
-        The Bitnami subcharts' NetworkPolicies admit pods labelled "<fullname>-client" when networkPolicy.allowExternal is
-        false (redis's is, see values.yaml) - without the label the redis-probe init container waits forever on any
-        cluster that enforces NetworkPolicy.
+        The Bitnami subcharts' NetworkPolicies admit pods labelled "<fullname>-client" when networkPolicy.allowExternal
+        is false - without the label the probe init containers wait forever on a cluster that enforces NetworkPolicy.
         */}}
         {{- if $.Values.redis.create }}
-        {{ $.Values.redis.fullnameOverride | default "redis" }}-client: "true"
+        {{   $.Values.redis.fullnameOverride | default "redis" }}-client: "true"
         {{- end }}
         {{- if $.Values.mongodb.create }}
-        {{ $.Values.mongodb.fullnameOverride | default "mongodb" }}-client: "true"
+        {{   $.Values.mongodb.fullnameOverride | default "mongodb" }}-client: "true"
         {{- end }}
         {{- if $.Values.postgresql.create }}
-        {{ $.Values.postgresql.fullnameOverride | default "postgresql" }}-client: "true"
+        {{   $.Values.postgresql.fullnameOverride | default "postgresql" }}-client: "true"
         {{- end }}
       annotations:
-        # No prometheus.io/scrape annotations: /api/metrics requires a token with a trusted role
-        # (service.config.metrics__authRequired), which annotation-based discovery can't send - configure a scrape job
-        # (or ServiceMonitor) with a bearer token for path /api/metrics on port 3000 instead.
-        # Roll the pods when their configuration or secrets change - they're only read at startup. service-config.yaml
-        # includes the service-db-info Secret; the database passwords themselves come from the subcharts' Secrets.
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "3000"
+        # Roll the pods when their configuration or secrets change - they're only read at startup.
         checksum/config: {{ include (print $.Template.BasePath "/0_config/service-config.yaml") . | sha256sum }}
-        checksum/secrets: {{ print (include (print $.Template.BasePath "/0_config/jwt-auth.yaml") .) (include (print $.Template.BasePath "/0_config/mail-ingest-secret.yaml") .) (include (print $.Template.BasePath "/0_config/service-secrets.yaml") .) (include (print $.Template.BasePath "/0_config/redis.yaml") .) | sha256sum }}
+        checksum/secrets: {{ print (include (print $.Template.BasePath "/0_config/jwt-auth.yaml") .) (include (print $.Template.BasePath "/0_config/service-secrets.yaml") .) (include (print $.Template.BasePath "/0_config/datastores.yaml") .) | sha256sum }}
     spec:
-      {{- with include "server.serviceAccountName" $ }}
+      {{- with include "rrst.serviceAccountName" $ }}
       # Only when one is configured (values.yaml's serviceAccount): an AWS IAM role through IRSA, for SES and the S3
       # blob backend. Otherwise the namespace's "default" ServiceAccount, as before.
       serviceAccountName: {{ . }}
-      {{- end }}
-      {{- if $.Values.service.imagePullSecret }}
-      imagePullSecrets:
-        - name: {{ $.Values.service.imagePullSecret }}
       {{- end }}
       # preStop sleep + the server's own drain (config shutdown.drain_delay_ms) + its stop timeout (shutdown.timeout_ms)
       # must fit in this.
@@ -90,51 +82,53 @@ spec:
       securityContext:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- if $.Values.service.imagePullSecret }}
+      imagePullSecrets:
+        - name: {{ $.Values.service.imagePullSecret }}
+      {{- end }}
       containers:
         - name: {{ include "rrst.name" . }}
           image: {{ $.Values.service.image.registry }}/{{ $.Values.service.image.repository }}:{{ $.Values.service.image.tag | default $.Chart.AppVersion }}
+          {{- with $.Values.service.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           {{- if eq ($.Values.service.image.tag | default $.Chart.AppVersion) "latest" }}
           imagePullPolicy: Always
           {{- else }}
           imagePullPolicy: IfNotPresent
           {{- end }}
           {{- /*
-          @rapidmx/server has separate, statically-imported entry points for each datastore backend
+          server has separate, statically-imported entry points for each datastore backend
           (server.mongo.ts/server.sql.ts) rather than one script that branches on env vars at runtime -
           the image's own default CMD (dist/src/server.js) is hardwired to Mongo, so this must be
           selected explicitly here or a postgresql.create:true install would silently run against Mongo
           config regardless of every datastore env var service-config.yaml/service-db-info correctly set
-          for Postgres - see docker-compose.mongo.yml/sql.yml's own identical fix.
+          for Postgres - see @rapidmx/server's own identical fix (docker-compose.mongo.yml/sql.yml and
+          its own helm chart).
           */}}
           {{- $entrypoint := ternary "dist/src/server.sql.js" "dist/src/server.mongo.js" $.Values.postgresql.create }}
           {{- /*
           `args` only, never `command`: `command` replaces the image's ENTRYPOINT (scripts/docker-entrypoint.sh), which
           writes the msmtp config PostfixSendmailTransport relays outbound mail through - without it every send fails.
           */}}
+          command: ["node"]
           {{- if ne $.Values.environment "production" }}
-          args: ["node", "--inspect=127.0.0.1:9229", {{ $entrypoint | quote }}]
+          args: ["--inspect=127.0.0.1:9229", {{ $entrypoint | quote }}]
           {{- else }}
-          args: ["node", {{ $entrypoint | quote }}]
-          {{- end }}
-          {{- with $.Values.service.securityContext }}
-          securityContext:
-            {{- toYaml . | nindent 12 }}
+          args: [{{ $entrypoint | quote }}]
           {{- end }}
           envFrom:
             - configMapRef:
                 name: {{ include "rrst.fullname" . }}-service-config
-            {{- if $.Values.redis.create }}
-            - secretRef:
-                name: db-redis-info
-            {{- end }}
             - secretRef:
                 name: {{ include "rrst.fullname" . }}-jwt-auth
             - secretRef:
                 name: {{ include "rrst.fullname" . }}-service-db-info
             - secretRef:
-                name: {{ include "rrst.fullname" . }}-mail-ingest-secret
+                name: {{ include "rrst.fullname" . }}-service-secrets
             - secretRef:
-                name: {{ .Values.secrets.existingSecret | default (printf "%s-service-secrets" (include "rrst.fullname" .)) }}
+                name: {{ include "rrst.fullname" . }}-mail-ingest-secret
             {{- if and (.Values.global.openbao.enabled) .Values.openbao.pki.enabled (include "rrst.render" (dict "value" .Values.openbao.pki.tokenSecret "context" .)) }}
             # The vault's PKI token (mail__pki__openbao__token), written by the install scripts or by you; the rest of
             # those settings come from the ConfigMap.
@@ -151,7 +145,6 @@ spec:
               value: {{ ternary "on" "off" (has (toString $.Values.mail.relay.tls) (list "true" "on")) | quote }}
             - name: SENDMAIL_FROM_ADDRESS
               value: {{ tpl $.Values.mail.relay.fromAddress $ | default (printf "mailer@%s" ($.Values.mail.mxHostname | default (include "rrst.render" (dict "value" $.Values.service.host "context" $)))) | quote }}
-            {{- include "server.datastoreEnv" . | trim | nindent 12 }}
           ports:
             - containerPort: 3000
           # Plugin changes restart the server process inside the container, one pod at a time (see
@@ -171,9 +164,8 @@ spec:
           livenessProbe:
             {{- toYaml . | nindent 12 }}
           {{- end }}
-          {{- if $.Values.service.preStopSleepSeconds }}
-          # Keeps serving while the endpoint is removed from the Service and the Gateway, before SIGTERM starts the
-          # server's own drain and stop.
+          {{- if gt (int $.Values.service.preStopSleepSeconds) 0 }}
+          # Keeps the pod serving while it's still being removed from the Gateway's endpoints.
           lifecycle:
             preStop:
               exec:
@@ -216,7 +208,7 @@ spec:
             claimName: {{ include "rrst.fullname" . }}-pki-data
       initContainers:
         {{- if $.Values.redis.create }}
-        {{- $redisHost := tpl $.Values.redis.url . | replace "redis://" "" }}
+        {{- $redisHost := (include "rrst.render" (dict "value" .Values.global.cache.url "context" $) | replace "redis://" "") }}
         - name: redis-probe
           image: busybox
           {{- with $.Values.service.securityContext }}
@@ -227,7 +219,7 @@ spec:
             - name: REDIS_HOST
               value: {{ $redisHost }}
           # A bare TCP check, not an authenticated PING: this only needs to confirm the datastore is
-          # reachable before the app starts, and avoids having to parse the password (see redis.yaml) back
+          # reachable before the app starts, and avoids having to parse the password (see datastores.yaml) back
           # out of a URL here too.
           command: ['sh', '-c', "until nc -z $REDIS_HOST 6379; do echo waiting for cache; sleep $(expr 2 + $RANDOM % 13); done"]
         {{- end }}

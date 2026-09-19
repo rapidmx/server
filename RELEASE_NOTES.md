@@ -7,7 +7,7 @@
 - **`host` is now `service.host`, derived from the new `global.domain`.** Set `global.domain` to the mail domain
   (`example.com`): the server is served at `mail.<domain>`, and Postfix HELOs as that name and sends mail for
   `<domain>`. `service.host` overrides the name itself, and the render fails with a pointer while the old `host` value
-  is still set. `authServer.host` still has to be set explicitly (`auth.<domain>`), because the auth-server subchart
+  is still set. `authserver.host` still has to be set explicitly (`auth.<domain>`), because the auth-server subchart
   reads its own `host` without rendering templates.
 - **JWT audience and issuer are now the domain and the auth-server host** (previously `mail-server-api` on both sides),
   so everyone signs in again after this upgrade - existing tokens no longer verify.

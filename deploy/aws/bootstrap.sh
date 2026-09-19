@@ -792,8 +792,8 @@ helm upgrade --install --create-namespace --namespace "$NAMESPACE" "$NAMESPACE" 
   --set gateway.tls="$GATEWAY_TLS" --set gateway.hsts=true \
   --set gateway.name="$GATEWAY_NAME" --set gateway.namespace="$GATEWAY_NAMESPACE" \
   --set gateway.httpsListener="$HTTPS_LISTENER" --set gateway.authHttpsListener="$AUTH_HTTPS_LISTENER" \
-  --set authServer.host="$AUTH_HOST" --set authServer.gateway.tls="$GATEWAY_TLS" \
-  --set authServer.gateway.name="$GATEWAY_NAME" --set authServer.gateway.namespace="$GATEWAY_NAMESPACE" \
+  --set authserver.host="$AUTH_HOST" --set authserver.gateway.tls="$GATEWAY_TLS" \
+  --set authserver.gateway.name="$GATEWAY_NAME" --set authserver.gateway.namespace="$GATEWAY_NAMESPACE" \
   -f "$VALUES_FILE" || fail "the RapidMX server chart failed to install."
 rm -f "$VALUES_FILE"
 VALUES_FILE=""

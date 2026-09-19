@@ -1,0 +1,82 @@
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ include "rrst.fullname" . }}-service-db-info
+type: Opaque
+data:
+{{- if (eq $.Values.global.database.type "sql" ) }}
+  {{- $postgresUser := "" }}
+  {{- $postgresPassword := "" }}
+  {{- $sqlHost := $.Values.service.datastores.postgresql.host | default $.Values.postgresql.fullnameOverride }}
+  {{- $sqlDatabase := include "rrst.render" (dict "value" $.Values.service.datastores.postgresql.name "context" $) }}
+  {{- if and $.Values.postgresql.create $.Values.postgresql.auth.enablePostgresUser }}
+  {{-   $postgresSecret := (lookup "v1" "Secret" $.Release.Namespace $.Values.postgresql.fullnameOverride) | default dict }}
+  {{-   $postgresSecretData := (get $postgresSecret "data") | default dict }}
+  {{-   $postgresUser = "postgres" }}
+  {{-   $postgresPassword = (get $postgresSecretData "postgres-password") | default "" | b64dec }}
+  {{- end }}
+  {{- if $.Values.global.database.url }}
+  datastores__acl__url: {{ include "rrst.render" (dict "value" .Values.global.database.url "user" $postgresUser "password" $postgresPassword "context" $) | b64enc | quote }}
+  datastores__sql__url: {{ include "rrst.render" (dict "value" .Values.global.database.url "user" $postgresUser "password" $postgresPassword "context" $) | b64enc | quote }}
+  {{- else if $postgresPassword }}
+  datastores__acl__url: {{ (printf "postgres://%s:%s@%s/%s" $postgresUser $postgresPassword $sqlHost $sqlDatabase) | b64enc | quote }}
+  datastores__sql__url: {{ (printf "postgres://%s:%s@%s/%s" $postgresUser $postgresPassword $sqlHost $sqlDatabase) | b64enc | quote }}
+  {{- else }}
+  datastores__acl__url: {{ (printf "postgres://%s/%s" $sqlHost $sqlDatabase) | b64enc | quote }}
+  datastores__sql__url: {{ (printf "postgres://%s/%s" $sqlHost $sqlDatabase) | b64enc | quote }}
+  {{- end }}
+  datastores__acl__type: {{ printf "postgres" | b64enc | quote }}
+  datastores__sql__type: {{ printf "postgres" | b64enc | quote }}
+{{- else }}
+  {{- $mongoRootUser := "" }}
+  {{- $mongoRootPassword := "" }}
+  {{- $mongoDatabase := include "rrst.render" (dict "value" $.Values.service.datastores.mongodb.mongo.name "context" $) | default "mongo" }}
+  {{- $mongoDatabaseACL := include "rrst.render" (dict "value" $.Values.service.datastores.mongodb.acl.name "context" $) | default "rrst_acls" }}
+  {{- $mongoHost := $.Values.service.datastores.mongodb.mongo.host | default $.Values.mongodb.fullnameOverride }}
+  {{- $mongoHostACL := $.Values.service.datastores.mongodb.acl.host | default $.Values.mongodb.fullnameOverride }}
+  {{- $mongoProtocol := "mongodb" }}
+  {{- if (eq $.Values.mongodb.architecture "replicaset") }}
+  {{-   $mongoProtocol := "mongodb+srv" }}
+  {{- end }}
+  {{- if and $.Values.mongodb.create $.Values.mongodb.auth.enabled }}
+  {{-   $mongoSecret := (lookup "v1" "Secret" $.Release.Namespace $.Values.mongodb.fullnameOverride) | default dict }}
+  {{-   $mongoSecretData := (get $mongoSecret "data") | default dict }}
+  {{-   $mongoRootUser = "root" }}
+  {{-   $mongoRootPassword = (get $mongoSecretData "mongodb-root-password") | default "" | b64dec }}
+  {{- end }}
+  {{- if $.Values.global.database.url }}
+  datastores__acl__url: {{ include "rrst.render" (dict "value" .Values.global.database.url "mongoProtocol" $mongoProtocol "host" $mongoHostACL "user" $mongoRootUser "password" $mongoRootPassword "context" $) | b64enc | quote }}
+  datastores__mongo__url: {{ include "rrst.render" (dict "value" .Values.global.database.url "mongoProtocol" $mongoProtocol "host" $mongoHost "user" $mongoRootUser "password" $mongoRootPassword "context" $) | b64enc | quote }}
+  {{- else if $mongoRootPassword }}
+  datastores__acl__options: {{ print "authSource=admin" | b64enc | quote }}
+  datastores__acl__url: {{ (printf "%s://%s:%s@%s/%s" $mongoProtocol $mongoRootUser $mongoRootPassword $mongoHostACL $mongoDatabaseACL) | b64enc | quote }}
+  datastores__mongo__options: {{ print "authSource=admin" | b64enc | quote }}
+  datastores__mongo__url: {{ (printf "%s://%s:%s@%s/%s" $mongoProtocol $mongoRootUser $mongoRootPassword $mongoHost $mongoDatabase) | b64enc | quote }}
+  {{- else }}
+  datastores__acl__url: {{ (printf "%s://%s/%s" $mongoProtocol $mongoHostACL $mongoDatabaseACL) | b64enc | quote }}
+  datastores__mongo__url: {{ (printf "%s://%s/%s" $mongoProtocol $mongoHost $mongoDatabase) | b64enc | quote }}
+  {{- end }}
+  datastores__acl__type: {{ printf "mongodb" | b64enc | quote }}
+  datastores__mongo__type: {{ printf "mongodb" | b64enc | quote }}
+{{- end }}
+{{- if $.Values.global.cache.enabled }}
+  {{- $redisPassword := "" }}
+  {{- if $.Values.redis.auth.enabled }}
+  {{-   $redisSecret := (lookup "v1" "Secret" $.Release.Namespace $.Values.redis.fullnameOverride) | default dict }}
+  {{-   $redisSecretData := (get $redisSecret "data") | default dict }}
+  {{-   $redisPassword = (get $redisSecretData "redis-password") | default "" | b64dec }}
+  {{- end }}
+  {{- $redisUrl := (include "rrst.render" (dict "value" .Values.global.cache.url "context" $)) }}
+  {{- if $redisPassword }}
+  {{-   $redisUrl = $redisUrl | replace "redis://" (printf "redis://:%s@" $redisPassword) }}
+  {{- end }}
+  datastores__cache__type: {{ print "redis" | b64enc | quote }}
+  datastores__cache__url: {{ $redisUrl | b64enc | quote }}
+  datastores__events__type: {{ print "redis" | b64enc | quote }}
+  datastores__events__url: {{ $redisUrl | b64enc | quote }}
+  datastores__events_publish__type: {{ print "redis" | b64enc | quote }}
+  datastores__events_publish__url: {{ $redisUrl | b64enc | quote }}
+  datastores__logs__type: {{ print "redis" | b64enc | quote }}
+  datastores__logs__url: {{ $redisUrl | b64enc | quote }}
+{{- end }}

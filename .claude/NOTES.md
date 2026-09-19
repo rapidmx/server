@@ -3444,7 +3444,7 @@ that repo's own NOTES.md too.
   `service.image.repository` now expects (`rapidmx/server`). Not otherwise investigated (no `gh` CLI here
   to check actual past run history) - worth confirming the next real tagged release actually publishes.
 - **Confirmed via `AskUserQuestion` before starting**: auth-server would be added as a real Helm chart
-  *dependency* (subchart, alias `authServer`) rather than hand-rolling a parallel Deployment/Service for
+  *dependency* (subchart, alias `authserver`) rather than hand-rolling a parallel Deployment/Service for
   it - auth-server already has its own complete, independently-publishable chart
   (`oci://ghcr.io/rapidrest/charts/auth-server`, confirmed via that repo's own ci.yml), identical scaffold
   to this one. This was flagged as a real fork (not a default judgment call) because doing it properly
@@ -3465,49 +3465,49 @@ that repo's own NOTES.md too.
   pointing its (now chart-qualified) HTTPRoute at the parent's own shared Gateway. This repo's own
   `3_gateways/api.yaml` also dropped its Gateway listeners' per-hostname restriction entirely (both
   `http`/`https`) so one shared Gateway can carry both this chart's own HTTPRoute (`host`) and
-  authServer's (`authServer.host`, a distinct `auth.<host>` subdomain - Kubernetes Gateway routing is
+  authserver's (`authserver.host`, a distinct `auth.<host>` subdomain - Kubernetes Gateway routing is
   hostname-based, unlike docker-compose's port-based `localhost:3001`) without either resource colliding.
   `redis.yaml`'s own `db-redis-info` Secret did NOT need this fix - it's already wrapped in
-  `{{- if $.Values.redis.create }}`, and `authServer.redis.create: false` (below) means it simply never
+  `{{- if $.Values.redis.create }}`, and `authserver.redis.create: false` (below) means it simply never
   renders for that subchart instance at all.
-- **A second, genuinely non-obvious Helm limitation hit while wiring `authServer`'s values**: subchart
+- **A second, genuinely non-obvious Helm limitation hit while wiring `authserver`'s values**: subchart
   values are a static YAML merge at chart-load time, not a live reference back to the parent's own
-  `.Values` - a `authServer.host: '{{ .Values.host }}'`-style override in this chart's own `values.yaml`
+  `.Values` - a `authserver.host: '{{ .Values.host }}'`-style override in this chart's own `values.yaml`
   does NOT resolve against *this* chart's `host`; it becomes a literal string that gets merged into
-  authServer's own values namespace, then (if and only if authServer's own template happens to wrap that
-  specific field in `tpl` at its point of use - not all of them do) re-evaluated against **authServer's
+  authserver's own values namespace, then (if and only if authserver's own template happens to wrap that
+  specific field in `tpl` at its point of use - not all of them do) re-evaluated against **authserver's
   own** `.Values.host` instead. Caught this before it shipped by tracing which fields each repo's
   templates actually `tpl`-wrap (`auth.audience`/`issuer`/`secret`, `cookies.secret`, `sessions.secret`,
   `gateway.name`/`namespace`, `redis.url`, everything inside `service.mongodb`/`service.postgresql` via
   the shared `rrst.render` helper - all safe to reference indirectly) versus which are read raw
   (`host`, `environment`, `gateway.tls`/`hsts`, `mongodb`/`redis`/`postgresql` `.create`/
   `.fullnameOverride` - NOT safe; a template-string value there is used exactly as-is, unparsed). Every
-  field in the `authServer:` block that needed to track this chart's own value is therefore a **plain
+  field in the `authserver:` block that needed to track this chart's own value is therefore a **plain
   literal**, kept in sync by comment rather than by reference - see `values.yaml`'s own extensive comment
   on this. One real behavioral consequence: `auth.audience`/`auth.issuer` were changed from this
   scaffold's original `'{{ .Values.host }}'`/`'api.{{ .Values.host }}'` defaults to a fixed logical
   identifier (`mail-server-api`, matching config.defaults.ts's own non-host-derived placeholder
-  convention) specifically so they can never drift from `authServer.auth.audience`/`issuer` just because
-  `host`/`authServer.host` differ - JWT verification fails outright the moment the two charts disagree on
+  convention) specifically so they can never drift from `authserver.auth.audience`/`issuer` just because
+  `host`/`authserver.host` differ - JWT verification fails outright the moment the two charts disagree on
   any of `audience`/`issuer`/`secret`, so this triplet is the one place where "keep two literals in sync
   by hand" was judged too fragile and a host-independent constant was used instead.
-- **`auth.secret`/`authServer.auth.secret` are now a fixed literal (`MyPasswordIsSecure`, matching
+- **`auth.secret`/`authserver.auth.secret` are now a fixed literal (`MyPasswordIsSecure`, matching
   `DEFAULT_AUTH_SECRET`) instead of this scaffold's original `{{ randAlphaNum 32 }}`** - two independent
   per-chart random generations would never actually produce the same secret, and there is no `global`-
   values or other live-sharing mechanism between a parent and a subchart's own random value. The app's own
   `assertProductionSecretsAreSet()` already refuses to boot with this exact default in a real
   (`NODE_ENV=production`) deployment, so this doesn't weaken the existing safety net - it just means the
-  operator overrides BOTH `auth.secret` and `authServer.auth.secret` together (documented in `values.yaml`)
+  operator overrides BOTH `auth.secret` and `authserver.auth.secret` together (documented in `values.yaml`)
   rather than being able to rely on `--set`-free random generation the way `cookies.secret`/`sessions.secret`
   (which don't need to match anything) still do.
-- **Sharing infrastructure, not creating a second copy**: `authServer.mongodb.create`/`redis.create`/
+- **Sharing infrastructure, not creating a second copy**: `authserver.mongodb.create`/`redis.create`/
   `postgresql.create` are all `false`, with `fullnameOverride` set to an identical literal copy of this
   chart's own (`mongodb`/`db-redis`/`postgresql`) - auth-server's own `service-config.yaml`/`redis.yaml`
   templates do a `lookup` for datastore credentials keyed by that exact resource name, so with matching
   `fullnameOverride`s they transparently find and reuse the credentials this chart's own mongodb/redis
   subcharts already created, no changes needed to those templates at all. Separate logical databases per
   app (`rapidmx_server_mongo`/`_acls` vs `rapidmx_auth_mongo`/`_acls`, mirroring docker-compose's own
-  naming) via `service.mongodb.*`/`authServer.service.mongodb.*` - this chart's own defaults were also
+  naming) via `service.mongodb.*`/`authserver.service.mongodb.*` - this chart's own defaults were also
   renamed from the vestigial `access_control_lists`/`rrst_auth` to match.
 - **New mail-flow stack, mirroring docker-compose.mail.yml service-for-service**: `1_deployments/
   {postfix,rspamd,clamav,mta-bridge}.yaml` + `2_services/mail-services.yaml`. `mta-bridge` reuses the main
@@ -3542,18 +3542,18 @@ that repo's own NOTES.md too.
   Also replaced a stale comment (referencing `process.env.datastores__sql__url` runtime branching that
   doesn't exist in `@rapidmx/server` - only in whatever this scaffold was originally copied from) with an
   accurate one.
-- **Known, accepted, not-fixed-this-session gap**: `authServer`'s own `redis-probe`/`mongo-probe` init
-  containers are gated on `$.Values.redis.create`/`mongodb.create` - since `authServer.redis.create`/
-  `mongodb.create` are `false` (sharing this chart's own instances), authServer's pod does **not** wait
+- **Known, accepted, not-fixed-this-session gap**: `authserver`'s own `redis-probe`/`mongo-probe` init
+  containers are gated on `$.Values.redis.create`/`mongodb.create` - since `authserver.redis.create`/
+  `mongodb.create` are `false` (sharing this chart's own instances), authserver's pod does **not** wait
   for either to be ready before starting, unlike this chart's own main service Deployment (whose own
   probes still gate on its own `redis.create`/`mongodb.create`, both `true`, so it still waits correctly).
-  A real startup race is possible on a fresh install (authServer's pod starting before mongodb/redis are
+  A real startup race is possible on a fresh install (authserver's pod starting before mongodb/redis are
   actually accepting connections) - the app's own DB client retry/reconnect behavior would need to carry
   it through the first few seconds. Not fixed - would need either a cross-chart-aware probe mechanism or a
-  patch to authServer's own init-container conditions keyed on something other than its own
+  patch to authserver's own init-container conditions keyed on something other than its own
   (now-suppressed) `.create` flags, more surgery than this session's scope covered.
 - **Also flagged, not fixed**: auth-server's own chart has this exact same `server.js`-always-Mongo
-  command-selection bug in its own `1_deployments/service.yaml` - harmless in THIS integration (authServer
+  command-selection bug in its own `1_deployments/service.yaml` - harmless in THIS integration (authserver
   is only ever pointed at Mongo here, matching this chart's own default), but a latent bug for anyone using
   auth-server's chart standalone with `postgresql.create: true`. Out of scope for this session (belongs to
   that repo, and doesn't affect the current default configuration) - noted here and in that repo's own
@@ -3566,7 +3566,7 @@ that repo's own NOTES.md too.
   not just guess at their shape - reverted `Chart.yaml`/`Chart.lock`/`charts/*.tgz` back to the committed
   state afterward (the `.tgz` files are gitignored regardless). Confirmed via a small Node.js script
   (`js-yaml`, already a transitive dependency) that all 46 rendered resources across a full `helm template`
-  pass have zero duplicate `(kind, namespace, name)` triples - both with `authServer.create` true and
+  pass have zero duplicate `(kind, namespace, name)` triples - both with `authserver.create` true and
   false, and with `postgresql.create`/`mongodb.create` toggled - and spot-checked that `auth__secret`/
   `auth__options__audience`/`issuer` render byte-identical between the two charts, that the Gateway/
   Certificate/HTTPRoute resources come out non-colliding for both hostnames, and that
@@ -4902,11 +4902,11 @@ Fixed from a third verified review plus a cross-repo contract review (A-F below)
 `.yarn/patches` untouched (restapi is changing concurrently). Every finding was confirmed in code first.
 
 **Behaviour changes to know about**
-- **Helm now requires secrets.** `global.authSecret` (feeds both `auth.secret` and `authServer.auth.secret`, which must
+- **Helm now requires secrets.** `global.authSecret` (feeds both `auth.secret` and `authserver.auth.secret`, which must
   match) and `mail.ingestSecret` are required; the render fails when empty or still `MyPasswordIsSecure` /
   `ChangeMeIngestSecret` (`server.requiredSecret` helper). `single_node_install.sh` reuses the in-cluster secrets or
   generates new ones with `openssl rand`. README install commands updated.
-- **Helm `environment` (and `authServer.environment`) default `production`** (was `dev`). Not verified against the
+- **Helm `environment` (and `authserver.environment`) default `production`** (was `dev`). Not verified against the
   auth-server image: if auth-server needs more secrets in production, a default install will crash-loop there.
 - **Helm `service.replicas` default 1** (was 2) - see finding 5.
 - **Server secret guard**: `assertProductionSecretsAreSet(config, process.env.NODE_ENV)` now enforces real secrets unless
@@ -4929,7 +4929,7 @@ Fixed from a third verified review plus a cross-repo contract review (A-F below)
    `_helpers.tpl`. docker-compose: README documents them as local evaluation, so kept `NODE_ENV=dev` and bound every
    published port to `127.0.0.1` (mongo/sql/mail/openbao/override/debug). `src/config.defaults.ts`.
 2. jwt-auth lookup preferring the stored secret: removed - JWT secret is always the supplied value (nothing is
-   generated). Generated values (cookie/session) use lookup only when no explicit value (`server.persistedSecret`).
+   generated). Generated values (cookie/session) use lookup only when no explicit value (`rrst.persistedSecret`).
    **The auth-server subchart's own jwt-auth.yaml still prefers its stored secret** (same bug, other repo): rotating
    `global.authSecret` on an existing install won't reach auth-server until its Secret is deleted. Follow-up there.
 3. `/internal` publicly routed: HTTPRoute gets a `PathPrefix /internal` rule with no backendRefs/filters (Gateway API:
@@ -4954,7 +4954,7 @@ Fixed from a third verified review plus a cross-repo contract review (A-F below)
    Risk documented in values.yaml, config.sql/mongo.ts and a new README "Upgrading" section (TypeORM may drop/recreate a
    column whose type changed - back up before upgrading). Real fix is migrations.
 8. TLS: `tls` moved from the HTTPRoute (invalid field) to the Gateway `https` listener with certificateRefs for `host`
-   and `authServer.host`; route attaches to `https`; separate `-https-redirect` HTTPRoute (301) on `http`. Only when
+   and `authserver.host`; route attaches to `https`; separate `-https-redirect` HTTPRoute (301) on `http`. Only when
    `server.tlsEnabled` (gateway.tls and host not localhost/*.local - the same condition tls-certs.yaml issues a
    certificate under); otherwise plain http as before. cors/public URLs use that same condition. **The auth-server
    subchart's HTTPRoute still has the invalid `tls:` field and attaches to `http` only** - follow-up in that chart
@@ -4994,7 +4994,7 @@ Fixed from a third verified review plus a cross-repo contract review (A-F below)
 **Cross-repo contract findings**
 - A. `service.config.metrics: true` became env `metrics=true`, replacing `@Config("metrics", {authRequired: true})` with
   `true` -> `/api/metrics` public. Now `metrics__authRequired: true`; unused `logs`/`releaseNotes` removed (nothing reads
-  them). Same fix in `authServer.service.config`. The `prometheus.io/scrape` annotation stays, but scraping needs a token
+  them). Same fix in `authserver.service.config`. The `prometheus.io/scrape` annotation stays, but scraping needs a token
   with a trusted role now.
 - B. Mongo defaults `url: mongodb://localhost:9999/acls` / `port: 9999` beat the Helm-rendered host/database -> removed;
   `rapidrest dev` and the tests set `datastores__*__url`. SQL config had no such default (checked).
@@ -5017,7 +5017,7 @@ Also fixed on the way: mail-storage PVCs compared the untemplated `storageClassN
 rewrites it; re-running Server.mongo.test.ts alone passed with no unhandled errors. `helm lint ./helm` passes (it
 tolerates the `required` failures); `helm template` fails without the secrets, fails with the old defaults, fails for
 replicas 2 with RWO storage, and renders for: secrets set; replicas 2 + s3 + RWX; explicit auth.secret +
-authServer.auth.secret; postgresql + s3 + environment dev; a TLS host (Gateway https listener + redirect route checked);
+authserver.auth.secret; postgresql + s3 + environment dev; a TLS host (Gateway https listener + redirect route checked);
 synchronize=false; a service.config override of mail__booking__public_url (no duplicate key). `docker compose config -q`
 for mongo(+debug)/sql/openbao. `docker build` succeeded; the image booted on an isolated docker network (no published
 ports) with Mongo + Redis and real secrets -> `/api/status` 200, `require('pg')` works, no vite/vitest/tsx/nodemon/rapidrest
@@ -5059,16 +5059,16 @@ Every finding was confirmed against the code before fixing. Nothing committed, n
 6. **HIGH installer TLS** - chart: `server.tlsEnabled` now means "a listener serves HTTPS for host": the chart's own
    Gateway, or `gateway.httpsListener` set for someone else's. Otherwise routes attach to `http` with no redirect and
    public URLs are http. With `gateway.httpsListener` and a Gateway in another namespace, tls-certs.yaml renders a
-   ReferenceGrant for `<host>-tls-cert` (plus `<authServer.host>-tls-cert` with `gateway.authHttpsListener`). Installer:
+   ReferenceGrant for `<host>-tls-cert` (plus `<authserver.host>-tls-cert` with `gateway.authHttpsListener`). Installer:
    HTTPS listener (hostname + certificateRefs to `$NAMESPACE/$DOMAIN-tls-cert`) only when TLS=true and DOMAIN isn't
    localhost/*.local, passes `gateway.httpsListener`, and the nginx stream block only forwards 443 when that NodePort
    exists (it would have written `proxy_pass 127.0.0.1:;` otherwise). The ReferenceGrant is in the chart rather than the
    installer, since it must live in the release namespace, which doesn't exist yet when the installer applies the Gateway.
-7. **MEDIUM SNI** - own Gateway: `https` (hostname host) and `https-auth` (hostname authServer.host), one cert each. The
+7. **MEDIUM SNI** - own Gateway: `https` (hostname host) and `https-auth` (hostname authserver.host), one cert each. The
    auth-server subchart's HTTPRoute only attaches to `http` (and carries an invalid `tls` field - other repo), so this
    chart adds `<release>-auth-https` routing `https-auth` to the subchart Service; `mail__auth_server_url` is https only
    when that listener exists.
-8. **MEDIUM GitOps secrets** - `"server.assertStableSecrets"`: when any of cookies.secret/sessions.secret/
+8. **MEDIUM GitOps secrets** - `"rrst.assertStableSecrets"`: when any of cookies.secret/sessions.secret/
    mail.escrow.auditHmacKey would be generated and `lookup "v1" "Namespace" "" "default"` is empty, fail via `required`
    (so `helm lint` still passes). New `secrets.existingSecret` skips the generated Secret. Caveat: a real install whose
    RBAC forbids reading Namespaces fails the lookup itself.
@@ -5084,7 +5084,7 @@ Every finding was confirmed against the code before fixing. Nothing committed, n
     via `withTimeout()`; `stopServer`'s own `pluginHost.stop()` is bounded the same way in all three workers.
 12. **LOW dev auto-login** - `isRunningUnderYarnDev()` requires NODE_ENV in `DEVELOPMENT_ENVIRONMENTS` (`rapidrest dev`
     sets `development`).
-13. **LOW `.local`** - `"server.publicHost"`: not `localhost`, `*.localhost`, `*.local` (hasSuffix). The auth listener
+13. **LOW `.local`** - `"rrst.publicHost"`: not `localhost`, `*.localhost`, `*.local` (hasSuffix). The auth listener
     still mirrors the subchart's own `contains ".local"` check, since the subchart decides whether its cert exists.
 14. **LOW** - `mongodb.create` + `postgresql.create` -> render fails.
 15. **LOW telemetry** - `telemetryTokenRenewIntervalMs()` caps at 2^31-1 ms.
@@ -5092,8 +5092,8 @@ Every finding was confirmed against the code before fixing. Nothing committed, n
     in `<release>-service-secrets`; compose `mail__escrow__audit_hmac_key=${ESCROW_AUDIT_HMAC_KEY:-}`; README table.
     prometheus.io annotations removed (metrics need a bearer token; no ServiceMonitor added).
 
-Also found: with the `authServer` alias the subchart named its resources `rmx-authServer-*` (uppercase, invalid Kubernetes
-names). Fixed with `authServer.nameOverride: auth-server` in values.yaml.
+Also found: with the `authserver` alias the subchart named its resources `rmx-authserver-*` (uppercase, invalid Kubernetes
+names). Fixed with `authserver.nameOverride: auth-server` in values.yaml.
 
 **Coordinator add-on - applySqlDriverColumnTypes**: not in the installed restapi dist yet, so `src/lib/sqlColumnTypes.ts`
 reads it off the `@rapidmx/restapi/sql` namespace (typechecks either way; on mysql/mariadb logs an error while missing).
@@ -5133,7 +5133,7 @@ restapi/react-shared/web-client dependencies untouched. (`junit.xml` is rewritte
 1. **HIGH Redis unreachable** - the Bitnami Redis NetworkPolicy (`allowExternal: false` in values.yaml) only admits
    `db-redis-client: "true"` pods. The server pod template now carries `<fullnameOverride>-client: "true"` for each
    bundled redis/mongodb/postgresql. The auth-server subchart has no pod-label value, so `redis.networkPolicy.extraIngress`
-   admits `app: auth-server` pods in the release namespace on 6379 (tied to `authServer.nameOverride`; comment says so).
+   admits `app: auth-server` pods in the release namespace on 6379 (tied to `authserver.nameOverride`; comment says so).
    MongoDB and PostgreSQL subcharts default to `allowExternal: true` and values.yaml doesn't override it, so no trap
    there (the client label is inert until someone flips it - auth-server would then need the same extraIngress).
 2. **HIGH installer** (`single_node_install.sh`, reviewed end to end) - fixed `"SKIP_K3S"` (missing `$`), the nginx wait
@@ -5187,7 +5187,7 @@ restapi/react-shared/web-client dependencies untouched. (`junit.xml` is rewritte
 10. **MEDIUM external Gateway TLS** - `server.httpsListener` fails the render when `gateway.tls` is true, `host` can get a
     certificate, the chart doesn't own the Gateway and `gateway.httpsListener` is empty (message says to set it or
     `gateway.tls=false`). values.yaml and README updated.
-11. **MEDIUM namespace-scoped RBAC** - `server.assertStableSecrets` probes the release namespace's `kube-root-ca.crt`
+11. **MEDIUM namespace-scoped RBAC** - `rrst.assertStableSecrets` probes the release namespace's `kube-root-ca.crt`
     ConfigMap first, then the `default` Namespace only when that's empty (e.g. `--create-namespace` renders before the
     namespace exists). Helm's `lookup` errors on Forbidden, so the cluster-scoped probe must not come first.
 12. **MEDIUM service.config secrets** - service-secrets.yaml treats `service.config.cookie_secret` / `session__secret` /
@@ -5205,7 +5205,7 @@ restapi/react-shared/web-client dependencies untouched. (`junit.xml` is rewritte
 pod runs `npm install` of the recorded plugin set without a lockfile, so two pods (or a restart) can resolve different
 transitive versions.
 
-Verified: `helm template` (mongo, postgresql, public host with TLS on/off, redis+authServer off, external Gateway
+Verified: `helm template` (mongo, postgresql, public host with TLS on/off, redis+authserver off, external Gateway
 with/without httpsListener, localhost on an external Gateway, service.config-seeded secrets, partial/none secrets failing)
 and `helm lint` for the same combinations; NOTES.txt rendered via a scratch copy as a template; `bash -n` + shellcheck on
 the installer plus a local run of its getopt, YAML quoting and nginx marker-replacement snippets; `npx tsc --noEmit -p
@@ -5236,18 +5236,18 @@ and yarn.lock are the coordinator's (patch refresh to restapi a662869). `single_
 uncommitted Envoy Gateway rework, so installer fixes were delivered as a patch against that working copy instead of
 edited in place (scratchpad `single_node_install.round6.patch`, not in the repo).
 
-1. **HIGH sign-in after install** - confirmed: the installer never set `authServer.host` (stayed `auth.localhost`) or
-   `authServer.gateway.*` (subchart HTTPRoute attached to `api-gateway` in the release namespace, which doesn't exist on a
+1. **HIGH sign-in after install** - confirmed: the installer never set `authserver.host` (stayed `auth.localhost`) or
+   `authserver.gateway.*` (subchart HTTPRoute attached to `api-gateway` in the release namespace, which doesn't exist on a
    shared Gateway). The user's working copy also passed `gateway.namespace=nginx-gateway` while the Gateway now lives in
    `envoy-gateway-system`, and had dropped `HTTPS_LISTENER` (TLS never enabled; the static `https` listener had no
    certificateRefs). Installer patch: `https` (hostname `$DOMAIN`) and `https-auth` (hostname `auth.$DOMAIN`, only when
    it doesn't contain `.local`, mirroring the subchart's cert condition) listeners with certificateRefs to
-   `$NAMESPACE/<host>-tls-cert`; helm gets `authServer.host`, `authServer.gateway.name/namespace`, `authServer.gateway.tls`,
+   `$NAMESPACE/<host>-tls-cert`; helm gets `authserver.host`, `authserver.gateway.name/namespace`, `authserver.gateway.tls`,
    `gateway.authHttpsListener`, and `gateway.namespace=envoy-gateway-system`. Chart: the subchart evaluates its own
-   `host`/`gateway.*` and the parent can't pass values down, so defaulting `authServer.host` from the parent isn't
+   `host`/`gateway.*` and the parent can't pass values down, so defaulting `authserver.host` from the parent isn't
    possible - instead `server.assertAuthServerRouting` (included from 3_gateways/api.yaml) fails the render when `host`
-   is public but `authServer.host` isn't, or when the chart doesn't own the Gateway and `authServer.gateway.name/namespace`
-   (parent `.Values.authServer` is coalesced with the subchart defaults - verified) differ from `gateway.*`.
+   is public but `authserver.host` isn't, or when the chart doesn't own the Gateway and `authserver.gateway.name/namespace`
+   (parent `.Values.authserver` is coalesced with the subchart defaults - verified) differ from `gateway.*`.
 2. **MEDIUM RHEL nginx** - confirmed (stock nginx.conf `server { listen 80; listen [::]:80; }` in http{}). Patch:
    `disablePort80HttpServers` (awk, brace-depth aware) comments out http-level server blocks listening on 80 with the
    `#rapidmx-server# ` prefix, `nginx -t` before restart, `ss` output on a failed restart. Also fixed in the same block:
@@ -5276,9 +5276,9 @@ edited in place (scratchpad `single_node_install.round6.patch`, not in the repo)
    stored (so nothing needs deleting). A failing hold lookup counts as held (kept and recorded; RetentionEnforcementJob
    clears it once no hold). One lookup per request, so no cache was needed.
 8. **Investigation (no change)** - auth-server's `jwt`/`refresh` cookies come from `@rapidrest/auth` `TokenUtils.buildCookie()`:
-   `SameSite=Lax` by default (explicit attribute), HttpOnly, Secure, no `Domain` (host-only on authServer.host).
+   `SameSite=Lax` by default (explicit attribute), HttpOnly, Secure, no `Domain` (host-only on authserver.host).
    auth-server's config.mongo/sql.ts set no `sameSite`, and neither chart overrides it. The server accepts the `jwt`
-   cookie (`auth.cookie.enabled`), but only receives it when authServer.host equals host. A cross-site `text/plain`
+   cookie (`auth.cookie.enabled`), but only receives it when authserver.host equals host. A cross-site `text/plain`
    POST carries no Lax cookie, so it isn't exploitable; a same-site origin (a sibling subdomain of the same registrable
    domain) could still send one. service-core's own session cookie also defaults to Lax.
 
@@ -5289,8 +5289,8 @@ edited in place (scratchpad `single_node_install.round6.patch`, not in the repo)
   `gateway.hsts=true` because Envoy Gateway has no such CRD. The chart itself is still nginx-specific there.
 
 Verified: `npx tsc --noEmit` for tsconfig.json and tsconfig.client.json, `yarn lint`, full `yarn vitest run` 335/335
-(exit 0, coverage gates pass); `helm lint` and `helm template` for localhost, public host without/with authServer.host,
-external Gateway without/with authServer.gateway.*, cluster.local on the shared Gateway, authServer.create=false,
+(exit 0, coverage gates pass); `helm lint` and `helm template` for localhost, public host without/with authserver.host,
+external Gateway without/with authserver.gateway.*, cluster.local on the shared Gateway, authserver.create=false,
 postgresql; NOTES.txt warning rendered for unset/set/service.config; installer patch: `git apply --check` against a
 copy of the working-tree script (applies cleanly, result identical), `bash -n`, shellcheck 0.11 `-S warning` (no new
 warnings; one SC2024 disabled with a reason), and harness runs of the awk against the stock Fedora nginx.conf
@@ -5571,7 +5571,7 @@ Starting point: the user's merged Envoy Gateway working copy (backup: session sc
   standard `ResponseHeaderModifier` removing Strict-Transport-Security (no `NginxHTTPRoute`).
 - auth-server (`D:/github/RapidREST/auth-server`, uncommitted, needs a release and the server's dependency bump):
   the HTTPRoute's invalid `tls:` block removed (with a strict field validation it would reject installs with
-  `authServer.gateway.tls=true`, which the installer sets for https CORS and the certificate); the chart-owned Gateway's
+  `authserver.gateway.tls=true`, which the installer sets for https CORS and the certificate); the chart-owned Gateway's
   https listener gets its certificateRefs and the route attaches to it; same className/hsts changes. The server's
   `helm/charts/auth-server-1.0.0-beta.1.tgz` is still the old package.
 
@@ -5812,7 +5812,7 @@ s/// delimiter) was found. Nothing was run against real AWS - no account was use
   `--domain` (and `RAPIDMX_DOMAIN`) is now the *mail domain*, e.g. example.com: the server is `mail.<domain>`, the
   auth-server `auth.<domain>`, mail is addressed `@<domain>`, Let's Encrypt registers `admin@<domain>`, Postfix HELOs as
   `mail.<domain>` and its sender domains default to `<domain>`. `--host`/`--auth-host` (`RAPIDMX_SERVER_HOST`/
-  `RAPIDMX_AUTH_HOST`) override the two host names; the chart's `host`/`authServer.host` are unchanged, this is only
+  `RAPIDMX_AUTH_HOST`) override the two host names; the chart's `host`/`authserver.host` are unchanged, this is only
   what the installers pass. CloudFormation's `Domain` parameter is the mail domain too, and its outputs and Route 53
   records follow. The default `--domain cluster.local` now means mail.cluster.local / auth.cluster.local.
 - **BootstrapUrl** defaults to `main` (the tagged releases predate `deploy/aws`), documented as something to pin to a
@@ -5822,7 +5822,7 @@ s/// delimiter) was found. Nothing was run against real AWS - no account was use
   doesn't provide (no NAT, no endpoints); that gap is documented, not solved.
 
 Verified: `bash -n` and shellcheck clean on both scripts; harness runs of single_node_install.sh (`--domain example.com`
--> helm `host=mail.example.com`, `authServer.host=auth.example.com`, Gateway listeners for both, postfixBridge
+-> helm `host=mail.example.com`, `authserver.host=auth.example.com`, Gateway listeners for both, postfixBridge
 hostname mail.example.com with domains example.com) and of deploy/aws/bootstrap.sh (same hosts, summary and Route 53
 records); `cfn-lint` clean apart from the two SubnetId warnings.
 
@@ -5835,22 +5835,22 @@ Replaces the half-measure in the previous entry (a `--domain` that was the serve
   `rrst.render` helper (`include "rrst.render" (dict "value" $.Values.service.host "context" $)`) - no host-specific
   helper, which was a first attempt JP corrected. `server.assertHost`, included with the other asserts in
   1_deployments/service.yaml, fails with a pointer when the old `host` value is set and requires service.host.
-  `auth.audience` is the domain and `auth.issuer` is `{{ .Values.authServer.host }}`, mirrored under `authServer.auth`
+  `auth.audience` is the domain and `auth.issuer` is `{{ .Values.authserver.host }}`, mirrored under `authserver.auth`
   as `{{ .Values.host }}` (the subchart's own host), so both sides always agree - including when the auth host is
   overridden. `postfixBridge.hostname`/`domains` default to `mail.<domain>`/`<domain>` (the 1.1.0 subchart tpl's them).
-- **authServer.host stays a literal** (`auth.localhost`, set explicitly by the installers): the auth-server subchart
+- **authserver.host stays a literal** (`auth.localhost`, set explicitly by the installers): the auth-server subchart
   reads its own `host` without `tpl`, so a templated default would render as the literal template text in its Gateway
   and certificate. Its `auth.audience`/`auth.issuer` ARE tpl'd, which is why the claims can be templates. Making
   `host` tpl-able in that chart would let this default from `global.domain` too - not done.
 - **Installers:** `--domain`/`RAPIDMX_DOMAIN` is the mail domain; `--mail-host`/`--auth-host`
   (`RAPIDMX_MAIL_HOST`/`RAPIDMX_AUTH_HOST`) take a label ("rapidmx" -> rapidmx.<domain>) or a whole host name
-  (`hostFor()`, which switches on a dot). They pass `global.domain`, `service.host` and `authServer.host`.
+  (`hostFor()`, which switches on a dot). They pass `global.domain`, `service.host` and `authserver.host`.
   CloudFormation has `MailHost`/`AuthHost` parameters, constrained to a single label because its outputs build
   `<label>.<domain>` and the template can't test for a dot.
 - ACME registration is `admin@<domain>` (it was `admin@<the host's parent>`).
 
 Verified: `helm lint`; `helm template` with `global.domain=example.com` - audience `example.com` and issuer
-`auth.example.com` on both sides, and issuer `rapidrest.example.com` on both when `authServer.host` is overridden;
+`auth.example.com` on both sides, and issuer `rapidrest.example.com` on both when `authserver.host` is overridden;
 mx_hostname, auth_server_url, Postfix HELO and sender domains all follow; the old `host` value fails with the pointer.
 Installer harness with `--mail-host rapidmx --auth-host rapidrest` (helm gets rapidmx./rapidrest., Gateway listeners
 match) and its captured values rendered against the chart; bootstrap harness with `RAPIDMX_MAIL_HOST=rapidmx`.
@@ -5877,7 +5877,7 @@ delivery through External Secrets (not the agent injector).
   being required (`server.assertSuppliedSecrets`).
 - **Cross-chart sharing:** the server publishes its vault's coordinates in `global.openbao`
   (address/kvMount/secretsPath/tokenSecret, all templates the subchart renders), and the auth-server chart uses them
-  instead of bundling its own vault (`auth-server.usesParentVault`). Both then read the same `auth_secret`, which is
+  instead of bundling its own vault (`rrst.usesParentVault`). Both then read the same `auth_secret`, which is
   what keeps signing and verification in step - the reason the auth-server chart couldn't just generate its own.
 - **postfix-bridge** gained `ingestSecretRef` (uncommitted, needs a 1.2.0 release): with the secret in the vault there
   is no value to hand it, so it reads the server's Secret instead. The server chart pins the dependency to 1.2.0 and
@@ -5906,7 +5906,7 @@ installers and add a flag to toggle installation, just like cert-manager". This 
   Secrets) is in the cluster; the scripts know, because they just put it there.
 - **Charts only consume a vault now.** The `openbao` dependency, `openbao.create` and `templates/4_vault/openbao.yaml`
   (init Job + unsealer) are gone from both charts, along with the helpers that generated their shell
-  (`openbaoInitScript`/`openbaoStoreScript`/`openbaoSeedSpec`, `server.externalVault`, `auth-server.usesParentVault`/
+  (`openbaoInitScript`/`openbaoStoreScript`/`openbaoSeedSpec`, `server.externalVault`, `rrst.usesParentVault`/
   `bundlesVault`/`vaultTokenSecret`). What's left is `global.openbao` (enabled/address/kvMount/secretsPath/auth) plus
   the SecretStore and ExternalSecrets, in both charts - `auth-server` gained the same `auth.method: token|kubernetes`
   choice the server had. The server keeps `openbao.pki.{enabled,mount,role,tokenSecret}`; an empty `tokenSecret` keeps

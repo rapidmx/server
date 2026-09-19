@@ -1,22 +1,19 @@
-{{- if ne (include "server.vaultManagedSecrets" .) "true" }}
+{{- if ne (include "rrst.vaultManagedSecrets" .) "true" }}
 ---
 apiVersion: v1
 kind: Secret
 metadata:
-  # Chart-name-qualified (not bare "jwt-auth") - matches authServer's own identical fix, needed since
-  # both charts' jwt-auth Secrets now coexist in one release.
+  # Chart-name-qualified (not bare "jwt-auth") so a parent chart depending on this one as a subchart
+  # doesn't have its own jwt-auth Secret collide with this one under the same literal resource name.
   name: {{ include "rrst.fullname" . }}-jwt-auth
 type: Opaque
 data:
-  {{- /*
-  Always the value supplied now (auth.secret, by default taken from global.authSecret): it has to equal auth-server's
-  signing secret, so there's nothing to generate, and a value stored by an earlier release must never win over an
-  explicit new one (that made rotating the secret silently do nothing).
-  */}}
-  {{- $jwtSecret := include "server.requiredSecret" (dict "value" (tpl .Values.auth.secret .) "name" "auth.secret (or global.authSecret)" "defaults" (list "MyPasswordIsSecure")) }}
-  auth__options__audience: {{ tpl .Values.auth.audience . | b64enc | quote }}
-  auth__options__issuer: {{ tpl .Values.auth.issuer . | b64enc | quote }}
-  auth__options__expiresIn: {{ tpl .Values.auth.expiresIn . | b64enc | quote }}
-  auth__password: {{ $jwtSecret | b64enc | quote }}
-  auth__secret: {{ $jwtSecret | b64enc | quote }}
+  {{- $secret := (lookup "v1" "Secret" .Release.Namespace (printf "%s-jwt-auth" (include "rrst.fullname" .))) | default dict }}
+  {{- $secretData := (get $secret "data") | default dict }}
+  {{- /* Generated once and kept: the stored value wins over the default, an explicit auth.secret wins over both. */}}
+  {{- $jwtSecret := include "rrst.persistedSecret" (dict "value" .Values.global.jwt.secret "stored" $secretData "context" .) | quote }}
+  auth__options__audience: {{ include "rrst.render" ( dict "value" .Values.global.jwt.audience "context" $) | b64enc | quote }}
+  auth__options__issuer: {{ include "rrst.render" ( dict "value" .Values.global.jwt.issuer "context" $) | b64enc | quote }}
+  auth__options__expiresIn: {{ include "rrst.render" ( dict "value" .Values.global.jwt.expiresIn "context" $) | b64enc | quote }}
+  auth__secret: {{ $jwtSecret }}
 {{- end }}

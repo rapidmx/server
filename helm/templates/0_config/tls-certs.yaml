@@ -1,20 +1,42 @@
-{{- if eq (include "server.certificateEnabled" $) "true" }}
+{{- $ownsIssuer := and (eq (printf "%s-issuer" (include "rrst.fullname" .)) (tpl $.Values.global.certmanager.name $)) (eq $.Release.Namespace (tpl $.Values.global.certmanager.namespace $)) }}
+{{- if $ownsIssuer }}
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+name: {{ tpl $.Values.global.certmanager.name $ }}
+spec:
+acme:
+  server: https://acme-v02.api.letsencrypt.org/directory
+  email: {{ tpl $.Values.global.certmanager.email $ }}
+  privateKeySecretRef:
+    name: letsencrypt-issuer-key
+  solvers:
+  - http01:
+      gatewayHTTPRoute:
+        parentRefs:
+        - group: gateway.networking.k8s.io
+          kind: Gateway
+          name: {{ tpl $.Values.global.gateway.name $ }}
+          namespace: {{ tpl $.Values.global.gateway.namespace $ }}
+{{- end -}}
+{{- if and $.Values.global.gateway.tls (ne (include "rrst.render" (dict "value" $.Values.host "context" $)) "localhost") (not (contains ".local" (include "rrst.render" (dict "value" $.Values.host "context" $)))) }}
 ---
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
-  name: {{ (include "rrst.render" (dict "value" $.Values.service.host "context" $)) }}
+  name: {{ (include "rrst.render" (dict "value" $.Values.host "context" $)) }}
   namespace: {{ $.Release.Namespace }}
 spec:
-  secretName: {{ (include "rrst.render" (dict "value" $.Values.service.host "context" $)) }}-tls-cert
+  secretName: {{ (include "rrst.render" (dict "value" $.Values.host "context" $)) }}-tls-cert
   duration: 2160h # 90d
   renewBefore: 360h # 15d
   subject:
     organizations:
-      - RapidMX
+      - RapidREST
   # The use of the common name field has been deprecated since 2000 and is
   # discouraged from being used.
-  commonName: {{ (include "rrst.render" (dict "value" $.Values.service.host "context" $)) }}
+  commonName: {{ (include "rrst.render" (dict "value" $.Values.host "context" $)) }}
   isCA: false
   privateKey:
     algorithm: ECDSA
@@ -25,36 +47,10 @@ spec:
     - client auth
   # At least one of a DNS Name, URI, or IP address is required.
   dnsNames:
-  - {{ (include "rrst.render" (dict "value" $.Values.service.host "context" $)) }}
+  - {{ (include "rrst.render" (dict "value" $.Values.host "context" $)) }}
   # Issuer references are always required.
   issuerRef:
-    name: letsencrypt-prod
-    # We can reference ClusterIssuers by changing the kind here.
-    # The default value is Issuer (i.e. a locally namespaced Issuer)
-    kind: ClusterIssuer
-{{- end }}
-{{- $httpsListener := include "server.httpsListener" $ }}
-{{- $gatewayNamespace := tpl $.Values.gateway.namespace $ }}
-{{- if and $httpsListener (ne (include "server.ownsGateway" $) "true") (ne $gatewayNamespace $.Release.Namespace) }}
----
-# A Gateway in another namespace (gateway.namespace) may only use this release's certificate Secret with this grant.
-apiVersion: gateway.networking.k8s.io/v1beta1
-kind: ReferenceGrant
-metadata:
-  name: {{ include "rrst.fullname" . }}-tls-cert
-  namespace: {{ $.Release.Namespace }}
-spec:
-  from:
-  - group: gateway.networking.k8s.io
-    kind: Gateway
-    namespace: {{ $gatewayNamespace }}
-  to:
-  - group: ""
-    kind: Secret
-    name: {{ (include "rrst.render" (dict "value" $.Values.service.host "context" $)) }}-tls-cert
-  {{- if include "server.authHttpsListener" $ }}
-  - group: ""
-    kind: Secret
-    name: {{ (include "rrst.render" (dict "value" $.Values.authServer.host "context" $)) }}-tls-cert
-  {{- end }}
+    name: {{ tpl $.Values.certmanager.name $ }}
+    namespace: {{ tpl $.Values.certmanager.namespace $ }}
+    kind: Issuer
 {{- end }}

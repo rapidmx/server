@@ -2,151 +2,22 @@
 kind: ConfigMap
 apiVersion: v1
 metadata:
-  # Chart-name-qualified (not bare "service-config") so a parent chart depending on this one as a
-  # subchart (or, for this chart, a chart depending on THIS one) - each with its own, genuinely
-  # different config values - doesn't have one silently overwrite the other's ConfigMap under the same
-  # literal resource name.
   name: {{ include "rrst.fullname" . }}-service-config
 data:
-  # cookie_secret/session__secret live in the service-secrets Secret (service-secrets.yaml).
   NODE_ENV: "{{ $.Values.environment }}"
-  {{- $publicScheme := ternary "https" "http" (eq (include "server.tlsEnabled" $) "true") }}
-  {{- $publicUrl := include "server.publicUrl" $ }}
-  {{- $config := $.Values.service.config | default dict }}
-  {{- $corsHosts := list "http://localhost:3000" (printf "%s://%s" $publicScheme (include "rrst.render" (dict "value" $.Values.service.host "context" $))) }}
-  cors__origins: {{ $corsHosts | toJson | quote }}
-  # Which proxies' X-Forwarded-For is trusted for the client's address (per-IP rate limits) - see values.yaml's
-  # service.trustedProxies.
-  trusted_proxies: {{ $.Values.service.trustedProxies | default list | toJson | quote }}
-  # Whether the server creates/updates its database schema from its models on startup - see values.yaml's
-  # service.datastores.synchronize.
-  {{- $synchronize := ternary "true" "false" (ne (toString $.Values.service.datastores.synchronize) "false") }}
-  datastores__acl__synchronize: {{ $synchronize | quote }}
-  {{- if $.Values.postgresql.create }}
-  datastores__sql__synchronize: {{ $synchronize | quote }}
-  {{- else }}
-  datastores__mongo__synchronize: {{ $synchronize | quote }}
+  {{- $schemes := list "http" }}
+  {{- if .Values.global.gateway.tls }}
+  {{-   $schemes = ternary (list "https") (list "http" "https") .Values.global.gateway.hsts }}
   {{- end }}
-  # Where message bodies/attachments are stored - see values.yaml's mail.blob.backend.
-  mail__blob__backend: {{ $.Values.mail.blob.backend | quote }}
-  {{- if and ($.Values.global.openbao.enabled) $.Values.openbao.pki.enabled (include "rrst.render" (dict "value" $.Values.openbao.pki.tokenSecret "context" $)) }}
-  # The encryption CA lives in the OpenBao this cluster already runs; the token itself comes from the Secret named in
-  # openbao.pki.tokenSecret (see 1_deployments/service.yaml).
-  mail__pki__backend: "openbao"
-  mail__pki__openbao__address: {{ include "server.openbaoAddress" $ | quote }}
-  mail__pki__openbao__mount: {{ $.Values.openbao.pki.mount | quote }}
-  mail__pki__openbao__role: {{ $.Values.openbao.pki.role | quote }}
+  {{- $hosts := concat (dig "corsHosts" list ($.Values.global | default dict)) (list $.Values.host) }}
+  {{- $origins := list }}
+  {{- range $host := $hosts }}
+  {{-   range $scheme := $schemes }}
+  {{-     $origins = append $origins (printf "%s://%s" $scheme (include "rrst.render" (dict "value" $host "context" $)) | quote) }}
+  {{-   end }}
   {{- end }}
-  # Which MailTransport sends outbound mail, and SES's own settings when it's the one - see values.yaml's
-  # mail.transport. The AWS credentials SES needs come from the pod's IAM role, never from config.
-  mail__transport__provider: {{ $.Values.mail.transport.provider | quote }}
-  {{- if $.Values.mail.transport.ses.region }}
-  mail__transport__ses__region: {{ tpl $.Values.mail.transport.ses.region $ | quote }}
-  {{- end }}
-  {{- if $.Values.mail.transport.ses.configurationSet }}
-  mail__transport__ses__configuration_set: {{ tpl $.Values.mail.transport.ses.configurationSet $ | quote }}
-  {{- end }}
-  # Public URLs derived from `host`, unless set explicitly under service.config: links in the booking plugin's emails
-  # (its mail:booking:public_url setting, where this environment variable wins over the value saved in the admin
-  # console), the base URL the autodiscover plugin advertises to mail clients, and the MX hostname (read-receipt
-  # Reporting-UA, domain DNS checks).
-  {{- if not (hasKey $config "mail__booking__public_url") }}
-  mail__booking__public_url: {{ printf "%s/book" $publicUrl | quote }}
-  {{- end }}
-  {{- if not (hasKey $config "mail__autodiscover__public_url") }}
-  mail__autodiscover__public_url: {{ $publicUrl | quote }}
-  {{- end }}
-  {{- if not (hasKey $config "mail__dns__mx_hostname") }}
-  mail__dns__mx_hostname: {{ $.Values.mail.mxHostname | default (include "rrst.render" (dict "value" $.Values.service.host "context" $)) | quote }}
-  {{- end }}
-  {{- if and $.Values.mail.trustedAuthservId (not (hasKey $config "mail__security__trusted_authserv_id")) }}
-  mail__security__trusted_authserv_id: {{ $.Values.mail.trustedAuthservId | quote }}
-  {{- end }}
-  # Browser-facing: apps/www's/apps/admin's unauthenticated-redirect and this service's own SSR both
-  # resolve auth-server through this URL, so it must be reachable from the visitor's browser, not just
-  # from inside the cluster - hence the authServer subdomain host, not a Service DNS name. Only rendered
-  # when authServer is actually enabled; set mail__auth_server_url directly via service.config otherwise.
-  {{- if $.Values.authServer.create }}
-  mail__auth_server_url: {{ printf "%s://%s" (ternary "https" "http" (or (ne (include "server.authHttpsListener" $) "") (and (eq (include "rrst.render" (dict "value" $.Values.authServer.host "context" $)) (include "rrst.render" (dict "value" $.Values.service.host "context" $))) (eq $publicScheme "https")))) (include "rrst.render" (dict "value" $.Values.authServer.host "context" $)) | quote }}
-  {{- end }}
+  cors__origins: {{ $origins | toJson | quote }}
+  trusted_proxies: {{ $.Values.global.trustedProxies | default list | toJson | quote }}
   {{- range $k, $v := $.Values.service.config }}
-  {{- if kindIs "string" $v }}
-  {{ $k }}: {{ tpl $v $ | quote }}
-  {{- else if kindIs "slice" $v }}
-  {{ $k }}: {{ $v | toJson | quote }}
-  {{- else if kindIs "map" $v }}
-  {{ $k }}: {{ $v | toJson | quote }}
-  {{- else }}
-  {{ $k }}: {{ $v | quote }}
-  {{- end }}
-  {{- end }}
----
-apiVersion: v1
-kind: Secret
-metadata:
-  # Chart-name-qualified - see the ConfigMap above for why.
-  name: {{ include "rrst.fullname" . }}-service-db-info
-type: Opaque
-data:
-  {{- /*
-  The bundled databases' passwords are not read here: on a fresh install their Secrets don't exist yet when this renders
-  (`lookup` finds nothing), so they reach the pod as secretKeyRef env vars instead - see "server.datastorePasswordEnv" in
-  1_deployments/service.yaml. Only the parts that don't need the password are rendered here.
-  */}}
-  {{- $mongoAuth := and $.Values.mongodb.create $.Values.mongodb.auth.enabled }}
-  {{- $postgresAuth := and $.Values.postgresql.create $.Values.postgresql.auth.enablePostgresUser }}
-  {{- if $.Values.mongodb.create }}
-  datastores__acl__database: {{ include "rrst.render" (dict "value" $.Values.service.mongodb.acl.name "context" $) | b64enc | quote }}
-  datastores__acl__host: {{ include "rrst.render" (dict "value" $.Values.service.mongodb.acl.host "context" $) | default (printf "%s" $.Values.mongodb.fullnameOverride) | b64enc | quote }}
-  datastores__acl__type: {{ print "mongodb" | b64enc | quote }}
-  {{- if $.Values.mongodb.url }}
-  datastores__acl__url: {{ (include "rrst.render" (dict "value" $.Values.mongodb.url "context" $) | b64enc | quote) }}
-  {{- else if $.Values.service.mongodb.acl.url }}
-  datastores__acl__url: {{ (include "rrst.render" (dict "value" $.Values.service.mongodb.acl.url "context" $) | b64enc | quote) }}
-  {{- else if $mongoAuth }}
-  datastores__acl__username: {{ $.Values.mongodb.auth.rootUser | default "root" | b64enc | quote }}
-  datastores__acl__options: {{ print "authSource=admin" | b64enc | quote }}
-  {{- end }}
-  datastores__mongo__database: {{ include "rrst.render" (dict "value" $.Values.service.mongodb.mongo.name "context" $) | b64enc | quote }}
-  datastores__mongo__host: {{ include "rrst.render" (dict "value" $.Values.service.mongodb.mongo.host "context" $) | default (printf "%s" $.Values.mongodb.fullnameOverride) | b64enc | quote }}
-  datastores__mongo__type: {{ print "mongodb" | b64enc | quote }}
-  {{- if $.Values.mongodb.url }}
-  datastores__mongo__url: {{ include "rrst.render" (dict "value" $.Values.mongodb.url "context" $) | b64enc | quote }}
-  {{- else if $.Values.service.mongodb.mongo.url }}
-  datastores__mongo__url: {{ include "rrst.render" (dict "value" $.Values.service.mongodb.mongo.url "context" $) | b64enc | quote }}
-  {{- else if $mongoAuth }}
-  datastores__mongo__username: {{ $.Values.mongodb.auth.rootUser | default "root" | b64enc | quote }}
-  datastores__mongo__options: {{ print "authSource=admin" | b64enc | quote }}
-  {{- end }}
-  {{- else if $.Values.postgresql.create }}
-  datastores__acl__database: {{ include "rrst.render" (dict "value" $.Values.service.postgresql.acl.name "context" $) | b64enc | quote }}
-  datastores__acl__host: {{ include "rrst.render" (dict "value" $.Values.service.postgresql.acl.host "context" $) | default (printf "%s" $.Values.postgresql.fullnameOverride) | b64enc | quote }}
-  datastores__acl__type: {{ print "postgres" | b64enc | quote }}
-  {{- if $.Values.postgresql.url }}
-  datastores__acl__url: {{ (include "rrst.render" (dict "value" $.Values.postgresql.url "context" $) | b64enc | quote) }}
-  {{- else if $.Values.service.postgresql.acl.url }}
-  datastores__acl__url: {{ (include "rrst.render" (dict "value" $.Values.service.postgresql.acl.url "context" $) | b64enc | quote) }}
-  {{- else if $postgresAuth }}
-  datastores__acl__username: {{ print "postgres" | b64enc | quote }}
-  {{- end }}
-  datastores__sql__type: {{ print "postgres" | b64enc | quote }}
-  {{- /*
-  Unlike acl above, sql must always end up with a `url` key here regardless of how the rest of these
-  datastore fields are set - PostgresFullTextSearchProvider and other sql-only wiring read it directly,
-  and 1_deployments/service.yaml's own command/args selects server.sql.js vs server.mongo.js from
-  postgresql.create/mongodb.create directly (not by sniffing this env var - @rapidmx/server's
-  server.mongo.ts/server.sql.ts are separate, statically-imported entry points, not one script that
-  branches on env vars at runtime).
-  */}}
-  {{- $sqlHost := include "rrst.render" (dict "value" $.Values.service.postgresql.sql.host "context" $) | default (printf "%s" $.Values.postgresql.fullnameOverride) }}
-  {{- $sqlDatabase := include "rrst.render" (dict "value" $.Values.service.postgresql.sql.name "context" $) }}
-  {{- if $.Values.postgresql.url }}
-  datastores__sql__url: {{ include "rrst.render" (dict "value" $.Values.postgresql.url "context" $) | b64enc | quote }}
-  {{- else if $.Values.service.postgresql.sql.url }}
-  datastores__sql__url: {{ include "rrst.render" (dict "value" $.Values.service.postgresql.sql.url "context" $) | b64enc | quote }}
-  {{- else if $postgresAuth }}
-  {{- /* datastores__sql__url itself is an env var in 1_deployments/service.yaml, built around the secretKeyRef password. */}}
-  {{- else }}
-  datastores__sql__url: {{ (printf "postgres://%s/%s" $sqlHost $sqlDatabase) | b64enc | quote }}
-  {{- end }}
+  {{ $k }}: {{ include "rrst.render" (dict "value" $v "context" $) | quote }}
   {{- end }}

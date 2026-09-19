@@ -9,7 +9,7 @@ metadata:
 spec:
   accessModes:
     - {{ .Values.mail.dkim.storage.accessMode }}
-  {{- with include "server.pvcStorageClass" (dict "name" (printf "%s-dkim-keys" (include "rrst.fullname" .)) "value" .Values.mail.dkim.storage.storageClassName "context" .) }}
+  {{- with include "rapidmx.pvcStorageClass" (dict "name" (printf "%s-dkim-keys" (include "rrst.fullname" .)) "value" .Values.mail.dkim.storage.storageClassName "context" .) }}
   {{ . }}
   {{- end }}
   resources:
@@ -27,7 +27,7 @@ metadata:
 spec:
   accessModes:
     - {{ .Values.mail.blob.storage.accessMode }}
-  {{- with include "server.pvcStorageClass" (dict "name" (printf "%s-blob-data" (include "rrst.fullname" .)) "value" .Values.mail.blob.storage.storageClassName "context" .) }}
+  {{- with include "rapidmx.pvcStorageClass" (dict "name" (printf "%s-blob-data" (include "rrst.fullname" .)) "value" .Values.mail.blob.storage.storageClassName "context" .) }}
   {{ . }}
   {{- end }}
   resources:
@@ -46,7 +46,7 @@ metadata:
 spec:
   accessModes:
     - {{ .Values.mail.pki.storage.accessMode }}
-  {{- with include "server.pvcStorageClass" (dict "name" (printf "%s-pki-data" (include "rrst.fullname" .)) "value" .Values.mail.pki.storage.storageClassName "context" .) }}
+  {{- with include "rapidmx.pvcStorageClass" (dict "name" (printf "%s-pki-data" (include "rrst.fullname" .)) "value" .Values.mail.pki.storage.storageClassName "context" .) }}
   {{ . }}
   {{- end }}
   resources:

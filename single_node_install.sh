@@ -42,10 +42,6 @@ OPENBAO_KEYS_SECRET=openbao-keys
 OPENBAO_KV_MOUNT=${OPENBAO_KV_MOUNT:-secret}
 OPENBAO_PKI_MOUNT=${OPENBAO_PKI_MOUNT:-pki}
 OPENBAO_PKI_ROLE=${OPENBAO_PKI_ROLE:-rapidmx-encryption}
-GATEWAY_NAMESPACE=envoy-gateway-system
-GATEWAY_NAME=shared-gateway
-# Let's Encrypt account email for the ClusterIssuer. Defaults to admin@<domain> (a bare host name isn't a valid domain).
-ACME_EMAIL=${ACME_EMAIL:-}
 # Comma-separated domains Postfix accepts outbound mail from (postfixBridge.domains). Defaults to --domain.
 MAIL_DOMAINS=""
 UNINSTALL=false
@@ -344,12 +340,6 @@ function firewallOpenPort() {
       fi
       ;;
   esac
-}
-
-# Reads field $1 (a jsonpath) of the Service Envoy Gateway created for the shared Gateway.
-function gatewayService() {
-  kubectl -n "$GATEWAY_NAMESPACE" get svc -o jsonpath="{.items[0]$1}" 2>/dev/null \
-    -l "gateway.envoyproxy.io/owning-gateway-name=$GATEWAY_NAME,gateway.envoyproxy.io/owning-gateway-namespace=$GATEWAY_NAMESPACE"
 }
 
 # The secrets the chart needs, reused from an existing install so a re-run never rotates them: re-keying would sign every
@@ -653,20 +643,6 @@ function uninstall() {
       echo "Removing cert-manager..."
       helm uninstall cert-manager -n cert-manager
     fi
-    if [[ "`installedBy shared_gateway`" = "true" ]]; then
-      echo "Removing $GATEWAY_NAME..."
-      kubectl -n "$GATEWAY_NAMESPACE" delete clienttrafficpolicy "$GATEWAY_NAME-proxy-protocol" --ignore-not-found
-      kubectl -n "$GATEWAY_NAMESPACE" delete gateway "$GATEWAY_NAME" --ignore-not-found
-    fi
-    if [[ "`installedBy envoy_gateway_class`" = "true" ]]; then
-      echo "Removing the envoy GatewayClass..."
-      kubectl delete gatewayclass envoy --ignore-not-found
-      kubectl -n "$GATEWAY_NAMESPACE" delete envoyproxy bare-metal-proxy --ignore-not-found
-    fi
-    if [[ "`installedBy envoy_gateway`" = "true" ]]; then
-      echo "Removing envoy-gateway..."
-      helm uninstall eg -n "$GATEWAY_NAMESPACE"
-    fi
   fi
 
   local nginxInstalledBy
@@ -777,7 +753,6 @@ do
           echo -e "\t--uninstall\t\tUninstalls what this script installed (recorded in $STATE_FILE)"
           echo "Environment:"
           echo -e "\tCHART\t\t\tThe chart to install (default $CHART), e.g. ./helm for a local checkout"
-          echo -e "\tENVOY_GATEWAY_VERSION\tThe envoy-gateway release to install (default $ENVOY_GATEWAY_VERSION)"
           echo -e "\tEXTERNAL_SECRETS_VERSION\tThe external-secrets release to install (default $EXTERNAL_SECRETS_VERSION)"
           echo -e "\tOPENBAO_VERSION\t\tThe openbao chart to install (default $OPENBAO_VERSION)"
           echo -e "\tOPENBAO_ADDRESS\t\tAn OpenBao this cluster already runs, used instead of installing one"
@@ -950,6 +925,22 @@ else
     exit 1
   fi
   recordInstalled helm "$HELM_INSTALLED_BY"
+fi
+
+# Install cert-manager
+run_step "Installing cert-manager"
+
+if ! helm status cert-manager -n cert-manager >/dev/null 2>&1; then
+  CERT_MANAGER_NEW=true
+fi
+helm upgrade --install cert-manager oci://quay.io/jetstack/charts/cert-manager --namespace cert-manager --create-namespace \
+      --set config.apiVersion="controller.config.cert-manager.io/v1alpha1" \
+      --set config.kind="ControllerConfiguration" \
+      --set config.enableGatewayAPI=true \
+      --set crds.enabled=true
+waitForDeployments cert-manager cert-manager
+if [[ "$CERT_MANAGER_NEW" = "true" ]]; then
+  recordInstalled cert_manager
 fi
 
 # Install envoy gateway
@@ -1238,60 +1229,6 @@ if [[ "$result" = "000" ]]; then
 fi
 echo "Reverse proxy is setup."
 
-if [[ "$TLS" = "true" ]]; then
-  # Install cert-manager
-  run_step "Installing cert-manager"
-
-  if ! helm status cert-manager -n cert-manager >/dev/null 2>&1; then
-    CERT_MANAGER_NEW=true
-  fi
-  helm upgrade --install cert-manager oci://quay.io/jetstack/charts/cert-manager --namespace cert-manager --create-namespace \
-        --set config.apiVersion="controller.config.cert-manager.io/v1alpha1" \
-        --set config.kind="ControllerConfiguration" \
-        --set config.enableGatewayAPI=true \
-        --set crds.enabled=true
-  waitForDeployments cert-manager cert-manager
-  if [[ "$CERT_MANAGER_NEW" = "true" ]]; then
-    recordInstalled cert_manager
-  fi
-
-  if ! kubectl get clusterissuer letsencrypt-prod >/dev/null 2>&1; then
-    CLUSTER_ISSUER_NEW=true
-  fi
-  # The webhook can take a moment to accept requests after its Deployment is Available.
-  startTime=`date +%s`
-  until cat << EOF | kubectl apply -f -
-apiVersion: cert-manager.io/v1
-kind: ClusterIssuer
-metadata:
-  name: letsencrypt-prod
-spec:
-  acme:
-    server: https://acme-v02.api.letsencrypt.org/directory
-    email: $ACME_EMAIL
-    privateKeySecretRef:
-      name: letsencrypt-issuer-key
-    solvers:
-    - http01:
-        gatewayHTTPRoute:
-          parentRefs:
-          - group: gateway.networking.k8s.io
-            kind: Gateway
-            name: $GATEWAY_NAME
-            namespace: $GATEWAY_NAMESPACE
-EOF
-  do
-    if [[ $(( `date +%s` - startTime )) -ge 300 ]]; then
-      echo "There was a problem creating the letsencrypt-prod ClusterIssuer..."
-      exit 1
-    fi
-    sleep 5
-  done
-  if [[ "$CLUSTER_ISSUER_NEW" = "true" ]]; then
-    recordInstalled cluster_issuer
-  fi
-fi
-
 # The JWT secret (shared with the auth-server), the ingest secret (shared with postfix-bridge) and the cookie, session
 # and escrow audit keys. Whatever the release already uses is kept - in the vault or in Kubernetes Secrets - so neither a
 # re-run nor the move into OpenBao signs anyone out or breaks the escrow audit log's hash chain.
@@ -1375,8 +1312,8 @@ fi
 if ! helm status "$NAMESPACE" -n "$NAMESPACE" >/dev/null 2>&1; then
   RELEASE_NEW=true
 fi
-# Sign-in redirects browsers to authServer.host, and the auth-server subchart attaches its own HTTPRoute to
-# authServer.gateway.*, so both follow the shared Gateway too. gateway.hsts stays true (browsers ignore HSTS over plain
+# Sign-in redirects browsers to authserver.host, and the auth-server subchart attaches its own HTTPRoute to
+# authserver.gateway.*, so both follow the shared Gateway too. gateway.hsts stays true (browsers ignore HSTS over plain
 # HTTP anyway): false renders a response header filter chart versions up to 1.0.0-beta.2 wrote for nginx-gateway only.
 # Where the release's secrets come from: the vault, or the Kubernetes Secrets the chart renders itself.
 OPENBAO_ARGS=(--set global.openbao.enabled=false)
@@ -1397,8 +1334,8 @@ if ! helm upgrade --install --create-namespace --namespace "$NAMESPACE" "$NAMESP
   --set gateway.tls="$GATEWAY_TLS" --set gateway.hsts=true \
   --set gateway.name="$GATEWAY_NAME" --set gateway.namespace="$GATEWAY_NAMESPACE" \
   --set gateway.httpsListener="$HTTPS_LISTENER" --set gateway.authHttpsListener="$AUTH_HTTPS_LISTENER" \
-  --set authServer.host="$AUTH_HOST" --set authServer.gateway.tls="$GATEWAY_TLS" \
-  --set authServer.gateway.name="$GATEWAY_NAME" --set authServer.gateway.namespace="$GATEWAY_NAMESPACE" \
+  --set authserver.host="$AUTH_HOST" --set authserver.gateway.tls="$GATEWAY_TLS" \
+  --set authserver.gateway.name="$GATEWAY_NAME" --set authserver.gateway.namespace="$GATEWAY_NAMESPACE" \
   -f "$VALUES_FILE"; then
   echo "There was a problem installing the RapidMX server."
   exit 1

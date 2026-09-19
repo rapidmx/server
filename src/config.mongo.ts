@@ -333,10 +333,10 @@ conf.defaults({
             // A default an administrator later removes stays removed; a default added in a later release is still added
             // to an existing deployment.
             defaults: [
-                { name: "@rapidmx/activesync-plugin", version: "latest", enabled: false },
-                { name: "@rapidmx/autodiscover-plugin", version: "latest", enabled: false },
-                { name: "@rapidmx/booking-plugin", version: "latest", enabled: false },
-                { name: "@rapidmx/mapi-plugin", version: "latest", enabled: false },
+                { name: "@rapidmx/activesync-plugin", version: "latest", enabled: true },
+                { name: "@rapidmx/autodiscover-plugin", version: "latest", enabled: true },
+                { name: "@rapidmx/booking-plugin", version: "latest", enabled: true },
+                { name: "@rapidmx/mapi-plugin", version: "latest", enabled: true },
             ],
             // The npm registry plugins are downloaded from, and an optional auth token for a private one.
             registry: "https://registry.npmjs.org",

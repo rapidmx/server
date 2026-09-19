@@ -103,7 +103,7 @@ internal load balancer for `/internal/mta`, which ses-bridge's Lambda calls from
 still answers 404 for `/internal`. Restrict it with `mail.ingestService.loadBalancerSourceRanges`.
 
 Set `global.domain` to the deployment's mail domain (e.g. `example.com`): mail is addressed `@<domain>`, the server is
-served at `service.host` (`mail.<domain>` by default), the auth-server at `authServer.host` (set it to `auth.<domain>` —
+served at `service.host` (`mail.<domain>` by default), the auth-server at `authserver.host` (set it to `auth.<domain>` —
 it can't default to a template, because the auth-server subchart reads its own `host` literally), and the JWT audience
 and issuer are the domain and that auth host on both sides. Postfix's MX name and sender domains follow the same value.
 
@@ -147,9 +147,9 @@ until you set `cookies.secret`, `sessions.secret` and `mail.escrow.auditHmacKey`
 Service (`mail.relay.*`). Behind a Gateway this chart doesn't create, set `gateway.httpsListener` to the listener that
 terminates TLS for `host` with the `<host>-tls-cert` Secret (the render fails without it while `gateway.tls` is
 true; set `gateway.tls=false` to serve plain HTTP). The usual naming is `host: mail.<domain>` with
-`authServer.host: auth.<domain>` - with a public `host`, set `authServer.host`,
-the auth-server's public name that sign-in redirects to; on someone else's Gateway also set `authServer.gateway.name`
-and `authServer.gateway.namespace` to that Gateway and `gateway.authHttpsListener` to its HTTPS listener for that host
+`authserver.host: auth.<domain>` - with a public `host`, set `authserver.host`,
+the auth-server's public name that sign-in redirects to; on someone else's Gateway also set `authserver.gateway.name`
+and `authserver.gateway.namespace` to that Gateway and `gateway.authHttpsListener` to its HTTPS listener for that host
 (the render fails while these don't line up). Set `mail.trustedAuthservId` to the authserv-id your inbound MTA stamps:
 while it's empty no sender is DKIM-verified, so members-only distribution lists drop all mail, list and forward-rule
 copies get a rewritten From, and forwarded invites are refused. `/api/metrics`
@@ -158,7 +158,7 @@ requires a token with a trusted role, so scrape it with a bearer token rather th
 #### From GHCR
 
 ```bash
-helm install --create-namespace --namespace mail-server mail-server oci://ghcr.io/rapidmx/charts/server --version 1.0.0-beta.4   --set global.authSecret="$(openssl rand -hex 32)" --set global.mailIngestSecret="$(openssl rand -hex 32)"   --set global.domain=example.com --set authServer.host=auth.example.com
+helm upgrade --install --create-namespace --namespace rapidmx rapidmx oci://ghcr.io/rapidmx/charts/server --version 1.0.0-beta.4   --set global.jwt.secret="$(openssl rand -hex 32)" --set global.mailIngestSecret="$(openssl rand -hex 32)"   --set global.domain=example.com
 ```
 
 #### From Local
@@ -166,7 +166,7 @@ helm install --create-namespace --namespace mail-server mail-server oci://ghcr.i
 ```bash
 helm repo add bitnami https://charts.bitnami.com/bitnami
 helm dep up ./helm
-helm install --create-namespace --namespace mail-server mail-server ./helm   --set global.authSecret="$(openssl rand -hex 32)" --set global.mailIngestSecret="$(openssl rand -hex 32)"
+helm upgrade --install --create-namespace --namespace rapidmx rapidmx ./helm --set global.jwt.secret="$(openssl rand -hex 32)" --set global.mailIngestSecret="$(openssl rand -hex 32)"
 ```
 
 The chart runs one replica by default, because its message, DKIM and PKI volumes are `ReadWriteOnce`. To run more,

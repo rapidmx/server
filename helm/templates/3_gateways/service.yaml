@@ -1,0 +1,71 @@
+{{- $ownsGateway := and (eq (printf "%s-gateway" (include "rrst.fullname" .)) (tpl $.Values.global.gateway.name $)) (eq $.Release.Namespace (tpl $.Values.global.gateway.namespace $)) }}
+{{- /* Matches tls-certs.yaml: a certificate is only issued for a host that can get one. */}}
+{{- $certificate := and $.Values.global.gateway.tls (ne (include "rrst.render" (dict "value" $.Values.host "context" $)) "localhost") (not (contains ".local" (include "rrst.render" (dict "value" $.Values.host "context" $)))) }}
+{{- if $ownsGateway }}
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: {{ include "rrst.fullname" . }}-gateway
+spec:
+  gatewayClassName: {{ $.Values.global.gateway.className | quote }}
+  listeners:
+  - name: http
+    port: 80
+    protocol: HTTP
+    hostname: {{ (include "rrst.render" (dict "value" $.Values.host "context" $)) | quote }}
+    allowedRoutes:
+      namespaces:
+        from: All
+  {{- if $certificate }}
+  # TLS is terminated on the listener; an HTTPRoute has no `tls` field.
+  - name: https
+    protocol: HTTPS
+    port: 443
+    hostname: {{ (include "rrst.render" (dict "value" $.Values.host "context" $)) | quote }}
+    tls:
+      mode: Terminate
+      certificateRefs:
+      - kind: Secret
+        name: {{ (include "rrst.render" (dict "value" $.Values.host "context" $)) }}-tls-cert
+    allowedRoutes:
+      namespaces:
+        from: All
+  {{- end }}
+{{- end }}
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  # Chart-name-qualified (not a bare "api-httproute") so a parent chart depending on this one as a
+  # subchart - each with its own hostname/backendRefs attached to one shared Gateway - doesn't have both
+  # charts' HTTPRoutes collide under the same literal resource name, silently clobbering one route with
+  # the other on every `helm upgrade`.
+  name: {{ include "rrst.fullname" . }}-httproute
+spec:
+  parentRefs:
+  - name: {{ tpl $.Values.global.gateway.name $ }}
+    namespace: {{ tpl $.Values.global.gateway.namespace $ }}
+    sectionName: http
+  {{- if and $ownsGateway $certificate }}
+  - name: {{ tpl $.Values.global.gateway.name $ }}
+    namespace: {{ $.Release.Namespace }}
+    sectionName: https
+  {{- end }}
+  hostnames:
+  - {{ (include "rrst.render" (dict "value" $.Values.host "context" $)) | quote }}
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /
+    backendRefs:
+    - name: {{ include "rrst.fullname" . }}-services
+      port: 80
+    {{- if not $.Values.global.gateway.hsts }}
+    # Standard Gateway API filter, so it works on any implementation (Envoy Gateway, nginx-gateway-fabric, ...).
+    filters:
+    - type: ResponseHeaderModifier
+      responseHeaderModifier:
+        remove:
+        - Strict-Transport-Security
+    {{- end }}
