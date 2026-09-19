@@ -145,7 +145,7 @@ spec:
             - name: SENDMAIL_RELAY_TLS
               value: {{ ternary "on" "off" (has (toString $.Values.mail.relay.tls) (list "true" "on")) | quote }}
             - name: SENDMAIL_FROM_ADDRESS
-              value: {{ tpl $.Values.mail.relay.fromAddress $ | default (printf "mailer@%s" ($.Values.mail.mxHostname | default (include "rrst.render" (dict "value" $.Values.service.host "context" $)))) | quote }}
+              value: {{ tpl $.Values.mail.relay.fromAddress $ | default (printf "mailer@%s" ($.Values.mail.mxHostname | default (include "rrst.render" (dict "value" $.Values.host "context" $)))) | quote }}
             {{- if $podTLS }}
             # global.gateway.tlsTermination: pod - @rapidrest/service-core reads these (env separator "__") as its
             # `ssl` config block and switches its one HTTP listener to TLS (uWS's SSLApp / Bun's tls option). The

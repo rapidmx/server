@@ -1384,8 +1384,13 @@ chmod 600 "$VALUES_FILE"
   fi
   # In the values file rather than --set, which would split the domain list on its commas.
   printf 'postfixBridge:\n  hostname: %s\n  domains: %s\n' "`yamlQuote "$SERVER_HOST"`" "`yamlQuote "$MAIL_DOMAINS"`"
-  # Without cert-manager (--tls false) Postfix gets a self-signed certificate.
+  # Without cert-manager (--tls false) Postfix gets a self-signed certificate. With it, Postfix's host name is the
+  # server's, so it presents the certificate the chart already has cert-manager issue for that name rather than getting
+  # a second one (Let's Encrypt limits duplicates).
   printf '  tls:\n    certManager:\n      enabled: %s\n' "$TLS"
+  if [[ "$GATEWAY_TLS" = "true" ]]; then
+    printf '    existingSecret: %s\n' "`yamlQuote "$SERVER_HOST-tls-cert"`"
+  fi
 } > "$VALUES_FILE"
 
 if ! helm status "$NAMESPACE" -n "$NAMESPACE" >/dev/null 2>&1; then
@@ -1413,7 +1418,7 @@ if [[ "$OPENBAO" = "true" ]]; then
     --set openbao.pki.tokenSecret="$OPENBAO_PKI_SECRET")
 fi
 if ! helm upgrade --install --create-namespace --namespace "$NAMESPACE" "$NAMESPACE" "$CHART" "${CHART_VERSION_ARGS[@]}" \
-  --set global.domain="$DOMAIN" --set host="$SERVER_HOST" --set service.host="$SERVER_HOST" \
+  --set global.domain="$DOMAIN" --set host="$SERVER_HOST" \
   "${OPENBAO_ARGS[@]}" \
   --set global.gateway.tls="$GATEWAY_TLS" --set global.gateway.hsts=true "${GATEWAY_ARGS[@]}" \
   --set authserver.host="$AUTH_HOST" \

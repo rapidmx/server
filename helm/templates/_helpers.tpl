@@ -299,9 +299,9 @@ the two mail transports at once: with SES sending, Postfix would still be receiv
 {{-   if and .Values.postfixBridge.create (eq .Values.mail.transport.provider "ses") -}}
 {{-     fail "mail.transport.provider is \"ses\" but postfixBridge.create is true, so this release would both send through SES and run its own Postfix. Set postfixBridge.create=false (inbound mail then comes from ses-bridge), or mail.transport.provider=postfix." -}}
 {{-   end -}}
-{{-   if and .Values.postfixBridge.create (eq (include "rrst.publicHost" (include "rrst.render" (dict "value" .Values.service.host "context" .))) "true") -}}
+{{-   if and .Values.postfixBridge.create (eq (include "rrst.publicHost" (include "rrst.render" (dict "value" .Values.host "context" .))) "true") -}}
 {{-     if eq (include "rrst.publicHost" .Values.postfixBridge.hostname) "" -}}
-{{-       fail (printf "host %q is public but postfixBridge.hostname is %q. Set it to Postfix's public MX host name, e.g. --set postfixBridge.hostname=%s." (include "rrst.render" (dict "value" .Values.service.host "context" .)) .Values.postfixBridge.hostname (.Values.mail.mxHostname | default (include "rrst.render" (dict "value" .Values.service.host "context" .)))) -}}
+{{-       fail (printf "host %q is public but postfixBridge.hostname is %q. Set it to Postfix's public MX host name, e.g. --set postfixBridge.hostname=%s." (include "rrst.render" (dict "value" .Values.host "context" .)) .Values.postfixBridge.hostname (.Values.mail.mxHostname | default (include "rrst.render" (dict "value" .Values.host "context" .)))) -}}
 {{-     end -}}
 {{-     if and (eq (toString .Values.postfixBridge.domains) "example.com") (ne (toString .Values.global.domain) "example.com") -}}
 {{-       fail (printf "postfixBridge.domains is still example.com. Set it to the comma-separated domains this deployment sends mail from, e.g. --set postfixBridge.domains=%s." (toString .Values.global.domain)) -}}

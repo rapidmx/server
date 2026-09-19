@@ -6058,3 +6058,39 @@ hidden all of it (the nil-pointer and schema failures only show up with real val
 - **Not changed, worth a decision:** with TLS on, plain `http://` still serves the app and the sign-in page (the
   HTTPRoute's http rule forwards; nothing redirects to https). Also `postfixBridge.create` defaults to `false`, so the
   script's Postfix messaging and `--mail-domains` do nothing on a default install.
+
+
+### 2026-09-19 (later) - postfix-bridge enabled and tested on the real host
+
+`postfixBridge.create` had been left `false` by c80ca7f. Turning it on and testing against a real internet-facing port 25
+found more than the flag:
+
+- **Open relay (the important one).** k3s ServiceLB with the default `externalTrafficPolicy: Cluster` masks every external
+  client as `10.42.0.1`, and boky/postfix trusts `mynetworks = 10.0.0.0/8 ...` and has `smtpd_relay_restrictions = permit`. From
+  the internet, `MAIL FROM:<anything@powerlevel.gg>` + `RCPT TO:<x@elsewhere>` was accepted (refused only because the test
+  domain had a null MX). Nothing was relayed (log and queue checked); Postfix was scaled to 0 until fixed. Verified the cause
+  with a throwaway socat LoadBalancer service: `Cluster` -> `10.42.0.1`, `Local` -> the real address. Fix lives in the
+  postfix-bridge chart (uncommitted there): `externalTrafficPolicy: Local` plus a policy that lets internal clients relay in
+  plaintext as one of ALLOWED_SENDER_DOMAINS (restriction class + cidr table) and requires TLS/no relaying from everyone else.
+  Re-probed from outside afterwards: outsider -> `Relay access denied`, plaintext outsider -> `450 Session encryption is
+  required`, in-cluster plaintext relay as an allowed sender -> 250, as another domain -> refused. Compose still has the old
+  boky defaults (docker preserves client addresses, so it isn't an open relay, but it can't send or receive) - not touched.
+- **Outbound could never work as configured:** Postfix had `smtpd_tls_security_level=encrypt` while the server's msmtp is
+  `tls off`, so every message got `530 Must issue a STARTTLS command first`. Now `may`, with TLS required of outsiders by
+  `reject_plaintext_session` after `permit_mynetworks`.
+- **Inbound could never work as configured:** the image's defaults reject every client outside mynetworks and every sender
+  outside ALLOWED_SENDER_DOMAINS (a send-only relay).
+- **Regressions from c80ca7f, fixed here:** `global.jwt.issuer` resolved to the mail host in the parent chart (beta.4 had
+  `auth.<domain>` on both sides; confirmed a token signed by the auth-server got 403 from the server); the scanner settings
+  (`mail__scan__*`) were dropped so rspamd/ClamAV defaulted to localhost and the fail-closed pipeline quarantined the message
+  (confirmed in `quarantine_entry_mongo`); `service.host` was still read in 3 places though the value is `host`.
+- **OpenBao mode had no admin account:** ESO `creationPolicy: Owner` on service-secrets deleted the chart-rendered
+  `default_accounts`. `Merge` keeps it (proven: an extra key survives a forced sync). Existing installs must have helm
+  re-add the key (it did on the next upgrade here) and restart the auth-server.
+- **Tested, working:** SMTP banner and STARTTLS with the real Let's Encrypt cert on 25; bridge lookups; ingest secret shared
+  by server/bridge (hash-compared); a message delivered to the bridge's SMTP listener reaches the mailbox through the server's
+  ingest queue and scanners. **Not tested (DNS needed):** the domain's ownership TXT, MX, SPF, DKIM and DMARC records were
+  handed to JP to publish (Cloudflare); domain verification, a real SMTP-in -> mailbox run and an outbound send remain.
+- **Test harness:** a 20-minute admin JWT can be minted inside the server pod with `@rapidrest/core` `JWTUtils.createToken`
+  (config = `auth__secret` and `auth__options__*` from the pod env; user `{uid, roles: ["admin"]}`); `verified` on a Domain
+  can't be set through the API by design. MFA is required for the real admin login (`auth__requireMFA`).
