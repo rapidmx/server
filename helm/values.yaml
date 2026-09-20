@@ -103,7 +103,7 @@ service:
   image:
     registry: ghcr.io
     repository: rapidmx/server
-    tag: 1.0.0-beta.5
+    tag: 1.0.0-beta.6
   replicas: 1
   resources:
     requests:
@@ -125,7 +125,6 @@ service:
     metrics: true
     releaseNotes: true
     mail__auth_server_url: '{{ include "rapidmx.authServerURL" . }}'
-    # The authserv-id of the Authentication-Results the inbound MTA stamps (see mail.trustedAuthservId below).
     mail__security__trusted_authserv_id: '{{ include "rapidmx.trustedAuthservId" . }}'
     mail__dns__mx_hostname: >-
       {{ .Values.mail.mxHostname | default (include "rrst.render" (dict "value"
@@ -167,9 +166,6 @@ authserver:
     config:
       auth__allowRegistration: false
       auth__requireMFA: false
-      # Rendered by the auth-server subchart, so only this block's own values and global.* are visible here (not mail.*).
-      # To leave e-mail unconfigured set every smtp_config__* key here to null: an smtp_config without a host fails
-      # with "No host specified in SMTP configuration".
       smtp_config__host: '{{ .Values.global.smtp.host }}'
       smtp_config__port: '{{ .Values.global.smtp.port }}'
       smtp_config__secure: '{{ .Values.global.smtp.secure }}'
@@ -223,10 +219,6 @@ mail:
       service.beta.kubernetes.io/aws-load-balancer-internal: 'true'
     loadBalancerSourceRanges: []
   mxHostname: ''
-  # The authserv-id of the Authentication-Results header the inbound MTA puts on each message, which the server trusts to say
-  # whether a sender's DKIM signature verified. Empty means the bundled Postfix's host name (postfixBridge.hostname), which
-  # is what its OpenDKIM stamps; set it for any other MTA (e.g. what ses-bridge stamps). While it is empty and there is no
-  # bundled Postfix, no sender is DKIM-verified.
   trustedAuthservId: ''
   relay:
     host: postfix

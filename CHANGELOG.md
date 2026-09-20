@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.6] - 2026-09-20
+
+### Changed
+- Default the trusted authserv-id to the bundled Postfix's host name, which is what its OpenDKIM stamps on Authentication-Results, and warn only when no MTA's id is known
+- Document the fix in the README, the release notes and NOTES, including that it needs the postfix-bridge chart that fixes OpenDKIM's key lookups
+- Say in the installer's help and completion message that --mail-domains is only the set Postfix knows when it starts, since domains added in the admin console now receive, send and sign mail with nothing to restart
+- Document in the README, the release notes and NOTES that a domain added in the admin console works at once, including that it needs the postfix-bridge chart with the dynamic sender check and DKIM key sync
+- Send the auth-server's e-mail through SES's SMTP endpoint in deploy/aws/bootstrap.sh when given RAPIDMX_SES_SMTP_USERNAME and RAPIDMX_SES_SMTP_PASSWORD, keeping them in a Secret the auth-server reads through the new authserver.service.extraEnv, and leave its e-mail unconfigured without them
+- Document the auth-server's e-mail settings in the README, the AWS README, the release notes and NOTES, including that it needs an auth-server image and chart with nodemailer and service.extraEnv
+- Updated rapidmx deps
+- Updated helm deps
+
+### Fixed
+- Fixed mail.trustedAuthservId never reaching the server, which only the install warning read, by passing it as mail__security__trusted_authserv_id
+- Fixed the auth-server never being told how to send e-mail, so no sign-in or verification code could be delivered, by adding global.smtp and passing it to the auth-server as smtp_config and templates.from.email, defaulting to the bundled Postfix over the cluster network with TLS off for that hop, since its certificate is for the public host name
+
 ## [1.0.0-beta.5] - 2026-09-20
 
 ### Added
@@ -744,7 +760,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed test from .dockerignore, fixing yarn build's lint step failing outright when the build context is missing the test directory its tsconfig.eslint.json requires
 - Removed docker-compose.mail.yml's partial server: service block, since include: only supports merging resources that don't already exist in the including file and hard-errors ("services.server conflicts with imported resource") on a Compose version newer than whatever this had only ever been tested against locally
 
-[Unreleased]: https://github.com/rapidmx/server/compare/v1.0.0-beta.5...HEAD
+[Unreleased]: https://github.com/rapidmx/server/compare/v1.0.0-beta.6...HEAD
+[1.0.0-beta.6]: https://github.com/rapidmx/server/compare/v1.0.0-beta.5...v1.0.0-beta.6
 [1.0.0-beta.5]: https://github.com/rapidmx/server/compare/v1.0.0-beta.4...v1.0.0-beta.5
 [1.0.0-beta.4]: https://github.com/rapidmx/server/compare/v1.0.0-beta.3...v1.0.0-beta.4
 [1.0.0-beta.3]: https://github.com/rapidmx/server/compare/v1.0.0-beta.2...v1.0.0-beta.3

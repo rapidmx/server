@@ -1,6 +1,6 @@
 {
   "name": "server",
-  "version": "1.0.0-beta.5",
+  "version": "1.0.0-beta.6",
   "description": "A reference implementation of a RapidMX mail server.",
   "type": "module",
   "repository": "https://github.com/rapidmx/server",
