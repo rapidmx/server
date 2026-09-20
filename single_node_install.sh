@@ -9,7 +9,7 @@ MAIL_HOST=${MAIL_HOST:-mail}
 AUTH_HOST=${AUTH_HOST:-auth}
 TLS=true
 VERSION="1.0.0-beta.4"
-NAMESPACE="rapidmx-server"
+NAMESPACE="rapidmx"
 # How the release is exposed through Envoy Gateway. "shared": this script creates one Gateway ($GATEWAY_NAME in
 # $GATEWAY_NAMESPACE) with a listener per host and the chart's routes attach to it. "chart": the chart creates its own
 # Gateways (one per host) in $NAMESPACE.
@@ -63,11 +63,11 @@ K3S_KUBECONFIG=/etc/rancher/k3s/k3s.yaml
 K3S_OPTIONS="--disable=traefik"
 # Markers around the block this script appends to nginx.conf, so a re-run replaces it instead of adding another.
 NGINX_CONF=/etc/nginx/nginx.conf
-NGINX_BEGIN="# BEGIN rapidmx-server"
-NGINX_END="# END rapidmx-server"
+NGINX_BEGIN="# BEGIN rapidmx"
+NGINX_END="# END rapidmx"
 # Prefix of the nginx.conf lines this script commented out (http server blocks listening on port 80); --uninstall
 # restores them.
-NGINX_DISABLED_PREFIX="#rapidmx-server# "
+NGINX_DISABLED_PREFIX="#rapidmx# "
 # What this script installed itself (as opposed to found already there), one key=value per line, so --uninstall only
 # removes that.
 STATE_DIR=/var/lib/rapidmx-installer
