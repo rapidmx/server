@@ -166,6 +166,8 @@ authserver:
     config:
       auth__allowRegistration: false
       auth__requireMFA: false
+      auth__cookie__access__domain: '.{{ .Values.global.domain }}'
+      auth__cookie__refresh__domain: '.{{ .Values.global.domain }}'
       smtp_config__host: '{{ .Values.global.smtp.host }}'
       smtp_config__port: '{{ .Values.global.smtp.port }}'
       smtp_config__secure: '{{ .Values.global.smtp.secure }}'
