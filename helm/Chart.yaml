@@ -34,11 +34,11 @@ dependencies:
     alias: redis
   - name: auth-server
     repository: oci://ghcr.io/rapidrest/charts
-    version: 1.0.0-beta.14
+    version: 1.0.0-beta.15
     condition: authserver.create
     alias: authserver
   - name: postfix-bridge
     repository: oci://ghcr.io/rapidmx/charts
-    version: 1.4.0
+    version: 1.4.1
     condition: postfixBridge.create
     alias: postfixBridge
