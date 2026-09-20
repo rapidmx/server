@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.5] - 2026-09-20
+
+### Added
+- Added support for TLS termination to pod in helm chart
+- Added --gateway shared|chart to single_node_install.sh: shared creates envoy-gateway-system/shared-gateway with an HTTPS listener per host for the chart's routes to attach to, and chart lets the chart create a Gateway per host and merges them into one Envoy Service for nginx to forward to
+
+### Changed
+- Lots and lots of fixes to the helm chart
+- Scope the PROXY protocol ClientTrafficPolicy to the https listener of each chart-created Gateway, since Envoy Gateway rejects one on the HTTP listeners of Gateways that share a port, and send no PROXY header on port 80 in that mode
+- Fail the reverse proxy check on an HTTP 400 from Envoy, which is what a PROXY protocol mismatch answers and used to count as reachable
+- Listen on IPv6 in the nginx stream proxy when the host has it, since a host name with an AAAA record is tried over IPv6 first by browsers and Let's Encrypt
+- Attach the chart's HTTPRoute to every listener of a Gateway it doesn't create that accepts the host and render the ReferenceGrant that lets that Gateway read the certificate Secret in the release namespace
+- Document the Gateway modes and the chart fixes in the README, the release notes and NOTES
+- Install Postfix and postfix-bridge with the chart again by turning postfixBridge.create back on, which c80ca7f had switched off, and issue Postfix's certificate from the release's own Issuer rather than a letsencrypt-prod ClusterIssuer that only exists where someone made one
+- Present the server's own <host>-tls-cert from Postfix in single_node_install.sh instead of issuing a second certificate for the same name, which Let's Encrypt limits
+- Restore the rspamd and ClamAV addresses in service.config that c80ca7f dropped, since an unreachable scanner quarantines every inbound message
+- Document the fixes in the release notes and NOTES, including that Postfix needs the postfix-bridge chart released after 1.2.0 to not be an open relay behind ServiceLB
+- Set mail__dns__mx_hostname to Postfix's host name so the domain DNS-setup page finds the MX record
+- Document the fixes in the README, the release notes and NOTES
+- Updated helm deps
+
+### Fixed
+- Fixed single_node_install.sh passing the gateway.* values the chart no longer reads and using GATEWAY_NAME, GATEWAY_NAMESPACE and gatewayService without defining them, which left the GatewayClass pointing at a namespace that didn't exist
+- Fixed the OpenBao unseal and the openbao-unsealer Deployment passing the key as "-", which OpenBao takes literally, by handing it to a shell in the pod over stdin and as an argument
+- Fixed the chart never creating its cert-manager Issuers because global.certmanager.name defaulted to -letsencrypt while the ownership check looked for -issuer, and render the Issuer with the indentation and ACME account key name it needs
+- Fixed the Certificate's issuerRef carrying a namespace cert-manager rejects
+- Fixed the server pod never starting with global.openbao.enabled by restoring the mail ingest secret and escrow audit key ExternalSecrets that c80ca7f dropped, and read refreshInterval from global.externalSecrets
+- Fixed the server refusing every token the auth-server signs by making global.jwt.issuer the auth-server's host on both sides, as in 1.0.0-beta.4, where it had resolved to the mail host in this chart
+- Fixed the vault-managed service-secrets ExternalSecret dropping default_accounts, so the auth-server never created its admin account, by merging its keys into the Secret the chart renders
+- Fixed the sender address of outbound mail and the Postfix host check reading service.host, which is host in this chart
+- Fixed the server being unable to send mail by giving its container args rather than a command, which replaced the image's entrypoint that writes the msmtp config sendmail relays through
+- Fixed deploy/aws/bootstrap.sh passing the gateway.* and service.host values the chart no longer reads, so the shared Gateway was never used, by passing global.gateway.*, host and authserver.host
+- Fixed the OpenBao unseal in deploy/aws/bootstrap.sh passing the key as "-", which bao refuses, by passing it as an argument
+
+### Removed
+- Removed the shared-gateway block that re-applied the Gateway without its HTTPS listeners and the wait for port 443 on its Service, which only exists once the certificates that are issued through that Service do
+- Removed the letsencrypt-prod ClusterIssuer from deploy/aws/bootstrap.sh now the chart issues its certificates from its own Issuer, passing it RAPIDMX_ACME_EMAIL and waiting for cert-manager's webhook with a server-side dry run of an Issuer instead
+
+
 ## [1.0.0-beta.4] - 2026-09-17
 
 ### Added
@@ -705,7 +744,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed test from .dockerignore, fixing yarn build's lint step failing outright when the build context is missing the test directory its tsconfig.eslint.json requires
 - Removed docker-compose.mail.yml's partial server: service block, since include: only supports merging resources that don't already exist in the including file and hard-errors ("services.server conflicts with imported resource") on a Compose version newer than whatever this had only ever been tested against locally
 
-[Unreleased]: https://github.com/rapidmx/server/compare/v1.0.0-beta.4...HEAD
+[Unreleased]: https://github.com/rapidmx/server/compare/v1.0.0-beta.5...HEAD
+[1.0.0-beta.5]: https://github.com/rapidmx/server/compare/v1.0.0-beta.4...v1.0.0-beta.5
 [1.0.0-beta.4]: https://github.com/rapidmx/server/compare/v1.0.0-beta.3...v1.0.0-beta.4
 [1.0.0-beta.3]: https://github.com/rapidmx/server/compare/v1.0.0-beta.2...v1.0.0-beta.3
 [1.0.0-beta.2]: https://github.com/rapidmx/server/compare/v1.0.0-beta.1...v1.0.0-beta.2

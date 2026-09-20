@@ -28,7 +28,7 @@ git clone https://github.com/rapidmx/server
 | ------------ | :-------------------: |
 | Registry     | ghcr.io |
 | Repository   | /rapidmx/server |
-| Tag          | 1.0.0-beta.4 |
+| Tag          | 1.0.0-beta.5 |
 
 This project provides scripts for running in Docker or Kubernetes. For Docker, you will find *docker-compose* scripts
 in the project source. For Kubernetes, a *helm* chart is available both in the project source and via GitHub Container
@@ -52,7 +52,7 @@ docker compose -f docker-compose.mongo.yml up -d --build
 `auth-server`'s image (`ghcr.io/rapidrest/auth-server`) is pulled from GHCR, not built locally.
 
 These compose files are for local evaluation: they run with `NODE_ENV=dev` and publish every port on the host's
-loopback address (`1.0.0-beta.4.1`) only. For anything beyond that, set `NODE_ENV=production` and override these in a
+loopback address (`1.0.0-beta.5`) only. For anything beyond that, set `NODE_ENV=production` and override these in a
 `.env` file next to the compose files (every secret defaults to an insecure, publicly-known placeholder value
 otherwise — see `src/config.defaults.ts`; the server refuses to start with those unless `NODE_ENV` is `dev`,
 `development` or `test`):
@@ -160,7 +160,7 @@ requires a token with a trusted role, so scrape it with a bearer token rather th
 #### From GHCR
 
 ```bash
-helm upgrade --install --create-namespace --namespace rapidmx rapidmx oci://ghcr.io/rapidmx/charts/server --version 1.0.0-beta.4   --set global.jwt.secret="$(openssl rand -hex 32)" --set global.mailIngestSecret="$(openssl rand -hex 32)"   --set global.domain=example.com
+helm upgrade --install --create-namespace --namespace rapidmx rapidmx oci://ghcr.io/rapidmx/charts/server --version 1.0.0-beta.5   --set global.jwt.secret="$(openssl rand -hex 32)" --set global.mailIngestSecret="$(openssl rand -hex 32)"   --set global.domain=example.com
 ```
 
 #### From Local
