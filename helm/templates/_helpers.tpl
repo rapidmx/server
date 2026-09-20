@@ -295,6 +295,20 @@ Fails the render when the bundled postfix-bridge would run with its placeholder 
 would HELO as mail.localhost with a self-signed certificate, and only accept outbound mail from example.com. Also refuses
 the two mail transports at once: with SES sending, Postfix would still be receiving mail nothing routes to it.
 */}}
+{{/*
+The authserv-id whose Authentication-Results headers the server believes (mail__security__trusted_authserv_id): the DKIM result
+its inbound MTA stamps. mail.trustedAuthservId when set; otherwise, with the bundled Postfix, Postfix's own host name, which is
+the id its OpenDKIM puts on every result; otherwise empty - a different MTA (ses-bridge, your own) has to be named.
+Usage: include "rapidmx.trustedAuthservId" .
+*/}}
+{{- define "rapidmx.trustedAuthservId" -}}
+{{-   if .Values.mail.trustedAuthservId -}}
+{{-     include "rrst.render" (dict "value" .Values.mail.trustedAuthservId "context" .) -}}
+{{-   else if .Values.postfixBridge.create -}}
+{{-     include "rrst.render" (dict "value" .Values.postfixBridge.hostname "context" .) -}}
+{{-   end -}}
+{{- end -}}
+
 {{- define "rapidmx.assertPostfixBridge" -}}
 {{-   if and .Values.postfixBridge.create (eq .Values.mail.transport.provider "ses") -}}
 {{-     fail "mail.transport.provider is \"ses\" but postfixBridge.create is true, so this release would both send through SES and run its own Postfix. Set postfixBridge.create=false (inbound mail then comes from ses-bridge), or mail.transport.provider=postfix." -}}

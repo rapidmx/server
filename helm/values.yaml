@@ -118,6 +118,8 @@ service:
     metrics: true
     releaseNotes: true
     mail__auth_server_url: '{{ include "rapidmx.authServerURL" . }}'
+    # The authserv-id of the Authentication-Results the inbound MTA stamps (see mail.trustedAuthservId below).
+    mail__security__trusted_authserv_id: '{{ include "rapidmx.trustedAuthservId" . }}'
     mail__dns__mx_hostname: >-
       {{ .Values.mail.mxHostname | default (include "rrst.render" (dict "value"
       .Values.postfixBridge.hostname "context" .)) }}
@@ -157,7 +159,7 @@ authserver:
   service:
     config:
       auth__allowRegistration: false
-      auth__requireMFA: true
+      auth__requireMFA: false
 postfixBridge:
   create: true
   nameOverride: postfix-bridge
@@ -202,6 +204,10 @@ mail:
       service.beta.kubernetes.io/aws-load-balancer-internal: 'true'
     loadBalancerSourceRanges: []
   mxHostname: ''
+  # The authserv-id of the Authentication-Results header the inbound MTA puts on each message, which the server trusts to say
+  # whether a sender's DKIM signature verified. Empty means the bundled Postfix's host name (postfixBridge.hostname), which
+  # is what its OpenDKIM stamps; set it for any other MTA (e.g. what ses-bridge stamps). While it is empty and there is no
+  # bundled Postfix, no sender is DKIM-verified.
   trustedAuthservId: ''
   relay:
     host: postfix

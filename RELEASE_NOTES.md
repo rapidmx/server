@@ -37,6 +37,11 @@
 - **deploy/aws** no longer creates a `letsencrypt-prod` ClusterIssuer (the chart issues its certificates from its own Issuer,
   registered with `RAPIDMX_ACME_EMAIL`), passes the chart the values it reads now (`global.gateway.*`, `host`; it still passed
   `gateway.*` and `service.host`, so the chart never used the shared Gateway) and unseals OpenBao with the key as an argument.
+- **"mail.trustedAuthservId is empty" after every install, and setting it did nothing:** the value was only read by the install
+  warning, never passed to the server (`mail__security__trusted_authserv_id`). It now is, and with the bundled Postfix it defaults
+  to Postfix's host name, the authserv-id its OpenDKIM stamps, so no sender is left unverified and the warning appears only when
+  there is no bundled Postfix and no id set. This needs the postfix-bridge chart that fixes OpenDKIM's key lookups: before
+  it, OpenDKIM could not fetch any DKIM key and never stamped a passing result.
 - **cert-manager Issuers were never created,** because `global.certmanager.name` defaulted to `<fullname>-letsencrypt` while
   the chart only created an Issuer named `<fullname>-issuer`; the default is now `-issuer`. The Issuer manifest was
   also mis-indented, so it wouldn't have applied, and `issuerRef` carried a `namespace` cert-manager rejects.

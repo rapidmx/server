@@ -6122,3 +6122,31 @@ It also served as the wait for cert-manager's webhook (its `kubectl apply` retry
 - The live test host still has a `letsencrypt-prod` ClusterIssuer from an earlier script version; nothing references it (Postfix uses
   `<release>-issuer`), it can be deleted with `kubectl delete clusterissuer letsencrypt-prod`.
 - postfix-bridge's standalone default is still `issuerKind: ClusterIssuer` / `letsencrypt-prod` (the server chart overrides it); left alone.
+
+### 2026-09-20 - "mail.trustedAuthservId is empty" after a clean install: three problems behind one warning
+
+JP rebuilt the host and ran the published installer (release `rapidmx` in namespace `rapidmx`, chart 1.0.0-beta.5) and still got the warning.
+Fixing the warning properly turned up two more bugs, found with a local lab (boky/postfix + a sink standing in for the bridge + an unbound
+DNS server holding a test DKIM key, all in docker) and then confirmed on the host:
+- **`mail.trustedAuthservId` was never wired:** only NOTES.txt and values read it; `mail__security__trusted_authserv_id` (what the server reads,
+  `ScanQueueJob`) was never set, so `--set mail.trustedAuthservId=...`, the warning's own advice, only silenced the warning. Now
+  `rapidmx.trustedAuthservId` (explicit value, else `postfixBridge.hostname` when Postfix is bundled) feeds `service.config`, and the warning
+  reads the effective value.
+- **The id to trust is Postfix's own host name:** OpenDKIM's default authserv-id, verified in the lab (`Authentication-Results: mail.local.lab; dkim=pass
+  header.d=...`). The server parses RFC 8601 and only believes a header whose first token equals the trusted id.
+- **OpenDKIM in the boky image could never verify anything:** every key lookup through the container resolver fails with `unexpected reply class/type
+  (-1/-1)` (libunbound; reproduced against real public DNS in a plain container; `Nameservers <ip>` in the config fixes it - `key OK`). Not a DNS
+  server or TXT-size problem (ruled out with dnsmasq, unbound, 1024- and 2048-bit keys). Fixed by an init script (postfix-bridge chart, uncommitted)
+  that points OpenDKIM at the pod's resolver.
+- **Anyone could get mail signed as our domain:** the image writes `0.0.0.0/0` into TrustedHosts and uses it for `InternalHosts` as a *regex file*
+  (matches nothing), so every client counted as "internal" (signed, not verified): an unsigned message from the internet with `From: boss@ourdomain`
+  came back with a genuine `DKIM-Signature: d=ourdomain`. The same script sets `InternalHosts` to `POSTFIX_mynetworks` (postfix.internalNetworks). Lab:
+  external spoof -> no signature; in-cluster client -> signed; good/tampered/forged-header cases as expected (pass / fail / a forged
+  `Authentication-Results` bearing our id is stripped, unsigned mail gets none).
+- **On the host:** init script ran (`Using name server 10.43.0.10`), `opendkim-testkey` -> `key OK` for powerlevel.gg, server env has the id, upgrade
+  needed `--reset-then-reuse-values`. **Not tested:** a full message with a passing result reaching a mailbox on the host (no domain registered on the
+  fresh install, and the DKIM TXT in DNS is the *previous* install's key - `keys do not match` - a rebuild regenerates keys, so the record must be updated
+  after registering the domain). The lab covers the header logic.
+- **Gotchas hit while testing:** a stale patched `postfix-bridge-1.2.0.tgz` sitting beside the 1.3.0 one in `helm/charts` shadowed it (Helm loads every tarball
+  there) and made a healthy chart fail with "ingestSecret is required"; `.test`/`.example` names never reach OpenDKIM's resolver (unbound treats them as special-use);
+  dkimpy wants a PKCS#1 key with LF endings; Git Bash rewrites `/path` docker arguments (use MSYS_NO_PATHCONV=1).

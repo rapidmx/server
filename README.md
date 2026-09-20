@@ -152,8 +152,10 @@ subchart shares them). The route names no listener, so it attaches to every list
 TLS on the chart renders the ReferenceGrant that lets the Gateway read each `<host>-tls-cert` Secret in the release's
 namespace - the Gateway needs an HTTPS listener for each host that terminates TLS with that Secret. The usual naming is
 `host: mail.<domain>` with `authserver.host: auth.<domain>` - with a public `host`, set `authserver.host`, the
-auth-server's public name that sign-in redirects to. Set `mail.trustedAuthservId` to the authserv-id your inbound MTA stamps:
-while it's empty no sender is DKIM-verified, so members-only distribution lists drop all mail, list and forward-rule
+auth-server's public name that sign-in redirects to. `mail.trustedAuthservId` is the authserv-id of the `Authentication-Results`
+header your inbound MTA stamps, which the server trusts to say whether a sender's DKIM signature verified; with the bundled
+Postfix it defaults to Postfix's host name (`postfixBridge.hostname`), and with any other MTA (ses-bridge, your own) you set it.
+While it's empty no sender is DKIM-verified, so members-only distribution lists drop all mail, list and forward-rule
 copies get a rewritten From, and forwarded invites are refused. `/api/metrics`
 requires a token with a trusted role, so scrape it with a bearer token rather than `prometheus.io/*` annotations.
 
@@ -218,7 +220,7 @@ great way to get started. This script will automatically set up everything neede
 environment, including ingress with TLS support. Simply run the script from any linux compatible machine.
 
 ```bash
-./single_node_install.sh --domain mail.example.com --email admin@example.com
+curl -fsSL https://get.rapidmx.io | bash -s -- --domain example.com
 ```
 
 It installs k3s, helm, [Envoy Gateway](https://gateway.envoyproxy.io/) (whose Service is only reachable inside the
