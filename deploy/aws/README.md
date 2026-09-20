@@ -8,7 +8,7 @@ a security group and the instance; the instance's user data downloads `bootstrap
   **aws-ebs-csi-driver** with a `gp3` StorageClass, so volumes are **EBS**;
 - **Envoy Gateway**, whose Envoy Service is a Classic Load Balancer forwarding TCP with the **PROXY protocol** (Envoy
   still terminates TLS itself, and the server still sees each client's real address);
-- **cert-manager** with a Let's Encrypt `letsencrypt-prod` issuer;
+- **cert-manager**, whose Let's Encrypt certificates the chart issues from its own Issuer (registered with `RAPIDMX_ACME_EMAIL`);
 - the **RapidMX server chart** (webmail, auth-server, MongoDB, Redis, rspamd, ClamAV), sending mail through **SES**
   rather than Postfix.
 

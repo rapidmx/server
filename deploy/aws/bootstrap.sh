@@ -10,8 +10,9 @@
 #
 #   k3s (no ServiceLB, no in-tree cloud controller) -> aws-cloud-controller-manager (Services of type LoadBalancer
 #   become Classic Load Balancers) and aws-ebs-csi-driver (volumes become EBS) -> Envoy Gateway, whose Envoy Service is
-#   a Classic Load Balancer forwarding TCP with the PROXY protocol -> cert-manager with a Let's Encrypt ClusterIssuer ->
-#   the RapidMX server chart, sending mail through SES (https://github.com/rapidmx/ses-bridge) rather than Postfix.
+#   a Classic Load Balancer forwarding TCP with the PROXY protocol -> cert-manager (the chart issues its certificates from
+#   its own Let's Encrypt Issuer) -> the RapidMX server chart, sending mail through SES
+#   (https://github.com/rapidmx/ses-bridge) rather than Postfix.
 #
 # single_node_install.sh is the equivalent for a bare-metal or on-premises host, where nginx on the host takes the place
 # of the load balancer. This script is AWS-only, and deliberately has no uninstall: delete the CloudFormation stack.
@@ -236,8 +237,10 @@ function installOpenbao() {
   fi
 
   if ! kubectl -n "$OPENBAO_NAMESPACE" exec "$OPENBAO_POD" -- bao status -address="$OPENBAO_LOCAL_ADDRESS" -format=json 2>/dev/null | tr -d ' ' | grep -q '"sealed":false'; then
-    # Over stdin ("-"), so the key isn't in the vault pod's process list either.
-    printf '%s' "$OPENBAO_UNSEAL_KEY" | kubectl -n "$OPENBAO_NAMESPACE" exec -i "$OPENBAO_POD" -- bao operator unseal -address="$OPENBAO_LOCAL_ADDRESS" - >/dev/null \
+    # `bao operator unseal` takes the key only as an argument (it refuses stdin and, unlike Vault, "-"), so a shell in the
+    # pod reads it from stdin and passes it on: it isn't in this host's process list.
+    printf '%s\n' "$OPENBAO_UNSEAL_KEY" | kubectl -n "$OPENBAO_NAMESPACE" exec -i "$OPENBAO_POD" -- \
+      sh -c 'read -r key && exec bao operator unseal -address="$1" "$key"' sh "$OPENBAO_LOCAL_ADDRESS" >/dev/null \
       || fail "couldn't unseal OpenBao."
   fi
 
@@ -273,7 +276,7 @@ spec:
             - |
               while true; do
                 if bao status -format=json 2>/dev/null | tr -d ' ' | grep -q '"sealed":true'; then
-                  if printf '%s' "\$UNSEAL_KEY" | bao operator unseal - >/dev/null 2>&1; then
+                  if bao operator unseal "\$UNSEAL_KEY" >/dev/null 2>&1; then
                     echo "Unsealed OpenBao."
                   else
                     echo "Could not unseal OpenBao; retrying."
@@ -669,31 +672,22 @@ if [[ "$TLS" = "true" ]]; then
     || fail "cert-manager install failed."
   waitForDeployments cert-manager
 
-  # The webhook can take a moment to accept requests after its Deployment is Available.
+  # The chart brings its own Issuer (and Certificate), registered with $ACME_EMAIL, so no ClusterIssuer is made here. Its
+  # Issuer and Certificate are refused until cert-manager's webhook accepts requests, which can take a moment after its
+  # Deployment is Available; a server-side dry run of an Issuer goes through the webhook without creating anything.
   startTime=`date +%s`
-  until kubectl apply -f - << EOF
+  until kubectl apply --dry-run=server -f - >/dev/null 2>&1 << EOF
 apiVersion: cert-manager.io/v1
-kind: ClusterIssuer
+kind: Issuer
 metadata:
-  name: letsencrypt-prod
+  name: webhook-check
+  namespace: default
 spec:
-  acme:
-    server: https://acme-v02.api.letsencrypt.org/directory
-    email: $ACME_EMAIL
-    privateKeySecretRef:
-      name: letsencrypt-issuer-key
-    solvers:
-    - http01:
-        gatewayHTTPRoute:
-          parentRefs:
-          - group: gateway.networking.k8s.io
-            kind: Gateway
-            name: $GATEWAY_NAME
-            namespace: $GATEWAY_NAMESPACE
+  selfSigned: {}
 EOF
   do
     if [[ $(( `date +%s` - startTime )) -ge 300 ]]; then
-      fail "couldn't create the letsencrypt-prod ClusterIssuer."
+      fail "cert-manager's webhook isn't accepting requests."
     fi
     sleep 5
   done
@@ -787,13 +781,11 @@ if [[ "$OPENBAO" = "true" ]]; then
     --set openbao.pki.tokenSecret="$OPENBAO_PKI_SECRET")
 fi
 helm upgrade --install --create-namespace --namespace "$NAMESPACE" "$NAMESPACE" "$CHART" "${VERSION_ARGS[@]}" \
-  --set global.domain="$DOMAIN" --set service.host="$SERVER_HOST" \
+  --set global.domain="$DOMAIN" --set host="$SERVER_HOST" --set authserver.host="$AUTH_HOST" \
+  --set global.certmanager.email="$ACME_EMAIL" \
   "${OPENBAO_ARGS[@]}" \
-  --set gateway.tls="$GATEWAY_TLS" --set gateway.hsts=true \
-  --set gateway.name="$GATEWAY_NAME" --set gateway.namespace="$GATEWAY_NAMESPACE" \
-  --set gateway.httpsListener="$HTTPS_LISTENER" --set gateway.authHttpsListener="$AUTH_HTTPS_LISTENER" \
-  --set authserver.host="$AUTH_HOST" --set authserver.gateway.tls="$GATEWAY_TLS" \
-  --set authserver.gateway.name="$GATEWAY_NAME" --set authserver.gateway.namespace="$GATEWAY_NAMESPACE" \
+  --set global.gateway.tls="$GATEWAY_TLS" --set global.gateway.hsts=true \
+  --set global.gateway.name="$GATEWAY_NAME" --set global.gateway.namespace="$GATEWAY_NAMESPACE" \
   -f "$VALUES_FILE" || fail "the RapidMX server chart failed to install."
 rm -f "$VALUES_FILE"
 VALUES_FILE=""

@@ -88,7 +88,7 @@ A complete Helm chart is included for convenience to deploy and run on a Kuberne
 is easy using either the published helm chart in GitHub or install from the helm chart locally. Real inbound/outbound
 mail transport (Postfix, DKIM signing and [`postfix-bridge`](https://github.com/rapidmx/postfix-bridge)) is the
 `postfixBridge` dependency, installed with the chart. With a public `host`, set `postfixBridge.hostname` (Postfix's MX
-host name, which gets a Let's Encrypt certificate from cert-manager's `letsencrypt-prod` ClusterIssuer) and
+host name, which gets a Let's Encrypt certificate from the chart's own cert-manager Issuer) and
 `postfixBridge.domains` (the comma-separated domains it sends mail for); the render fails while they're the
 placeholders. Without cert-manager, set `postfixBridge.tls.certManager.enabled=false` for a self-signed certificate, or
 `postfixBridge.tls.existingSecret` to your own. Postfix signs mail with the DKIM keys the server writes to its

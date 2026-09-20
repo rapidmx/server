@@ -113,11 +113,10 @@ spec:
           `args` only, never `command`: `command` replaces the image's ENTRYPOINT (scripts/docker-entrypoint.sh), which
           writes the msmtp config PostfixSendmailTransport relays outbound mail through - without it every send fails.
           */}}
-          command: ["node"]
           {{- if ne $.Values.environment "production" }}
-          args: ["--inspect=127.0.0.1:9229", {{ $entrypoint | quote }}]
+          args: ["node", "--inspect=127.0.0.1:9229", {{ $entrypoint | quote }}]
           {{- else }}
-          args: [{{ $entrypoint | quote }}]
+          args: ["node", {{ $entrypoint | quote }}]
           {{- end }}
           envFrom:
             - configMapRef:

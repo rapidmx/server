@@ -22,6 +22,11 @@
   chart) while the auth-server signs them as itself, so every token was refused; both sides use the auth-server's host, as
   in 1.0.0-beta.4. With OpenBao the auth-server also never got its default admin account: External Secrets replaced the whole
   `service-secrets` Secret and dropped `default_accounts`, so it now merges its keys into the Secret the chart renders.
+- **The server could not send mail at all:** the chart's `command: ["node"]` replaced the image's entrypoint, which is what writes
+  msmtp's config, so `sendmail` failed with "no configuration file available"; the container now gets `args` only, as the chart's own
+  comment said.
+- **The domain DNS-setup page never found the MX record:** the chart didn't set `mail__dns__mx_hostname`; it defaults to
+  `mail.mxHostname` or Postfix's host name.
 - **Inbound mail was quarantined:** `service.config` no longer pointed the server at the rspamd and ClamAV Services, so both
   scanners defaulted to localhost, and an unreachable scanner quarantines the message.
 - **`service.host` is `host` again** in the places that still read the old name (the sender address of outbound mail and the
@@ -29,6 +34,9 @@
 - **Postfix must run with the postfix-bridge chart that sets `postfix.externalTrafficPolicy: Local`** (released after 1.2.0).
   Behind k3s' ServiceLB every internet client otherwise looks like an internal address, which Postfix trusts, so it relays for
   anyone using one of your domains as the sender. Nothing was relayed while testing, but do not expose port 25 with 1.2.0.
+- **deploy/aws** no longer creates a `letsencrypt-prod` ClusterIssuer (the chart issues its certificates from its own Issuer,
+  registered with `RAPIDMX_ACME_EMAIL`), passes the chart the values it reads now (`global.gateway.*`, `host`; it still passed
+  `gateway.*` and `service.host`, so the chart never used the shared Gateway) and unseals OpenBao with the key as an argument.
 - **cert-manager Issuers were never created,** because `global.certmanager.name` defaulted to `<fullname>-letsencrypt` while
   the chart only created an Issuer named `<fullname>-issuer`; the default is now `-issuer`. The Issuer manifest was
   also mis-indented, so it wouldn't have applied, and `issuerRef` carried a `namespace` cert-manager rejects.

@@ -6094,3 +6094,31 @@ found more than the flag:
 - **Test harness:** a 20-minute admin JWT can be minted inside the server pod with `@rapidrest/core` `JWTUtils.createToken`
   (config = `auth__secret` and `auth__options__*` from the pod env; user `{uid, roles: ["admin"]}`); `verified` on a Domain
   can't be set through the API by design. MFA is required for the real admin login (`auth__requireMFA`).
+
+### 2026-09-19 (evening) - DNS published; domain verified; inbound and outbound tested end to end
+
+- Cloudflare records published by JP; the server's own resolver (8.8.8.8 via CoreDNS, cache 30s) held the negative answer for the bare-name
+  TXT for ~5 minutes after 1.1.1.1 and my machine saw it, so verification failed until it aged out. Poll from inside the pod
+  (`dns.promises.resolveTxt`), not your workstation, before calling `POST /api/mail/domains/<d>/verify`.
+- **Tested:** internet -> port 25 (STARTTLS, certificate verified against the system store) -> Postfix -> bridge -> server -> scanners ->
+  mailbox; server `sendmail` -> Postfix (plaintext, in-cluster) -> OpenDKIM -> bridge -> mailbox, with the DKIM signature verified (dkimpy)
+  against the published DNS record; unknown recipient rejected at RCPT (no backscatter); relay and plaintext-outsider probes re-run and still
+  refused. **Not tested:** delivery to a real external mailbox (needs a recipient JP approves), SPF/DMARC as seen by a third-party receiver.
+- **Found on the way (fixed in this working tree):** `command: ["node"]` bypassed the image entrypoint, so msmtp had no config and every send
+  failed - c80ca7f added the comment "args only, never command" but left the command line; `mail__dns__mx_hostname` was never set. In
+  postfix-bridge (uncommitted there): the DKIM key mismatch, comma-separated domains, and Postfix's DNS client (see its NOTES).
+- The msmtp test needs `HOME=/home/node` under `kubectl exec` only if the entrypoint hasn't run; with the fix the config is at
+  `/home/node/.msmtprc` and plain `sendmail -f <addr> -t` works.
+
+### 2026-09-19 (night) - letsencrypt-prod ClusterIssuer removed from the installers
+
+The chart brings its own Issuer, so the ClusterIssuer the installers created was unused. single_node_install.sh had already stopped creating it
+(its --uninstall still removes one an older version recorded); removed from deploy/aws/bootstrap.sh and from the auth-server repo's k3s_install.sh.
+It also served as the wait for cert-manager's webhook (its `kubectl apply` retry loop), so that is now a server-side dry run of a throwaway Issuer.
+- deploy/aws/bootstrap.sh still passed the pre-refactor values (`gateway.*`, `authserver.gateway.*`, `gateway.httpsListener`, `service.host`), which
+  the chart ignores - so the bootstrap's shared Gateway would never have been used and its ClusterIssuer solver pointed at it while the chart's own
+  Issuer didn't. Now `global.gateway.name/namespace/tls/hsts`, `host`, `authserver.host` and `global.certmanager.email`; renders with SES and no
+  Postfix (two Issuers, two ReferenceGrants, both routes on shared-gateway). Also had the `bao operator unseal -` bug. **Not run on AWS.**
+- The live test host still has a `letsencrypt-prod` ClusterIssuer from an earlier script version; nothing references it (Postfix uses
+  `<release>-issuer`), it can be deleted with `kubectl delete clusterissuer letsencrypt-prod`.
+- postfix-bridge's standalone default is still `issuerKind: ClusterIssuer` / `letsencrypt-prod` (the server chart overrides it); left alone.
