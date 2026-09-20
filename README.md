@@ -28,7 +28,7 @@ git clone https://github.com/rapidmx/server
 | ------------ | :-------------------: |
 | Registry     | ghcr.io |
 | Repository   | /rapidmx/server |
-| Tag          | 1.0.0-beta.7 |
+| Tag          | 1.0.0-beta.8 |
 
 This project provides scripts for running in Docker or Kubernetes. For Docker, you will find *docker-compose* scripts
 in the project source. For Kubernetes, a *helm* chart is available both in the project source and via GitHub Container
@@ -169,7 +169,7 @@ requires a token with a trusted role, so scrape it with a bearer token rather th
 #### From GHCR
 
 ```bash
-helm upgrade --install --create-namespace --namespace rapidmx rapidmx oci://ghcr.io/rapidmx/charts/server --version 1.0.0-beta.7   --set global.jwt.secret="$(openssl rand -hex 32)" --set global.mailIngestSecret="$(openssl rand -hex 32)"   --set global.domain=example.com
+helm upgrade --install --create-namespace --namespace rapidmx rapidmx oci://ghcr.io/rapidmx/charts/server --version 1.0.0-beta.8   --set global.jwt.secret="$(openssl rand -hex 32)" --set global.mailIngestSecret="$(openssl rand -hex 32)"   --set global.domain=example.com
 ```
 
 #### From Local

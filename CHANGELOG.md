@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.8] - 2026-09-20
+
+### Added
+- Added mail.<domain> and auth.<domain> to the default global.corsHosts, since the auth-server reads the same list for its CORS origins and its return_to allowlist and never contained the mail host
+
+### Changed
+- Updated to auth-server 1.0.0-beta.14
+- Pass the mail and auth host names as global.corsHosts from single_node_install.sh and deploy/aws/bootstrap.sh, so --mail-host and --auth-host still reach both services
+- Document the fixes in the release notes and NOTES, with what had to be published for them to reach a deployment
+- Upgraded rapidmx deps
+- Upgraded auth-server and postfix-bridge helm deps
+
+### Fixed
+- Fixed cross-domain cookies
+- Fixed the chart writing every allowed browser origin wrapped in literal quote characters, so the server and the auth-server matched no origin and sign-out, the profile lookup and sign-in's return to the mail app were blocked, by writing each origin once, unquoted
+
 ## [1.0.0-beta.7] - 2026-09-20
 
 ### Changed
@@ -769,7 +785,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed test from .dockerignore, fixing yarn build's lint step failing outright when the build context is missing the test directory its tsconfig.eslint.json requires
 - Removed docker-compose.mail.yml's partial server: service block, since include: only supports merging resources that don't already exist in the including file and hard-errors ("services.server conflicts with imported resource") on a Compose version newer than whatever this had only ever been tested against locally
 
-[Unreleased]: https://github.com/rapidmx/server/compare/v1.0.0-beta.7...HEAD
+[Unreleased]: https://github.com/rapidmx/server/compare/v1.0.0-beta.8...HEAD
+[1.0.0-beta.8]: https://github.com/rapidmx/server/compare/v1.0.0-beta.7...v1.0.0-beta.8
 [1.0.0-beta.7]: https://github.com/rapidmx/server/compare/v1.0.0-beta.6...v1.0.0-beta.7
 [1.0.0-beta.6]: https://github.com/rapidmx/server/compare/v1.0.0-beta.5...v1.0.0-beta.6
 [1.0.0-beta.5]: https://github.com/rapidmx/server/compare/v1.0.0-beta.4...v1.0.0-beta.5

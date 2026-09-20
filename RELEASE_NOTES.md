@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v1.0.0-beta.8
+
 ### Fixes
 
 - **Sign-out did not sign out of the auth-server, and sign-in never returned to the mail app:** the chart wrote every allowed

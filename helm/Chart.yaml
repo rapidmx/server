@@ -6,7 +6,7 @@ description: >-
   postfix-bridge, https://github.com/rapidmx/postfix-bridge) as a dependency.
 name: server
 version: 1.0.0
-appVersion: 1.0.0-beta.7
+appVersion: 1.0.0-beta.8
 dependencies:
   - name: mongodb
     repository: '@bitnami'
