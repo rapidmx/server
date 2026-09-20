@@ -8,8 +8,13 @@ global:
     email: admin@{{ tpl $.Values.global.domain . }}
     name: '{{ include "rrst.fullname" . }}-issuer'
     namespace: '{{ .Release.Namespace }}'
+  # Browser origins each service accepts credentialed cross-origin calls from. Shared with the auth-server subchart, where it
+  # is both its CORS list and the list of origins a sign-in's ?return_to= may send the browser back to - so the server's host
+  # has to be here for sign-out, the profile lookup and the return to the mail app to work. Every service adds its own host.
   corsHosts:
     - localhost:3000
+    - mail.{{ tpl (toString .Values.global.domain) . }}
+    - auth.{{ tpl (toString .Values.global.domain) . }}
   database:
     type: mongo
   domain: domain.local

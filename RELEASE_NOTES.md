@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+### Fixes
+
+- **Sign-out did not sign out of the auth-server, and sign-in never returned to the mail app:** the chart wrote every allowed
+  browser origin twice-quoted (`["\"https://mail.example.com\""]`, a regression from `c80ca7f`), so neither service matched any
+  origin - the browser blocked the mail app's cross-origin logout, profile and username calls, and the auth-server dropped
+  every `return_to` it was given. Origins are plain again, and `global.corsHosts` now lists `mail.<domain>` and `auth.<domain>`
+  by default (the auth-server reads this list too, and it had never contained the mail host). `single_node_install.sh` and
+  `deploy/aws/bootstrap.sh` pass the real `--mail-host`/`--auth-host` names as `global.corsHosts`. Needs an auth-server chart
+  with the same one-word fix (its `service-config.yaml` had the same bug).
+- **Replies to external addresses vanished:** Postfix routed every recipient through postfix-bridge, which handed the message
+  back to the server, which dropped it. Fixed in the postfix-bridge chart (`relay_transport` instead of a static
+  `transport_maps`); needs that chart's new release, then `helm upgrade`.
+- **"No mailbox available" for every account:** `@rapidmx/restapi` asked the auth-server for a user's names at an endpoint that
+  doesn't exist. Fixed in `@rapidmx/restapi`.
+- Web client fixes shipped with `@rapidmx/react-shared` and `@rapidmx/web-client`: the admin console sends an admin without an
+  elevated token to the auth-server's `/auth/elevate` page and back, DNS records have copy buttons, the admin console no longer
+  shows the custom header, the account menu shows the profile name (else the username) and an Account link, sender addresses are
+  always visible, new mail appears without a refresh, and a failed send shows the mail system's own error.
+
 ## v1.0.0-beta.7
 
 ## v1.0.0-beta.6

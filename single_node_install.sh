@@ -1424,6 +1424,7 @@ if ! helm upgrade --install --create-namespace --namespace "$NAMESPACE" "$NAMESP
   "${OPENBAO_ARGS[@]}" \
   --set global.gateway.tls="$GATEWAY_TLS" --set global.gateway.hsts=true "${GATEWAY_ARGS[@]}" \
   --set authserver.host="$AUTH_HOST" \
+  --set-json "global.corsHosts=[\"$SERVER_HOST\",\"$AUTH_HOST\"]" \
   -f "$VALUES_FILE"; then
   echo "There was a problem installing the RapidMX server."
   exit 1

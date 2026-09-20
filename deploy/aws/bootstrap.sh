@@ -826,6 +826,7 @@ if [[ "$OPENBAO" = "true" ]]; then
 fi
 helm upgrade --install --create-namespace --namespace "$NAMESPACE" "$NAMESPACE" "$CHART" "${VERSION_ARGS[@]}" \
   --set global.domain="$DOMAIN" --set host="$SERVER_HOST" --set authserver.host="$AUTH_HOST" \
+  --set-json "global.corsHosts=[\"$SERVER_HOST\",\"$AUTH_HOST\"]" \
   --set global.certmanager.email="$ACME_EMAIL" \
   "${OPENBAO_ARGS[@]}" \
   --set global.gateway.tls="$GATEWAY_TLS" --set global.gateway.hsts=true \

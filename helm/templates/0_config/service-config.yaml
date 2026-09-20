@@ -13,10 +13,10 @@ data:
   {{- $origins := list }}
   {{- range $host := $hosts }}
   {{-   range $scheme := $schemes }}
-  {{-     $origins = append $origins (printf "%s://%s" $scheme (include "rrst.render" (dict "value" $host "context" $)) | quote) }}
+  {{-     $origins = append $origins (printf "%s://%s" $scheme (include "rrst.render" (dict "value" $host "context" $))) }}
   {{-   end }}
   {{- end }}
-  cors__origins: {{ $origins | toJson | quote }}
+  cors__origins: {{ $origins | uniq | toJson | quote }}
   trusted_proxies: {{ $.Values.global.trustedProxies | default list | toJson | quote }}
   {{- range $k, $v := $.Values.service.config }}
   {{ $k }}: {{ include "rrst.render" (dict "value" $v "context" $) | quote }}
