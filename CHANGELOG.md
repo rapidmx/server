@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.7] - 2026-09-20
+
+### Changed
+- Updated @rapidrest/cli dep
+- Document the fix in the release notes
+
+### Fixed
+- Fixed helm lint failing on a fresh checkout, and so CI, because the auth-server URL read authserver.host, which is only set when the auth-server subchart is in helm/charts and its tarballs are git-ignored, by falling back to auth.<global.domain>, the default the JWT issuer uses
+
 ## [1.0.0-beta.6] - 2026-09-20
 
 ### Changed
@@ -760,7 +769,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed test from .dockerignore, fixing yarn build's lint step failing outright when the build context is missing the test directory its tsconfig.eslint.json requires
 - Removed docker-compose.mail.yml's partial server: service block, since include: only supports merging resources that don't already exist in the including file and hard-errors ("services.server conflicts with imported resource") on a Compose version newer than whatever this had only ever been tested against locally
 
-[Unreleased]: https://github.com/rapidmx/server/compare/v1.0.0-beta.6...HEAD
+[Unreleased]: https://github.com/rapidmx/server/compare/v1.0.0-beta.7...HEAD
+[1.0.0-beta.7]: https://github.com/rapidmx/server/compare/v1.0.0-beta.6...v1.0.0-beta.7
 [1.0.0-beta.6]: https://github.com/rapidmx/server/compare/v1.0.0-beta.5...v1.0.0-beta.6
 [1.0.0-beta.5]: https://github.com/rapidmx/server/compare/v1.0.0-beta.4...v1.0.0-beta.5
 [1.0.0-beta.4]: https://github.com/rapidmx/server/compare/v1.0.0-beta.3...v1.0.0-beta.4
