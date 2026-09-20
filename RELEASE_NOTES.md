@@ -37,6 +37,10 @@
 - **deploy/aws** no longer creates a `letsencrypt-prod` ClusterIssuer (the chart issues its certificates from its own Issuer,
   registered with `RAPIDMX_ACME_EMAIL`), passes the chart the values it reads now (`global.gateway.*`, `host`; it still passed
   `gateway.*` and `service.host`, so the chart never used the shared Gateway) and unseals OpenBao with the key as an argument.
+- **A domain added in the admin console now works at once,** without restarting Postfix, re-running the installer or upgrading the release: Postfix accepts mail for
+  it, lets the server send as it and signs its mail with the DKIM key the console shows (previously the sender allow-list and OpenDKIM's keys were fixed when Postfix started,
+  so a new domain could not send, and the first domain signed with a key nobody had published, until Postfix was restarted). Needs the postfix-bridge chart with this change;
+  `postfixBridge.domains` / `--mail-domains` is now only the set Postfix knows at start.
 - **"mail.trustedAuthservId is empty" after every install, and setting it did nothing:** the value was only read by the install
   warning, never passed to the server (`mail__security__trusted_authserv_id`). It now is, and with the bundled Postfix it defaults
   to Postfix's host name, the authserv-id its OpenDKIM stamps, so no sender is left unverified and the warning appears only when

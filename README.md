@@ -89,7 +89,7 @@ is easy using either the published helm chart in GitHub or install from the helm
 mail transport (Postfix, DKIM signing and [`postfix-bridge`](https://github.com/rapidmx/postfix-bridge)) is the
 `postfixBridge` dependency, installed with the chart. With a public `host`, set `postfixBridge.hostname` (Postfix's MX
 host name, which gets a Let's Encrypt certificate from the chart's own cert-manager Issuer) and
-`postfixBridge.domains` (the comma-separated domains it sends mail for); the render fails while they're the
+`postfixBridge.domains` (the domains Postfix knows when it starts; every domain you add in the admin console works at once, without a restart or an upgrade); the render fails while they're the
 placeholders. Without cert-manager, set `postfixBridge.tls.certManager.enabled=false` for a self-signed certificate, or
 `postfixBridge.tls.existingSecret` to your own. Postfix signs mail with the DKIM keys the server writes to its
 `mail.dkim.storage` volume, so with the default `ReadWriteOnce` both pods must run on the same node. Set `postfixBridge.create=false` to install postfix-bridge as its
@@ -231,8 +231,8 @@ and the chart's routes attach to it; with `--gateway chart` the chart creates a 
 script merges them into one Envoy Service for nginx to forward to. `--domain` is the mail domain (e.g. `example.com`): the server is served at
 `mail.<domain>`, the auth-server at `auth.<domain>`, and mail is addressed `@<domain>`. `--mail-host` and `--auth-host`
 change those two names, as a label (`--mail-host rapidmx` gives `rapidmx.<domain>`) or a whole host name. Postfix
-listens on port 25 (through k3s' ServiceLB) as the server's host name and sends mail for
-`--mail-domains` (default `<domain>`). Both host names must resolve to the machine, and your mail domains' MX records
+listens on port 25 (through k3s' ServiceLB) as the server's host name, and every domain added in the admin console
+receives, sends and signs mail with nothing to restart (`--mail-domains`, default `<domain>`, is only the set Postfix knows at start). Both host names must resolve to the machine, and your mail domains' MX records
 point at `mail.<domain>`. With `--tls false` Postfix gets a
 self-signed certificate. When a host firewall is active (ufw
 on Ubuntu/Debian, firewalld on RHEL/Fedora) it opens SMTP/HTTP/HTTPS and allows k3s' pod and service networks; under SELinux it also allows nginx to relay. Set `CHART=./helm` to install the chart from a checkout instead of the published one, and

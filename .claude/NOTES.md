@@ -6150,3 +6150,16 @@ DNS server holding a test DKIM key, all in docker) and then confirmed on the hos
 - **Gotchas hit while testing:** a stale patched `postfix-bridge-1.2.0.tgz` sitting beside the 1.3.0 one in `helm/charts` shadowed it (Helm loads every tarball
   there) and made a healthy chart fail with "ingestSecret is required"; `.test`/`.example` names never reach OpenDKIM's resolver (unbound treats them as special-use);
   dkimpy wants a PKCS#1 key with LF endings; Git Bash rewrites `/path` docker arguments (use MSYS_NO_PATHCONV=1).
+
+### 2026-09-20 (night) - domains from the admin console work without a restart (implemented in postfix-bridge; see its NOTES)
+
+JP asked that adding a domain in the admin console never need a redeploy, restart or helm upgrade. The server chart needed no change: the server already writes each
+domain's key to the shared /var/lib/rspamd/dkim volume and answers postfix-bridge's `GET /internal/mta/domain`. Postfix's static sender list and OpenDKIM's start-time tables
+were the gap. Proven in a lab (14/14) and on the real host: registering a domain through `POST /api/mail/domains` put its key in OpenDKIM in 8 s with the pod untouched,
+the in-cluster sender check flipped from refused to allowed, OpenDKIM's key equalled the console's published `dkimPublicKey`, and deleting the domain and key made the watcher drop it
+from the tables. Throwaway domains (`dyn-test.invalid`, `example.com`) were created and removed; Mongo was back to 0 domains/mailboxes.
+- **Host caveat:** a signed delivery on the host was not run (needs a recipient domain that resolves publicly and is verified) - repeat with the real domain once JP has published
+  the new DKIM and ownership records for the rebuilt install.
+- **Watch out:** JP's uncommitted edit adding `authserver.service.config.smtp_config__host` to helm/values.yaml renders `{{ .Values.mail.mxHostname ... }}` inside the auth-server
+  subchart, where `.Values.mail` is nil - `helm template`/upgrade fails ("nil pointer evaluating interface {}.mxHostname"). Left untouched; test with the committed values.yaml.
+- reserved TLDs (.invalid, .local, .internal, ...) are auto-verified by design (`isReservedDomainName`), so they are convenient throwaway test domains but say nothing about DNS verification.

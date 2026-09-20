@@ -50,7 +50,8 @@ OPENBAO_KEYS_SECRET=openbao-keys
 OPENBAO_KV_MOUNT=${OPENBAO_KV_MOUNT:-secret}
 OPENBAO_PKI_MOUNT=${OPENBAO_PKI_MOUNT:-pki}
 OPENBAO_PKI_ROLE=${OPENBAO_PKI_ROLE:-rapidmx-encryption}
-# Comma-separated domains Postfix accepts outbound mail from (postfixBridge.domains). Defaults to --domain.
+# Comma-separated domains Postfix knows when it starts (postfixBridge.domains). Defaults to --domain. Every other domain added in the
+# admin console works without a restart or a re-run.
 MAIL_DOMAINS=""
 UNINSTALL=false
 SKIP_K3S=false
@@ -792,7 +793,8 @@ do
           echo -e "\t\t\t\tthe auth-server at auth.<domain>, and mail is addressed @<domain>"
           echo -e "\t--mail-host <name>\t\tThe server's own host name or label (default mail, i.e. mail.<domain>)"
           echo -e "\t--auth-host <name>\t\tThe auth-server's host name or label (default auth, i.e. auth.<domain>)"
-          echo -e "\t--mail-domains <domains>\tComma-separated domains Postfix sends mail for (default <domain>)"
+          echo -e "\t--mail-domains <domains>\tComma-separated domains Postfix knows when it starts (default <domain>); domains added"
+          echo -e "\t\t\t\tin the admin console later need no restart or re-run"
           echo -e "\t--version <version>\t\tThe version of mail-server to deploy"
           echo -e "\t--tls <true|false>\t\tInstalls cert manager and enables TLS ingress support (uses Let's Encrypt)"
           echo -e "\t--gateway <shared|chart>\tshared (default): one Gateway made by this script that the release's routes"
@@ -1484,8 +1486,8 @@ if [[ "$GATEWAY_TLS" = "true" ]]; then
   SCHEME=https
 fi
 echo "The server is at $SCHEME://$SERVER_HOST, with sign-in at $SCHEME://$AUTH_HOST."
-echo "Postfix listens on port 25 as $SERVER_HOST and sends mail for $MAIL_DOMAINS. Add each domain in the admin console"
-echo "and point its MX record at $SERVER_HOST to receive mail for it."
+echo "Postfix listens on port 25 as $SERVER_HOST and knows $MAIL_DOMAINS. Add each domain in the admin console, publish the DNS"
+echo "records it shows (its MX record points at $SERVER_HOST) and it receives, sends and signs mail: nothing to restart."
 if [[ "$OPENBAO" = "true" ]]; then
   echo "The release's secrets live in OpenBao at $OPENBAO_KV_MOUNT/$OPENBAO_SECRETS_PATH, and External Secrets keeps them"
   echo "in the Kubernetes Secrets the pods read, so a helm upgrade doesn't have to pass any of them. Read one with:"
