@@ -11,6 +11,13 @@
 - **A Gateway the chart doesn't create can terminate TLS:** with `global.gateway.name` and `global.gateway.namespace` set,
   the chart's routes attach to every listener of that Gateway that accepts the host, and the chart renders the
   ReferenceGrant that lets it read each `<host>-tls-cert` Secret.
+- **The auth-server's e-mail (sign-in and verification codes) is configured:** `global.smtp` (host, port, secure, ignoreTLS,
+  requireTLS, from) feeds the auth-server's `smtp_config` and `templates.from.email`. The default is the bundled Postfix
+  over the cluster network (host `postfix`, port 25, TLS off for that hop because Postfix's certificate is for its public host
+  name), from `noreply@<global.domain>`; the auth-server can only send over SMTP, so on AWS `deploy/aws/bootstrap.sh` points it
+  at SES's SMTP endpoint with `RAPIDMX_SES_SMTP_USERNAME`/`RAPIDMX_SES_SMTP_PASSWORD` (kept in a Secret, read through the
+  new `authserver.service.extraEnv`) and leaves e-mail unconfigured without them. Needs an auth-server image and chart
+  with `nodemailer` and `service.extraEnv`; earlier ones ignore `extraEnv` and fail every send with a missing `nodemailer`.
 
 ### Fixes
 

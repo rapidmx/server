@@ -58,6 +58,13 @@ global:
     create: false
     name: ''
     annotations: {}
+  smtp:
+    host: postfix
+    port: 25
+    secure: false
+    ignoreTLS: true
+    requireTLS: false
+    from: ''
   storageClass: ''
   trustedProxies:
     - 10.0.0.0/8
@@ -160,6 +167,18 @@ authserver:
     config:
       auth__allowRegistration: false
       auth__requireMFA: false
+      # Rendered by the auth-server subchart, so only this block's own values and global.* are visible here (not mail.*).
+      # To leave e-mail unconfigured set every smtp_config__* key here to null: an smtp_config without a host fails
+      # with "No host specified in SMTP configuration".
+      smtp_config__host: '{{ .Values.global.smtp.host }}'
+      smtp_config__port: '{{ .Values.global.smtp.port }}'
+      smtp_config__secure: '{{ .Values.global.smtp.secure }}'
+      smtp_config__ignoreTLS: '{{ .Values.global.smtp.ignoreTLS }}'
+      smtp_config__requireTLS: '{{ .Values.global.smtp.requireTLS }}'
+      templates__from__email: >-
+        {{ .Values.global.smtp.from | default (printf "noreply@%s" (tpl
+        (toString .Values.global.domain) .)) }}
+    extraEnv: []
 postfixBridge:
   create: true
   nameOverride: postfix-bridge

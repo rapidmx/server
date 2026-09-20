@@ -51,6 +51,12 @@ Manager. The stack only reports success once the whole install finished, so a fa
   and the account may still be in the SES sandbox. Inbound needs [`ses-bridge`](https://github.com/rapidmx/ses-bridge)
   deployed per mail domain, with its Lambda in this VPC so it can reach the internal `/internal/mta` load balancer this
   stack creates (the public Gateway answers 404 for `/internal`). The summary prints the exact deploy command.
+- **The auth-server's e-mail:** it can only send its sign-in and verification codes over SMTP, which can't use the instance's
+  role, so set `RAPIDMX_SES_SMTP_USERNAME` and `RAPIDMX_SES_SMTP_PASSWORD` (an SES SMTP account, from the SES console's SMTP
+  settings) for it to send through `email-smtp.<region>.amazonaws.com` as `RAPIDMX_MAIL_FROM` (default `noreply@<domain>`, which
+  must be a verified SES identity). Without them its e-mail stays unconfigured and the summary says so. The stack has no
+  parameter for them, so that a password isn't kept in the instance's user data: re-run `bootstrap.sh` on the instance with
+  them set (see below).
 - **One instance, no HA:** a single k3s node with `ReadWriteOnce` EBS volumes. Back up the database before upgrading —
   the server creates and updates its schema at startup, with no migrations.
 
@@ -66,7 +72,7 @@ RAPIDMX_DOMAIN=example.com RAPIDMX_HOSTED_ZONE_ID=Z123EXAMPLE \
 
 `RAPIDMX_MAIL_HOST`, `RAPIDMX_AUTH_HOST` (a label or a whole host name), `RAPIDMX_TLS`, `RAPIDMX_NAMESPACE`, `RAPIDMX_CHART`,
 `RAPIDMX_CHART_VERSION`, `RAPIDMX_AUTH_SECRET`,
-`RAPIDMX_INGEST_SECRET`, `RAPIDMX_INGEST_CIDRS`, `RAPIDMX_WEB_CIDRS`, `RAPIDMX_SES_REGION`, `RAPIDMX_STORAGE_CLASS`,
+`RAPIDMX_INGEST_SECRET`, `RAPIDMX_INGEST_CIDRS`, `RAPIDMX_WEB_CIDRS`, `RAPIDMX_SES_REGION`, `RAPIDMX_SES_SMTP_USERNAME`, `RAPIDMX_SES_SMTP_PASSWORD`, `RAPIDMX_MAIL_FROM`, `RAPIDMX_STORAGE_CLASS`,
 `RAPIDMX_CLUSTER_NAME`, `RAPIDMX_OPENBAO`, `RAPIDMX_OPENBAO_ADDRESS` and `ENVOY_GATEWAY_VERSION` are the rest; see the
 comment at the top of the script. Re-running it keeps the release's existing secrets.
 

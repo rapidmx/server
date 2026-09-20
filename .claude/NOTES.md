@@ -6163,3 +6163,22 @@ from the tables. Throwaway domains (`dyn-test.invalid`, `example.com`) were crea
 - **Watch out:** JP's uncommitted edit adding `authserver.service.config.smtp_config__host` to helm/values.yaml renders `{{ .Values.mail.mxHostname ... }}` inside the auth-server
   subchart, where `.Values.mail` is nil - `helm template`/upgrade fails ("nil pointer evaluating interface {}.mxHostname"). Left untouched; test with the committed values.yaml.
 - reserved TLDs (.invalid, .local, .internal, ...) are auto-verified by design (`isReservedDomainName`), so they are convenient throwaway test domains but say nothing about DNS verification.
+
+### 2026-09-20 (late) - the auth-server's e-mail (smtp_config) through Postfix, or SES on AWS
+
+JP's uncommitted `authserver.service.config.smtp_config__host` (copied from `mail__dns__mx_hostname`) failed to render: the auth-server subchart can't see `.Values.mail`/`.Values.postfixBridge`,
+only its own values and `global.*`. So the settings live in `global.smtp` (host, port, secure, ignoreTLS, requireTLS, from) and `authserver.service.config` maps them to `smtp_config__*` and
+`templates__from__email` (`noreply@<global.domain>` when `from` is empty). SMTP is `@rapidrest/core` `MessagingUtils` -> `nodemailer.createTransport(smtp_config)`; there is no SES transport, and an
+`smtp_config` without a host throws "No host specified in SMTP configuration" (so "off" means nulling every `smtp_config__*` key, not just the host).
+- **Postfix (default):** host `postfix` (the Service), port 25, `secure: false`, `ignoreTLS: true`. Measured from a pod with nodemailer's `verify()`: the default (opportunistic STARTTLS) fails with
+  "Host: postfix. is not in the cert's altnames: DNS:mail.<domain>" because Postfix offers STARTTLS with the public host's certificate; `ignoreTLS` (or requireTLS + rejectUnauthorized false) works.
+  Plaintext is fine there: only the cluster's own internalNetworks may relay, and the sender domain has to be in Postfix's allowed list (`global.domain` is). A real send with the auth-server pod's env
+  (config built the nconf way, booleans parsed) was accepted: `250 2.0.0 Ok: queued` for noreply@powerlevel.gg -> postmaster@powerlevel.gg.
+- **SES:** SMTP needs an SMTP account (username/password derived from an IAM user), not the instance role. `deploy/aws/bootstrap.sh` takes `RAPIDMX_SES_SMTP_USERNAME`/`_PASSWORD` (and `RAPIDMX_MAIL_FROM`),
+  writes the Secret `<fullname>-smtp` from files, and sets `global.smtp` to `email-smtp.<region>.amazonaws.com:587` with `requireTLS` plus `authserver.service.extraEnv` (secretKeyRef) for
+  `smtp_config__auth__user/pass`. Without credentials it nulls the `smtp_config__*` keys and the summary says e-mail is off. The values file is one YAML doc: `global:` must be emitted once (it's shared with authSecret).
+- **auth-server repo:** added `nodemailer ^10.0.1` to dependencies (core only lists it as a devDependency; the running image had no `/app/node_modules/nodemailer`, so nothing could ever be sent) and a
+  `service.extraEnv` hook to its chart (envFrom sources are fixed, so a Secret-held password had nowhere to go). Neither is released: the host's auth-server image (beta.12) still lacks nodemailer, so
+  a real end-to-end send from the auth-server needs a new image; the chart-side proof used the server pod's nodemailer with the auth-server pod's env. The bundled `auth-server-1.0.0-beta.12.tgz`
+  ignores `extraEnv` until a new chart is published (tested with a locally patched copy in the scratchpad).
+- Host release rapidmx (rev 4) was upgraded from a scratch copy of the chart with these values (`helm upgrade --reset-then-reuse-values`); Committed with the docs, unreleased.

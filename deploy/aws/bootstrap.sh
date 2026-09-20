@@ -34,6 +34,12 @@
 #   RAPIDMX_INGEST_CIDRS     Comma-separated CIDRs allowed to reach /internal/mta (default: the VPC's own CIDR).
 #   RAPIDMX_WEB_CIDRS        Comma-separated CIDRs allowed to reach HTTP/HTTPS (default: everywhere).
 #   RAPIDMX_SES_REGION       Region SES sends from (default: this instance's region).
+#   RAPIDMX_SES_SMTP_USERNAME, RAPIDMX_SES_SMTP_PASSWORD
+#                            SES SMTP credentials (SES console > SMTP settings; the instance's IAM role can't be used for
+#                            SMTP). The auth-server can only send its sign-in and verification codes over SMTP, so it
+#                            sends them through SES's SMTP endpoint with these; without them its e-mail stays unconfigured.
+#                            Kept in the Secret <fullname>-smtp.
+#   RAPIDMX_MAIL_FROM        The address those codes come from (default noreply@<domain>, a verified SES identity's domain).
 #   RAPIDMX_STORAGE_CLASS    Storage class for the volumes (default gp3, created here).
 #   RAPIDMX_OPENBAO          "true" (default) installs OpenBao and keeps the release's secrets and its mail encryption
 #                            CA in it; "false" keeps them in Kubernetes Secrets.
@@ -439,6 +445,9 @@ OPENBAO_SECRETS_PATH="$FULLNAME/secrets"
 OPENBAO_ESO_SECRET="$FULLNAME-openbao-eso"
 OPENBAO_PKI_SECRET="$FULLNAME-openbao-pki"
 ACME_EMAIL=${RAPIDMX_ACME_EMAIL:-admin@$DOMAIN}
+SMTP_USERNAME=${RAPIDMX_SES_SMTP_USERNAME:-}
+SMTP_PASSWORD=${RAPIDMX_SES_SMTP_PASSWORD:-}
+MAIL_FROM=${RAPIDMX_MAIL_FROM:-noreply@$DOMAIN}
 
 NODE_NAME=`metadata local-hostname` || fail "no EC2 instance metadata service - this script only runs on EC2."
 [[ -n "$NODE_NAME" ]] || fail "the instance metadata service didn't return this instance's private DNS name."
@@ -739,11 +748,31 @@ fi
 VALUES_FILE=`mktemp /tmp/rapidmx-values.XXXXXX`
 chmod 600 "$VALUES_FILE"
 {
+  printf 'global:\n'
   if [[ "$OPENBAO" != "true" ]]; then
     # With OpenBao these live in the vault, and External Secrets - not this file - puts them in front of the pods.
-    printf 'global:\n  authSecret: %s\n  mailIngestSecret: %s\n' "`yamlQuote "$AUTH_SECRET"`" "`yamlQuote "$INGEST_SECRET"`"
+    printf '  authSecret: %s\n  mailIngestSecret: %s\n' "`yamlQuote "$AUTH_SECRET"`" "`yamlQuote "$INGEST_SECRET"`"
   fi
+  # The auth-server can only send its sign-in and verification codes through SMTP, so it uses SES's endpoint with an SMTP
+  # account's credentials (from a Secret, below). Without that account its e-mail is left unconfigured rather than pointed at
+  # an endpoint that would refuse it.
+  printf '  smtp:\n    host: %s\n    port: 587\n    secure: false\n    ignoreTLS: false\n    requireTLS: true\n    from: %s\n' \
+    "`yamlQuote "email-smtp.$REGION.amazonaws.com"`" "`yamlQuote "$MAIL_FROM"`"
   printf 'common:\n  storageClass: %s\n' "`yamlQuote "$STORAGE_CLASS"`"
+  printf 'authserver:\n  service:\n'
+  if [[ -n "$SMTP_USERNAME" && -n "$SMTP_PASSWORD" ]]; then
+    printf '    extraEnv:\n'
+    for entry in username:smtp_config__auth__user password:smtp_config__auth__pass; do
+      printf '      - name: %s\n        valueFrom:\n          secretKeyRef:\n            name: %s-smtp\n            key: %s\n' \
+        "${entry#*:}" "$FULLNAME" "${entry%%:*}"
+    done
+  else
+    # Every smtp_config__* key, not just the host: an smtp_config without a host fails with "No host specified in SMTP configuration".
+    printf '    config:\n'
+    for key in host port secure ignoreTLS requireTLS; do
+      printf '      smtp_config__%s: null\n' "$key"
+    done
+  fi
   # No Postfix: outbound mail goes to SES through the instance's IAM role, inbound arrives from ses-bridge's Lambda,
   # which posts to the internal load balancer below (the public Gateway answers 404 for /internal).
   printf 'postfixBridge:\n  create: false\n'
@@ -758,6 +787,21 @@ chmod 600 "$VALUES_FILE"
     printf '      - %s\n' "${ingestCidrs[@]}"
   fi
 } > "$VALUES_FILE"
+
+if [[ -n "$SMTP_USERNAME" && -n "$SMTP_PASSWORD" ]]; then
+  # The auth-server's SMTP account, in a Secret its pod reads (chart value authserver.service.extraEnv above). Written from
+  # files, so neither value passes through this host's process list.
+  kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+  smtpDir=`mktemp -d`
+  chmod 700 "$smtpDir"
+  printf '%s' "$SMTP_USERNAME" > "$smtpDir/username"
+  printf '%s' "$SMTP_PASSWORD" > "$smtpDir/password"
+  kubectl -n "$NAMESPACE" create secret generic "$FULLNAME-smtp" --from-file="$smtpDir/username" --from-file="$smtpDir/password" \
+    --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+  smtpStatus=$?
+  rm -rf "$smtpDir"
+  [[ $smtpStatus -eq 0 ]] || fail "couldn't create the $FULLNAME-smtp Secret."
+fi
 
 GATEWAY_TLS=false
 if [[ -n "$HTTPS_LISTENER" ]]; then
@@ -820,6 +864,13 @@ install -d -m 0700 "`dirname "$SUMMARY_FILE"`"
   echo "  MTA_INGEST_BASE_URL=http://${INGEST_LB:-<the $FULLNAME-internal-ingest load balancer>}/internal/mta \\"
   echo "  MTA_INGEST_SECRET=$INGEST_SECRET yarn deploy"
   echo "Then publish its DKIM records, point each mail domain's MX at SES, and activate its receipt rule set."
+  if [[ -n "$SMTP_USERNAME" && -n "$SMTP_PASSWORD" ]]; then
+    echo "The auth-server sends its sign-in codes from $MAIL_FROM through email-smtp.$REGION.amazonaws.com with the SMTP account"
+    echo "in the $FULLNAME-smtp Secret; that address's domain must be a verified SES identity."
+  else
+    echo "The auth-server's e-mail (sign-in and verification codes) is NOT configured: it can only send over SMTP. Re-run with"
+    echo "RAPIDMX_SES_SMTP_USERNAME and RAPIDMX_SES_SMTP_PASSWORD set to an SES SMTP account to turn it on."
+  fi
   echo
   if [[ "$OPENBAO" = "true" ]]; then
     echo "Secrets live in OpenBao at $OPENBAO_KV_MOUNT/$OPENBAO_SECRETS_PATH, and External Secrets keeps them in the"

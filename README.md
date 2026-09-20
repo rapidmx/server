@@ -102,6 +102,13 @@ fails if both are on at once. The pod gets its AWS credentials from `serviceAcco
 internal load balancer for `/internal/mta`, which ses-bridge's Lambda calls from inside the VPC - the public Gateway
 still answers 404 for `/internal`. Restrict it with `mail.ingestService.loadBalancerSourceRanges`.
 
+The bundled auth-server sends its sign-in and verification codes by e-mail, which it can only do over SMTP, so it has its own
+settings, `global.smtp` (the auth-server subchart can't read `mail.*`). They default to the bundled Postfix over the cluster
+network (host `postfix`, port 25, no TLS on that hop) from `noreply@<global.domain>` (`global.smtp.from`). With SES, point
+`global.smtp.host` at `email-smtp.<region>.amazonaws.com` (port 587, `ignoreTLS=false`, `requireTLS=true`) and give it an SES
+SMTP account's `smtp_config__auth__user` / `smtp_config__auth__pass` from a Secret through `authserver.service.extraEnv`
+(`deploy/aws/bootstrap.sh` does all of this from `RAPIDMX_SES_SMTP_USERNAME` and `RAPIDMX_SES_SMTP_PASSWORD`).
+
 Set `global.domain` to the deployment's mail domain (e.g. `example.com`): mail is addressed `@<domain>`, the server is
 served at `service.host` (`mail.<domain>` by default), the auth-server at `authserver.host` (set it to `auth.<domain>` —
 it can't default to a template, because the auth-server subchart reads its own `host` literally), and the JWT audience
