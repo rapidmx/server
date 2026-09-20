@@ -341,10 +341,12 @@ Generates the URL to the auth server.
 Usage: include "rapidmx.authServerURL" .
 */}}
 {{- define "rapidmx.authServerURL" -}}
+{{- /* authserver.host is unset until the auth-server subchart's own default is merged in, which needs the subchart present in charts/ (it isn't for `helm lint` of a checkout, where the tarballs are ignored), so fall back to the same default global.jwt.issuer uses. */ -}}
+{{-   $host := tpl (toString ($.Values.authserver.host | default (printf "auth.%s" (toString $.Values.global.domain)))) . -}}
 {{-   if $.Values.global.gateway.tls -}}
-{{-     printf "https://%s" (tpl $.Values.authserver.host .) -}}
+{{-     printf "https://%s" $host -}}
 {{-   else -}}
-{{-     printf "http://%s" (tpl $.Values.authserver.host .) -}}
+{{-     printf "http://%s" $host -}}
 {{-   end -}}
 {{- end -}}
 

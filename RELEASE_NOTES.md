@@ -2,6 +2,10 @@
 
 ## v1.0.0-beta.6
 
+### Fixes
+
+- **`helm lint` failed on a fresh checkout,** and so did CI: the server's URL to the auth-server (`mail__auth_server_url`) read `authserver.host`, which is only set once the auth-server subchart is in `helm/charts/` (its tarballs are git-ignored), and failed with "wrong type for value; expected string; got interface {}" without it. It now falls back to `auth.<global.domain>`, the same default the JWT issuer uses.
+
 ## v1.0.0-beta.5
 
 ### Features
