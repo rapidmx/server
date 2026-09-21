@@ -6281,3 +6281,18 @@ providers see "clean", a fake `sendmail.exe` for `mail:transport:sendmail:path`,
   (Playwright delivers key events straight to the page), macOS, the Electron window (tsc/lint/tests only), the 6-hour age rule for pop-ups end to end (an ingested message is stamped with its arrival time;
   unit-tested only).
 - Verified: `yarn tsc --noEmit` and `yarn lint` clean, `yarn test` 32 files / 404 tests (398 + the 6 new ones), and every finding above re-run in the sandbox after the fix.
+
+### 2026-09-21 - README deployment section rewritten as numbered steps with screenshots (docs/images)
+
+Layout now: Deployment -> Before you deploy -> 1 Docker Compose / 2 Kubernetes / 3 k3s script / 4 AWS -> Set up your server (the wizard, with screenshots) -> Upgrading -> Reference
+(chart reference, Secrets and OpenBao, upgrade notes, Plugin UI). The release tooling still finds the versions by structure: the Docker Image table's Tag row and
+`oci://ghcr.io/rapidmx/charts/server --version <x>` in the Kubernetes install command (every other version in the README is a `<version>` placeholder on purpose).
+Things learned while walking the real UI (Docker Compose stack, Chromium via playwright-core):
+- First sign-in as `admin` lands on "No mailbox available"; `/admin` asks the password again (elevation), then opens **Set up your server** (6 steps: Plugins, Domain, Server settings,
+  Escrow, Branding, Mailboxes). Step 6's owner uid is prefilled with the signed-in user, so "Your mailbox" is the admin's. Then the mail app asks for an encryption password and shows
+  recovery codes. Docker Compose has no MTA, so nothing can be sent or received there.
+- Compose: `-p rapidmx` on both this stack and postfix-bridge's compose file puts them on one network and one `dkim_rspamd_keys` volume (checked: server reaches `postfix:25`, the bridge
+  reaches the server); Compose then warns about orphans, never `--remove-orphans`. The generated admin password is in `/app/passwords` of the auth-server container until its next restart.
+- `global.authSecret` was never read by any chart (it is `global.jwt.secret`): `--openbao false` and the AWS non-vault mode would have given each chart its own JWT secret. Fixed in both scripts.
+- Screenshots were made with a throwaway script (sign in, elevate, walk the wizard with `example.com`); regenerate them when the sign-in page, wizard or mail first-run change. Note the DNS
+  checklist shows DMARC `LIVE` for `example.com` because that domain really has a DMARC record.

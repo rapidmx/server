@@ -55,202 +55,482 @@ trying RapidMX out, builds from a checkout of this repository (`git clone https:
 | Repository   | /rapidmx/server |
 | Tag          | 1.0.0-beta.10 |
 
-A RapidMX deployment is this server, the separate [`auth-server`](https://github.com/rapidrest/auth-server) it verifies
-sign-ins against, MongoDB or PostgreSQL, Redis, rspamd and ClamAV (inbound spam and virus scanning), and a mail transport:
-Postfix with [`postfix-bridge`](https://github.com/rapidmx/postfix-bridge), or SES on AWS. Pick the way to run it that fits:
+Pick the way that fits you. Each one is a short list of steps, and they all finish in the same place: [Set up your server](#set-up-your-server).
 
-| | Use it for | Mail transport | HTTPS |
+| I want to... | Use | Mail transport | HTTPS |
 | --- | --- | --- | --- |
-| [1. Docker Compose](#1-docker-compose) | Trying it out on one machine, or one host you put your own reverse proxy in front of | Postfix, from postfix-bridge's own compose file | Yours |
-| [2. An existing Kubernetes cluster](#2-an-existing-kubernetes-cluster-helm) | A cluster you already run | Postfix, installed with the chart | cert-manager (Let's Encrypt) through a Gateway API Gateway |
-| [3. A standalone k3s server](#3-a-standalone-k3s-server-single_node_installsh) | One Linux server, one command | Postfix, installed with the chart | Let's Encrypt, set up by the script |
-| [4. AWS](#4-aws-cloudformation) | One EC2 instance | SES | Let's Encrypt, set up by the script |
-
-Every one of them needs the same few things from you, described next: DNS names, open ports and, for each mail domain, DNS
-records.
+| Try RapidMX on my own computer | [1. Docker Compose](#1-docker-compose) | Optional (postfix-bridge) | Bring your own |
+| Run it on a Kubernetes cluster I already have | [2. Kubernetes](#2-kubernetes-helm) | Postfix, installed with the chart | Let's Encrypt |
+| Run it on one Linux server, with one command | [3. Standalone k3s server](#3-standalone-k3s-server) | Postfix, installed for you | Let's Encrypt |
+| Run it on AWS | [4. AWS](#4-aws-cloudformation) | Amazon SES | Let's Encrypt |
 
 ### Before you deploy
 
-**Names and DNS.** A deployment is served at two host names under the domain your mail is addressed to (say `example.com`):
-the server at `mail.example.com` and the auth-server, where sign-in happens, at `auth.example.com`. Create an `A` record
-(and `AAAA`, if the machine has an IPv6 address that reaches it) for each name pointing at the server's public address
-*before* you install: Let's Encrypt has to reach the machine on those names to issue the certificates. On AWS you create a
-CNAME to the load balancer instead. The names are configurable (`--mail-host` and `--auth-host`, `MailHost` and `AuthHost`,
-`host` and `authserver.host`), but the rest of this README uses the defaults.
+For anything that is not Docker Compose on your own computer, you need:
 
-**Ports.** `443` and `80` (HTTPS, and the HTTP that certificate issuance and the redirect to HTTPS use) and, wherever Postfix
-runs, `25` for mail in both directions. Many cloud providers block outbound port 25 by default, and mail can't leave without
-it - ask the provider to open it, or use SES. Let's Encrypt limits how often it will issue certificates for the same names, so
-avoid reinstalling over and over against a real domain.
+- **A domain you control**, for example `example.com`. Mail will be addressed to `you@example.com`.
+- **A server with a public IP address**, for example `203.0.113.10`.
+- **Two DNS records** pointing at that address. Create them *before* you install, so the HTTPS certificates can be issued:
 
-**Reverse DNS.** Receiving servers score mail from an address whose reverse DNS (PTR) record doesn't match the name it says hello
-as. Postfix says hello as `mail.example.com`, so set the reverse record of the server's public address to it (at your hosting
-provider - it isn't part of your zone). Not needed with SES.
+  ```text
+  mail.example.com.   A   203.0.113.10
+  auth.example.com.   A   203.0.113.10
+  ```
 
-**Mail DNS, per mail domain.** These come after the install, once, for each domain you receive and send mail as: sign in,
-open the admin console (`https://mail.example.com/admin`), add the domain under **Domains** and publish the records its **DNS
-setup checklist** shows, which it checks live. They are:
+  `mail` is the web app and `auth` is the sign-in page. Add matching `AAAA` records if the server has an IPv6 address. (On AWS you create `CNAME` records to the load balancer instead.)
+- **These ports open** to the internet: `80` and `443` for the web, and `25` for mail (not on AWS, where SES handles mail).
+- **Outbound port 25 allowed** by your hosting provider. Many block it by default, and mail can't be sent without it.
+- **A reverse DNS (PTR) record** for the server's address that points to `mail.example.com`. You set it at your hosting provider. It isn't required, but mail from servers without one is often treated as spam.
 
-| Record | Name | Value |
-| --- | --- | --- |
-| Ownership (TXT) | `example.com` | `rapidmx-domain-verification=<token>` |
-| MX | `example.com` | `10 mail.example.com` |
-| SPF (TXT) | `example.com` | `v=spf1 mx ~all` |
-| DKIM (TXT) | `mail._domainkey.example.com` | `v=DKIM1; k=rsa; p=<public key>` |
-| DMARC (TXT) | `_dmarc.example.com` | `v=DMARC1; p=none;` (add `rua=mailto:<address>` to get reports) |
-
-Until the ownership record is found the domain isn't *verified* and can't send or receive. With SES the records differ
-(SES's own DKIM CNAMEs and its MX); see [4. AWS](#4-aws-cloudformation). You may add more domains at any time: with the
-bundled Postfix in Kubernetes (2 and 3) a new domain works within seconds, with nothing to restart, redeploy or upgrade.
+> **Good to know:** Let's Encrypt limits how many certificates it issues for the same names each week. Avoid installing over and over against a real domain.
 
 ### 1. Docker Compose
 
-Needs Docker Engine with Compose v2.20 or later, and a few GiB of memory (ClamAV alone loads about 1 GiB of virus
-signatures, which takes a few minutes on first start).
+Best for trying RapidMX out. Everything runs on your own computer and is reachable only from it.
 
-Pick `docker-compose.mongo.yml` or `docker-compose.sql.yml` depending on which datastore backend you want (MongoDB or
-PostgreSQL) — there is no plain `docker-compose.yml`. Either one, on its own, brings up this service, the
-`auth-server` it verifies JWTs against (`ghcr.io/rapidrest/auth-server`, pulled, not built), Redis, the database and
-rspamd/ClamAV — but *not* real inbound/outbound mail transport, which comes from `postfix-bridge` (below).
+**You need:**
 
-```bash
-git clone https://github.com/rapidmx/server
-cd server
-docker compose -p rapidmx -f docker-compose.mongo.yml up -d --build
-```
+- Docker with Compose v2.20 or later (`docker compose version`)
+- Git
+- A few GiB of free memory (ClamAV, the virus scanner, uses about 1 GiB on its own)
 
-This is for local evaluation: the stack runs with `NODE_ENV=dev`, uses publicly-known placeholder secrets and publishes every
-port on the host's loopback address (`127.0.0.1`) only. The server is at <http://localhost:3000> and sign-in at
-<http://localhost:3001>. The auth-server creates an `admin` account with a random password on its first start and writes it
-to a file inside its container, which it deletes at its next restart, so read it now:
+**Steps:**
 
-```bash
-docker compose -p rapidmx -f docker-compose.mongo.yml exec auth-server cat /app/passwords
-```
+1. Get the code:
 
-**Going beyond localhost.** Set `NODE_ENV=production` and replace every placeholder in a `.env` file next to the compose
-files (the server refuses to start with the placeholders unless `NODE_ENV` is `dev`, `development` or `test`; see
-`src/config.defaults.ts`). A minimal one for `example.com`:
+   ```bash
+   git clone https://github.com/rapidmx/server
+   cd server
+   ```
 
-```bash
-NODE_ENV=production
-PUBLIC_URL=https://mail.example.com
-AUTH_SERVER_PUBLIC_URL=https://auth.example.com
-MX_HOSTNAME=mail.example.com
-AUTH_AUDIENCE=example.com
-AUTH_ISSUER=auth.example.com
-AUTH_SECRET=<openssl rand -hex 32>
-COOKIE_SECRET=<openssl rand -hex 32>
-SESSION_SECRET=<openssl rand -hex 32>
-AUTH_OAUTH_SERVER_ENCRYPTION_KEY=<openssl rand -hex 32>
-ESCROW_AUDIT_HMAC_KEY=<openssl rand -hex 32>
-MAIL_INGEST_SECRET=<openssl rand -hex 32>
-```
+2. Start everything. The first run builds the server image, which takes several minutes:
 
-| Variable | Purpose |
+   ```bash
+   docker compose -p rapidmx -f docker-compose.mongo.yml up -d --build
+   ```
+
+   - Use `docker-compose.sql.yml` instead to run on PostgreSQL rather than MongoDB, and use it in every command below too.
+   - `-p rapidmx` names the project. Keep it on every command.
+
+3. Wait until `server` and `auth-server` say `healthy`:
+
+   ```bash
+   docker compose -p rapidmx -f docker-compose.mongo.yml ps --format 'table {{.Service}}\t{{.Status}}\t{{.Ports}}'
+   ```
+
+   ```text
+   SERVICE       STATUS                   PORTS
+   auth-server   Up 7 minutes (healthy)   127.0.0.1:3001->3000/tcp
+   clamav        Up 7 minutes (healthy)   127.0.0.1:3310->3310/tcp
+   mongo         Up 7 minutes             27017/tcp
+   redis         Up 7 minutes             6379/tcp
+   rspamd        Up 7 minutes (healthy)   127.0.0.1:11333->11333/tcp
+   server        Up 7 minutes (healthy)   127.0.0.1:3000->3000/tcp
+   ```
+
+4. Read the `admin` account's password. The auth-server made it on its first start:
+
+   ```bash
+   docker compose -p rapidmx -f docker-compose.mongo.yml exec auth-server cat /app/passwords
+   ```
+
+   ```text
+   Name=admin,Password=<your password>,Roles=admin
+   ```
+
+   > **Good to know:** the file is deleted the next time the auth-server restarts. Save the password now.
+
+5. Open <http://localhost:3000> and continue with [Set up your server](#set-up-your-server).
+
+This setup runs in development mode with placeholder secrets, and it can't send or receive real mail until you add a mail server. To put it on the internet, use it for real mail or both, follow the steps below.
+
+<details>
+<summary><strong>Run Docker Compose for real (production)</strong></summary>
+
+<br>
+
+**You need:** a server with a public address and the [DNS records above](#before-you-deploy).
+
+1. Create a file named `.env` next to the compose files, with your own secrets. Generate each `<...>` with `openssl rand -hex 32`:
+
+   ```bash
+   NODE_ENV=production
+   PUBLIC_URL=https://mail.example.com
+   AUTH_SERVER_PUBLIC_URL=https://auth.example.com
+   MX_HOSTNAME=mail.example.com
+   AUTH_AUDIENCE=example.com
+   AUTH_ISSUER=auth.example.com
+   AUTH_SECRET=<random>
+   COOKIE_SECRET=<random>
+   SESSION_SECRET=<random>
+   AUTH_OAUTH_SERVER_ENCRYPTION_KEY=<random>
+   ESCROW_AUDIT_HMAC_KEY=<random>
+   MAIL_INGEST_SECRET=<random>
+   SENDMAIL_RELAY_HOST=postfix
+   ```
+
+   > **Good to know:** with `NODE_ENV=production` the server refuses to start while any of these secrets is still a placeholder. Never change `ESCROW_AUDIT_HMAC_KEY` after the first start.
+
+2. Let the sign-in cookie work across `mail.` and `auth.`. Create `docker-compose.prod.yml`:
+
+   ```yaml
+   services:
+     auth-server:
+       environment:
+         - auth__cookie__access__domain=.example.com
+         - auth__cookie__refresh__domain=.example.com
+   ```
+
+3. Start it with both files:
+
+   ```bash
+   docker compose -p rapidmx -f docker-compose.mongo.yml -f docker-compose.prod.yml up -d --build
+   ```
+
+4. Add HTTPS. The stack doesn't do it for you, and it only listens on `127.0.0.1`. Put a reverse proxy on the host (Caddy, nginx or Traefik) in front of it:
+
+   - `https://mail.example.com` → `http://127.0.0.1:3000`
+   - `https://auth.example.com` → `http://127.0.0.1:3001`
+
+5. Add the mail server. In a checkout of [postfix-bridge](https://github.com/rapidmx/postfix-bridge), create a `.env`:
+
+   ```bash
+   MAIL_HOSTNAME=mail.example.com
+   MAIL_DOMAINS=example.com
+   MTA_INGEST_BASE_URL=http://server:3000/internal/mta
+   MTA_INGEST_SECRET=<the same value as MAIL_INGEST_SECRET>
+   ```
+
+   Start it **in the same project**, so both stacks share a network and the DKIM keys:
+
+   ```bash
+   docker compose -p rapidmx up -d --build
+   ```
+
+   > **Good to know:** Compose warns about "orphan containers" from now on. That is expected. Never answer it with `--remove-orphans`.
+
+6. Postfix starts with a self-signed certificate and requires TLS from other mail servers. Copy a real certificate for `mail.example.com` into its `postfix_tls` volume as `tls.crt` and `tls.key`, then restart it:
+
+   ```bash
+   docker compose -p rapidmx restart postfix
+   ```
+
+7. Whenever you add a mail domain in the admin console, also add it to `MAIL_DOMAINS` and restart Postfix (the same command). Kubernetes doesn't need this.
+
+**Settings you can put in `.env`:**
+
+| Variable | What it does |
 | --- | --- |
-| `AUTH_SECRET` | JWT signing secret — must match between this service and `auth-server` exactly |
-| `AUTH_AUDIENCE` / `AUTH_ISSUER` | JWT `aud`/`iss` claims — must also match `auth-server` |
-| `AUTH_SERVER_PUBLIC_URL` | Browser-facing base URL of `auth-server` (defaults to `http://localhost:3001`, dev/single-host only); also its OAuth issuer |
-| `AUTH_OAUTH_SERVER_ENCRYPTION_KEY` | `auth-server`'s OAuth key-encryption key (`auth__oauth_server__keys__encryption_key`) |
-| `COOKIE_SECRET` | Shared cookie-signing secret |
-| `SESSION_SECRET` | `auth-server`'s session-signing secret |
-| `ESCROW_AUDIT_HMAC_KEY` | Key for the escrow audit log's HMAC-SHA256 hash chain (`mail:escrow:audit_hmac_key`) — generate once (`openssl rand -hex 32`) and never change it; unset, entries are chained with unkeyed SHA-256 and the server logs an error in production |
-| `MAIL_INGEST_SECRET` | Bearer secret authenticating `postfix-bridge`'s calls to this app's `/internal/mta` routes — must match that repo's own `MTA_INGEST_SECRET` exactly |
-| `PUBLIC_URL` | This deployment's public base URL (defaults to `http://localhost:3000`) — the booking plugin's email links and the autodiscover plugin (which requires `https://`) |
-| `MX_HOSTNAME` | Public MX hostname (defaults to `localhost`) — outgoing read receipts and domain DNS checks |
-| `SENDMAIL_RELAY_HOST` / `_PORT` / `_TLS` | Where `PostfixSendmailTransport` relays outbound mail — defaults to `host.docker.internal:25` (TLS off), i.e. wherever the separate `postfix-bridge` stack publishes its own Postfix on the host's `localhost:25`; override for anything beyond local, single-host evaluation |
+| `AUTH_SECRET` | Signs sign-in tokens. Must be the same on the server and the auth-server, which the compose file guarantees. |
+| `AUTH_AUDIENCE` / `AUTH_ISSUER` | The `aud` and `iss` of those tokens. |
+| `AUTH_SERVER_PUBLIC_URL` | The address browsers use to reach the auth-server. |
+| `AUTH_OAUTH_SERVER_ENCRYPTION_KEY` | The auth-server's OAuth key-encryption key. |
+| `COOKIE_SECRET`, `SESSION_SECRET` | Sign cookies and sessions. |
+| `ESCROW_AUDIT_HMAC_KEY` | Keys the tamper-evident escrow audit log. Generate once, never change. |
+| `MAIL_INGEST_SECRET` | Lets postfix-bridge call the server. Must equal its `MTA_INGEST_SECRET`. |
+| `PUBLIC_URL`, `MX_HOSTNAME` | This server's public address and its mail host name, used in booking links, autodiscover and the DNS checklist. |
+| `SENDMAIL_RELAY_HOST` / `_PORT` / `_TLS` | Where outgoing mail is handed to Postfix. `postfix` when both stacks share a project. |
 
-Three things the compose file doesn't do for you:
+Postfix's TLS settings, DKIM and DMARC are documented in the [postfix-bridge](https://github.com/rapidmx/postfix-bridge) README.
 
-- **HTTPS.** Neither service terminates TLS. Put a reverse proxy on the host (Caddy, nginx, Traefik, ...) that terminates it for
-  `mail.example.com` → `127.0.0.1:3000` and `auth.example.com` → `127.0.0.1:3001`, and leave the published ports on the loopback
-  address. Set the server's `trusted_proxies` if you want its rate limits and audit log to see real client addresses.
-- **A shared sign-in cookie.** The server and the auth-server are on different host names, so the auth-server has to set its
-  session cookies for the parent domain, which the compose file has no variable for. Add them from a second compose file,
-  `docker-compose.prod.yml`, and start both together
-  (`docker compose -p rapidmx -f docker-compose.mongo.yml -f docker-compose.prod.yml up -d`):
+</details>
 
-  ```yaml
-  services:
-    auth-server:
-      environment:
-        - auth__cookie__access__domain=.example.com
-        - auth__cookie__refresh__domain=.example.com
-  ```
+### 2. Kubernetes (Helm)
 
-- **Mail.** Real mail transport is [`postfix-bridge`](https://github.com/rapidmx/postfix-bridge)'s own compose file (Postfix, DKIM
-  signing and the bridge to `/internal/mta`), which you run *alongside* this one, not instead of it. Run both in the same
-  compose project (`-p rapidmx`, as in these commands): they then share a network, so each finds the other by service name, and the
-  `dkim_rspamd_keys` volume, which is how Postfix signs with the keys this server publishes. In this checkout's `.env`, add
-  `SENDMAIL_RELAY_HOST=postfix`; then, from a checkout of postfix-bridge, with this in its `.env`:
+Best when you already run a Kubernetes cluster. One Helm chart installs everything.
+
+**You need:**
+
+- A cluster, `kubectl` and Helm 3.8 or later
+- A default `StorageClass`
+- A [Gateway API](https://gateway-api.sigs.k8s.io/) controller with a `GatewayClass`, such as [Envoy Gateway](https://gateway.envoyproxy.io/) (the chart expects the class `envoy`; change it with `global.gateway.className`)
+- [cert-manager](https://cert-manager.io/) with Gateway API support turned on (`--set config.enableGatewayAPI=true`), for Let's Encrypt certificates
+- A way to expose port 25 (the `postfix` Service is a `LoadBalancer`)
+- The [DNS records above](#before-you-deploy)
+
+**Steps:**
+
+1. Check the cluster is ready:
+
+   ```bash
+   kubectl get nodes
+   kubectl get gatewayclass
+   helm version --short
+   ```
+
+   `kubectl get gatewayclass` should list your class (for example `envoy`) as accepted.
+
+2. Install the chart. Replace `example.com` with your domain:
+
+   ```bash
+   helm upgrade --install --create-namespace --namespace rapidmx rapidmx \
+     oci://ghcr.io/rapidmx/charts/server --version 1.0.0-beta.10 \
+     --set global.domain=example.com \
+     --set global.jwt.secret="$(openssl rand -hex 32)" \
+     --set global.mailIngestSecret="$(openssl rand -hex 32)"
+   ```
+
+   - `global.domain` is your mail domain. From it, the web app becomes `mail.example.com` and sign-in `auth.example.com`.
+   - `global.jwt.secret` and `global.mailIngestSecret` are two random secrets. Keep them: an upgrade needs the same values (or `--reset-then-reuse-values`, see [Upgrading](#upgrading)).
+
+3. Watch it start. Every pod should reach `Running` (ClamAV takes a few minutes):
+
+   ```bash
+   kubectl -n rapidmx get pods --watch
+   ```
+
+4. Find the addresses for your DNS records:
+
+   ```bash
+   kubectl -n rapidmx get gateway
+   kubectl -n rapidmx get svc postfix
+   ```
+
+   Point `mail.example.com` and `auth.example.com` at the Gateway's address. Postfix must be reachable on `mail.example.com` too, because that is the name other mail servers connect to.
+
+   > **Good to know:** if the Gateway and the `postfix` Service get different addresses, give Postfix a name of its own: add `--set postfixBridge.hostname=mx.example.com --set postfixBridge.tls.certManager.enabled=false` to the install, point `mx.example.com` at the `postfix` Service and use it as your MX record (Postfix then uses a self-signed certificate).
+
+5. Wait for the certificates to be issued (`READY` is `True`):
+
+   ```bash
+   kubectl -n rapidmx get certificate
+   ```
+
+   ```text
+   NAME               READY   SECRET                      AGE
+   auth.example.com   True    auth.example.com-tls-cert   41h
+   mail.example.com   True    mail.example.com-tls-cert   41h
+   ```
+
+6. Read the `admin` account's password:
+
+   ```bash
+   kubectl -n rapidmx get secret rapidmx-authserver-service-secrets -o jsonpath='{.data.default_accounts}' \
+     | base64 -d | tr -d '\\' | sed -n 's/.*"password":"\([^"]*\)".*/\1/p'
+   ```
+
+7. Open `https://mail.example.com` and continue with [Set up your server](#set-up-your-server).
+
+> **Good to know:**
+>
+> - Already have a Gateway? Point `global.gateway.name` and `global.gateway.namespace` at it. See the [chart reference](#helm-chart-reference).
+> - Want the secrets in a vault instead of Kubernetes Secrets? See [Secrets and OpenBao](#secrets-and-openbao).
+> - Installing from a checkout instead of GHCR: `helm repo add bitnami https://charts.bitnami.com/bitnami`, then `helm dep up ./helm`, then use `./helm` in place of the `oci://` address.
+
+### 3. Standalone k3s server
+
+Best for one Linux server. A single script installs k3s (a small Kubernetes), HTTPS, mail and RapidMX.
+
+**You need:**
+
+- A Debian, Ubuntu or RHEL-family Linux server with `sudo` and about 8 GiB of memory
+- The [DNS records above](#before-you-deploy), and ports `25`, `80` and `443` open
+- No Docker running on the same server (it conflicts with k3s)
+
+**Steps:**
+
+1. Point `mail.example.com` and `auth.example.com` at the server's public address.
+
+2. Download the script:
+
+   ```bash
+   curl -fsSLO https://raw.githubusercontent.com/rapidmx/server/main/single_node_install.sh
+   chmod +x single_node_install.sh
+   ```
+
+3. Run it with your domain and an email address for Let's Encrypt:
+
+   ```bash
+   ./single_node_install.sh --domain example.com --email you@example.com
+   ```
+
+   It takes several minutes and prints each step as it goes.
+
+4. Wait for the final message:
+
+   ```text
+   Installation complete.
+   The server is at https://mail.example.com, with sign-in at https://auth.example.com.
+   Postfix listens on port 25 as mail.example.com and knows example.com. Add each domain in the admin console, ...
+   ```
+
+5. Read the `admin` account's password:
+
+   ```bash
+   kubectl -n rapidmx get secret rapidmx-authserver-service-secrets -o jsonpath='{.data.default_accounts}' \
+     | base64 -d | tr -d '\\' | sed -n 's/.*"password":"\([^"]*\)".*/\1/p'
+   ```
+
+6. Open `https://mail.example.com` and continue with [Set up your server](#set-up-your-server).
+
+**Options:**
+
+| Option | What it does |
+| --- | --- |
+| `--domain example.com` | Your mail domain (required) |
+| `--email you@example.com` | The Let's Encrypt account address (default `admin@<domain>`) |
+| `--mail-host` / `--auth-host` | Change `mail` / `auth` to another name, for example `--mail-host webmail` |
+| `--tls false` | No certificates: plain HTTP, for testing |
+| `--openbao false` | Keep secrets in Kubernetes Secrets instead of OpenBao |
+| `--version <version>` | Install a specific release |
+| `--uninstall` | Remove what the script installed |
+| `--help` | List everything |
+
+> **Good to know:**
+>
+> - The certificates are requested during the install and issued once both names point at the server. You can add the DNS records afterwards; `kubectl -n rapidmx get certificate` shows when they are ready.
+> - To try it without a public domain, use a name that ends in `.local`, such as `--domain example.local`. It serves plain HTTP; add both names to your hosts file, as the script reminds you.
+
+### 4. AWS (CloudFormation)
+
+Best for AWS. One CloudFormation stack creates the network, an EC2 instance and everything on it. Mail goes through Amazon SES. See [deploy/aws/README.md](deploy/aws/README.md) for all the options.
+
+**You need:**
+
+- An AWS account and the [AWS CLI](https://aws.amazon.com/cli/), signed in (`aws sts get-caller-identity`)
+- A Route 53 hosted zone for your domain (optional, but it creates the DNS records for you)
+- SES out of the sandbox in your region, or a verified recipient address to test with. New accounts start in the sandbox; request production access in the SES console.
+- A checkout of this repository, for the template
+
+**Steps:**
+
+1. Create the stack. Replace the domain, the hosted zone and the version:
+
+   ```bash
+   aws cloudformation deploy --stack-name rapidmx --template-file deploy/aws/rapidmx-server.yaml \
+     --capabilities CAPABILITY_IAM \
+     --parameter-overrides Domain=example.com HostedZoneId=Z123EXAMPLE ChartVersion=<version>
+   ```
+
+   - `Domain` is your mail domain, **not** `mail.example.com`.
+   - Leave out `HostedZoneId` if you don't use Route 53.
+   - Always set `ChartVersion` to the release named in the Docker Image table at the top of [Deployment](#deployment): the template's default is an older one.
+   - The command returns once the whole install has finished. A failed install fails the stack.
+
+2. Read the stack's outputs:
+
+   ```bash
+   aws cloudformation describe-stacks --stack-name rapidmx --query 'Stacks[0].Outputs'
+   ```
+
+3. Read the install summary. It holds the load balancer's name, the generated secrets and the exact command for step 5. Run the `SummaryCommand` output, which uses AWS Session Manager.
+
+4. Without a hosted zone, create two `CNAME` records that point `mail.example.com` and `auth.example.com` at the load balancer named in the summary.
+
+5. Deploy [ses-bridge](https://github.com/rapidmx/ses-bridge) for inbound mail, using the command from the summary. It creates the SES identity for your domain.
+
+6. Finish the SES setup. `ses-bridge` prints each of these when it finishes:
+
+   - Publish the three DKIM `CNAME` records it lists.
+   - Point your domain's `MX` record at the value it lists, with priority `10`.
+   - Activate the SES receipt rule set.
+
+7. Turn on e-mail from the sign-in page (one-time codes). SES SMTP can't use the instance's role, so [create an SES SMTP account](https://docs.aws.amazon.com/ses/latest/dg/smtp-credentials.html), open a Session Manager shell on the instance and run the installer again with its credentials:
+
+   ```bash
+   sudo -i
+   export RAPIDMX_DOMAIN=example.com RAPIDMX_CHART_VERSION=<version>
+   export RAPIDMX_SES_SMTP_USERNAME=<username> RAPIDMX_SES_SMTP_PASSWORD=<password>
+   curl -fsSL https://raw.githubusercontent.com/rapidmx/server/main/deploy/aws/bootstrap.sh -o /root/rapidmx-bootstrap.sh
+   bash /root/rapidmx-bootstrap.sh
+   ```
+
+   Running it again keeps your existing secrets. Export the same values you gave the stack (`RAPIDMX_HOSTED_ZONE_ID`, `RAPIDMX_ACME_EMAIL`, `RAPIDMX_MAIL_HOST` and so on, if you set them), or they go back to their defaults. Without this step the sign-in page can't send e-mail, and the installer's summary says so.
+
+8. Read the `admin` account's password, in the same shell:
+
+   ```bash
+   export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+   kubectl -n rapidmx-server get secret rapidmx-server-authserver-service-secrets -o jsonpath='{.data.default_accounts}' \
+     | base64 -d | tr -d '\\' | sed -n 's/.*"password":"\([^"]*\)".*/\1/p'
+   ```
+
+9. Open `https://mail.example.com` and continue with [Set up your server](#set-up-your-server).
+
+### Set up your server
+
+Every option above ends here. You sign in as `admin`, add your mail domain and create your first mailbox. (With Docker Compose, use `http://localhost:3000` in place of `https://mail.example.com`.)
+
+1. Open `https://mail.example.com`. It sends you to the sign-in page. Enter `admin`, then the password you read earlier.
+
+   <img src="docs/images/sign-in.png" alt="The sign-in page" width="420">
+
+2. Open the admin console at `https://mail.example.com/admin`. It asks for your password once more.
+
+   <img src="docs/images/confirm-password.png" alt="Confirm it's you" width="420">
+
+3. The **Set up your server** wizard opens. Step 1, **Plugins**, is fine as it is: the recommended plugins (ActiveSync, Autodiscover, MAPI and booking pages) are already on. Click **Continue**.
+
+   <img src="docs/images/setup-plugins.png" alt="The setup wizard, plugins step" width="720">
+
+4. Step 2, **Domain**. Type your mail domain, for example `example.com`, and click **Add domain**. RapidMX shows the DNS records it needs.
+
+   - Add each record at your DNS provider, exactly as shown (use the **Copy** buttons).
+   - Click **Verify now**. Each row of the checklist turns `LIVE` once its record is found. (DNS changes can take a few minutes.)
+
+   <img src="docs/images/setup-domain-dns.png" alt="The DNS setup checklist for example.com" width="560">
+
+   The records look like this. Your ownership token and DKIM key are shown in the console:
+
+   | Type | Name | Value |
+   | --- | --- | --- |
+   | `TXT` | `example.com` | `rapidmx-domain-verification=<token>` |
+   | `MX` | `example.com` | `10 mail.example.com` |
+   | `TXT` | `example.com` | `v=spf1 mx ~all` |
+   | `TXT` | `mail._domainkey.example.com` | `v=DKIM1; k=rsa; p=<public key>` |
+   | `TXT` | `_dmarc.example.com` | `v=DMARC1; p=none;` |
+
+   > **Good to know:** until the ownership record is found, the domain can't send or receive mail. On AWS the DKIM and MX records come from `ses-bridge` (step 6 of the AWS steps), so those rows of the checklist may stay red; the ownership record is the one to add here.
+
+5. Steps 3 to 5: **Server settings**, **Escrow** and **Branding**. Every default is safe, so click **Continue** through them. Change them later if you like.
+
+   - *Server settings:* whether encryption is automatic, how long mail is kept, and whether people can create their own mailbox.
+   - *Escrow:* lets a trusted group recover encrypted mail. Choose **Don't use escrow** if you don't need it.
+   - *Branding:* your own logo, name and styles.
+
+6. Step 6, **Mailboxes**. Create your own mailbox, for example `admin@example.com`, and click **Create mailbox**, then **Finish setup**. (Leave the owner as it is: it links the mailbox to the account you signed in with.)
+
+   <img src="docs/images/setup-mailbox.png" alt="Creating the first mailbox" width="560">
+
+7. Open `https://mail.example.com` again. Mail asks you to protect your encryption keys: choose an **encryption password** (different from your sign-in password), then save the **recovery codes** it shows. They are the only way back in if you forget it.
+
+   <img src="docs/images/mail-protect.png" alt="Choosing an encryption password" width="420">
+
+8. Your inbox opens.
+
+   <img src="docs/images/mail-inbox.png" alt="The inbox" width="720">
+
+   > **Good to know:** mail only flows once your DNS records are in place and a mail server is running. The Docker Compose quick start has none, so it can't send or receive real mail until you add one.
+
+To add more domains and mailboxes later, open the admin console again: **Domains** and **Mailboxes**. On Kubernetes and k3s a new domain works within seconds, with nothing to restart. On AWS, deploy `ses-bridge` again for each additional domain.
+
+### Upgrading
+
+**Back up the database first.** The server updates its own database schema when it starts (there are no migration scripts), and on PostgreSQL a column whose type changed between releases can lose its data.
+
+- **Docker Compose:** pull the new code and start again.
 
   ```bash
-  MAIL_HOSTNAME=mail.example.com
-  MAIL_DOMAINS=example.com
-  MTA_INGEST_BASE_URL=http://server:3000/internal/mta
-  MTA_INGEST_SECRET=<the same value as MAIL_INGEST_SECRET>
+  git pull
+  docker compose -p rapidmx -f docker-compose.mongo.yml up -d --build
   ```
 
-  run `docker compose -p rapidmx up -d --build`. Compose warns about "orphan containers" whenever you run one of the two files
-  afterwards; that is expected, and you should never answer it with `--remove-orphans`. Postfix publishes port 25 and
-  requires TLS from other mail servers, and it starts with a self-signed certificate: copy a real one for
-  `mail.example.com` into its `postfix_tls` volume as `tls.crt` and `tls.key` and restart it. Unlike Kubernetes, a domain you
-  add in the admin console has to be added to `MAIL_DOMAINS` and Postfix restarted (`docker compose -p rapidmx restart
-  postfix`) before it can send and sign. See postfix-bridge's README for the rest.
+- **Kubernetes, k3s and AWS:** upgrade the Helm release. The k3s script installs a release named `rapidmx` in the namespace `rapidmx`. On AWS both are `rapidmx-server`, and you run the command on the instance after `export KUBECONFIG=/etc/rancher/k3s/k3s.yaml`:
 
-The `dkim_rspamd_keys`/`mongo_data`/`postgres_data`/`blob_data` named volumes persist DKIM keys, database contents and
-message/attachment storage across `docker compose down`/`up` — don't remove them (`docker compose down -v`) unless you
-actually want to start over.
+  ```bash
+  helm upgrade rapidmx oci://ghcr.io/rapidmx/charts/server --version <version> --namespace rapidmx \
+    --reset-then-reuse-values --wait --timeout 10m
+  ```
 
-**Mail transport security** (Postfix's TLS posture, the `postfix-bridge` hop, DKIM/DMARC) is documented in the
-[`postfix-bridge`](https://github.com/rapidmx/postfix-bridge) repo's own README. The one thing that lives on this side:
-`server` → Postfix (`PostfixSendmailTransport`/msmtp) is unencrypted by default (`SENDMAIL_RELAY_TLS`, defaulting to
-`off`), since that hop is internal.
+  `--reset-then-reuse-values` (Helm 3.14 or later) keeps every value you set and picks up new defaults. Don't use plain `--reuse-values`: it misses new defaults and the upgrade can fail.
 
-### 2. An existing Kubernetes cluster (Helm)
+- **k3s and AWS scripts:** re-running the script with `--version <version>` (or `RAPIDMX_CHART_VERSION` on AWS) does the same, and re-checks nginx, the Gateway and the other pieces too.
 
-The chart installs everything in the table above (the database, Redis, rspamd, ClamAV, the auth-server and Postfix with
-postfix-bridge) into one namespace. What the *cluster* has to provide, because the chart can't bring cluster-wide pieces along:
+## Reference
 
-- **Helm 3.8 or later** (the chart is an OCI artifact), and a default `StorageClass`: the message store (20 Gi), DKIM keys,
-  PKI and the database each get a volume.
-- **A Gateway API controller** with its CRDs, and a `GatewayClass` whose name is `global.gateway.className` (default `envoy`, as
-  with [Envoy Gateway](https://gateway.envoyproxy.io/)). The chart creates a `Gateway` for each of its two host names, or
-  attaches its routes to one you already have (below), and terminates TLS there. The cluster must send traffic for both host
-  names on ports 80 and 443 to it.
-- **cert-manager with Gateway API support** (`config.enableGatewayAPI=true`), which the chart's own Issuer uses to get Let's
-  Encrypt certificates over HTTP-01 through that Gateway. Or set `global.gateway.tls=false` to serve plain HTTP.
-- **A way to reach Postfix on port 25**: its `postfix` Service is a `LoadBalancer` (`postfixBridge.postfix.serviceType`) with
-  `externalTrafficPolicy: Local`, which it needs to tell internet clients from cluster clients. Behind a load
-  balancer that hides the client address Postfix becomes an open relay for your own domains: read postfix-bridge's README before
-  exposing port 25.
-- **OpenBao and External Secrets** only if you want the release's secrets in a vault (see [Secrets and OpenBao](#secrets-and-openbao)).
+Everything above is enough to run RapidMX. This section is for when you need more.
 
-Then install, giving it the mail domain and the two secrets the sides share (generate them once and keep them):
-
-```bash
-helm upgrade --install --create-namespace --namespace rapidmx rapidmx oci://ghcr.io/rapidmx/charts/server --version 1.0.0-beta.10   --set global.jwt.secret="$(openssl rand -hex 32)" --set global.mailIngestSecret="$(openssl rand -hex 32)"   --set global.domain=example.com
-```
-
-With `global.domain=example.com` the server is served at `mail.example.com`, the auth-server at `auth.example.com` and Postfix is
-`mail.example.com`, sending mail for `example.com`; the JWT audience and issuer follow (the domain and the auth host). Set
-`host`, `authserver.host`, `postfixBridge.hostname` and `postfixBridge.domains` only to change those. Cookie, session and escrow
-audit secrets are generated on the first install and kept. Add DNS for both names, wait for the pods (`kubectl -n rapidmx get
-pods`; ClamAV takes a few minutes) and for the certificates (`kubectl -n rapidmx get certificate`), and [sign in](#after-the-install-sign-in-and-add-your-domain).
-
-To install from a checkout instead of GHCR:
-
-```bash
-helm repo add bitnami https://charts.bitnami.com/bitnami
-helm dep up ./helm
-helm upgrade --install --create-namespace --namespace rapidmx rapidmx ./helm --set global.jwt.secret="$(openssl rand -hex 32)" --set global.mailIngestSecret="$(openssl rand -hex 32)" --set global.domain=example.com
-```
-
-The install command is also the upgrade command; see [Upgrading](#upgrading). Pass the same `global.jwt.secret` and
-`global.mailIngestSecret` again on later runs, or rely on `--reset-then-reuse-values` to keep them.
-
-#### Chart reference
+### Helm chart reference
 
 Real inbound/outbound mail transport (Postfix, DKIM signing and [`postfix-bridge`](https://github.com/rapidmx/postfix-bridge)) is the
 `postfixBridge` dependency, installed with the chart. `postfixBridge.hostname` is Postfix's MX
@@ -281,7 +561,7 @@ SMTP account's `smtp_config__auth__user` / `smtp_config__auth__pass` from a Secr
 at `host` (`mail.<domain>` by default), the auth-server at `authserver.host` (`auth.<domain>` by default), and the JWT audience
 and issuer are the domain and that auth host on both sides. Postfix's MX name and sender domains follow the same value.
 
-##### Secrets and OpenBao
+#### Secrets and OpenBao
 
 With `global.openbao.enabled` this release keeps its secrets in [OpenBao](https://openbao.org): the JWT signing secret
 shared with auth-server, the cookie, session and escrow audit keys, the postfix-bridge ingest secret, and the certificate
@@ -342,126 +622,12 @@ The chart runs one replica by default, because its message, DKIM and PKI volumes
 use `mail.blob.backend: s3` (or `ReadWriteMany` storage) and `ReadWriteMany` for `mail.dkim.storage` and
 `mail.pki.storage`.
 
-### 3. A standalone k3s server (`single_node_install.sh`)
-
-For one Linux server (Debian, Ubuntu or a RHEL-family distribution, with `sudo`, and about 8 GiB of memory) the script sets up
-everything in one go. Point the two DNS names at the server first (see above), make sure ports 25, 80 and 443 reach it, and
-don't run Docker on the same host: it conflicts with k3s, and the script stops if it sees Docker running.
-
-```bash
-curl -fsSLO https://raw.githubusercontent.com/rapidmx/server/main/single_node_install.sh
-chmod +x single_node_install.sh
-./single_node_install.sh --domain example.com --email you@example.com
-```
-
-`--domain` is the mail domain: the server is served at `mail.<domain>`, the auth-server at `auth.<domain>`, and mail is
-addressed `@<domain>`. `--mail-host` and `--auth-host` change those two names, as a label (`--mail-host rapidmx` gives
-`rapidmx.<domain>`) or a whole host name. `--email` is the Let's Encrypt account address (default `admin@<domain>`).
-
-It installs k3s, helm, [Envoy Gateway](https://gateway.envoyproxy.io/) (whose Service is only reachable inside the
-cluster), nginx on the host forwarding ports 80 and 443 to it with the PROXY protocol (so the server sees real client
-addresses), cert-manager, [OpenBao](https://openbao.org) and External Secrets (which keep the release's secrets), and this
-chart, which has cert-manager issue the Let's Encrypt certificates. Postfix listens on port 25 (through k3s' ServiceLB) as
-the server's host name, and every domain added in the admin console receives, sends and signs mail with nothing to restart
-(`--mail-domains`, default `<domain>`, is only the set Postfix knows at start). When a host firewall is active (ufw on
-Ubuntu/Debian, firewalld on RHEL/Fedora) it opens SMTP/HTTP/HTTPS and allows k3s' pod and service networks; under SELinux it
-also allows nginx to relay.
-
-| Option | |
-| --- | --- |
-| `--version <version>` | The chart version to install (the script pins the one it was released with) |
-| `--tls false` | No cert-manager and no certificates: plain HTTP, and Postfix gets a self-signed certificate |
-| `--gateway shared\|chart` | `shared` (default): the script creates one Gateway, `envoy-gateway-system/shared-gateway`, with an HTTPS listener per host, and the chart's routes attach to it. `chart`: the chart creates a Gateway for each host, which the script merges into one Envoy Service for nginx. Re-running the script switches between them |
-| `--openbao false` | Keep the secrets in Kubernetes Secrets instead of OpenBao |
-| `--skip-k3s` | Use the cluster `kubectl` already reaches, instead of installing k3s |
-| `--uninstall` | Remove only what the script installed |
-
-Set `CHART=./helm` in the environment to install the chart from a checkout instead of the published one, and
-`ENVOY_GATEWAY_VERSION` to pick another Envoy Gateway release. `./single_node_install.sh --help` lists everything.
-
-The certificates are requested at install and issued once both names resolve to the machine, so DNS may follow the install
-(`kubectl -n rapidmx get certificate` shows when they're ready). To try it without a public domain, use a name ending in
-`.local` (say `--domain example.local`), which serves plain HTTP with no certificates, and add the two host names to your hosts file,
-which the script reminds you of.
-Then [sign in](#after-the-install-sign-in-and-add-your-domain).
-
-### 4. AWS (CloudFormation)
-
-`deploy/aws/` deploys the same stack on one EC2 instance: one CloudFormation template that creates the network, an IAM role and
-the instance, whose user data runs `deploy/aws/bootstrap.sh`, which installs k3s, Envoy Gateway behind a Classic Load Balancer
-(forwarding TCP with the PROXY protocol), cert-manager, OpenBao, External Secrets and this chart. There is no nginx and no
-Postfix: volumes are EBS and mail goes through SES. See [deploy/aws/README.md](deploy/aws/README.md) for the parameters and limits.
-
-Before you start you need an AWS account with permission to create IAM roles and EC2 instances, the AWS CLI, the
-domain's Route 53 hosted zone (optional, but it makes DNS automatic), and an SES domain identity for `example.com` in the region
-you deploy to; new SES accounts start in the sandbox, which only sends to verified addresses until you ask AWS to lift it.
-
-```bash
-aws cloudformation deploy --stack-name rapidmx --template-file deploy/aws/rapidmx-server.yaml \
-  --capabilities CAPABILITY_IAM \
-  --parameter-overrides Domain=example.com HostedZoneId=Z123EXAMPLE ChartVersion=<chart version>
-```
-
-`Domain` is the mail domain (the server is served at `mail.<Domain>`, sign-in at `auth.<Domain>`), not the server's own name.
-Set `ChartVersion` to the release you want, because the template's default is an older one. With `HostedZoneId` the instance
-creates the `mail` and `auth` records in that zone for you; without it, create both as CNAMEs to the load balancer named in the
-install summary. The stack only reports success once the whole install has finished, so a failed install fails the stack.
-
-Read the summary (it holds the load balancer's name, the generated secrets and the exact `ses-bridge` command) with the
-`SummaryCommand` stack output, which uses Session Manager, and the addresses with
-`aws cloudformation describe-stacks --stack-name rapidmx --query 'Stacks[0].Outputs'`.
-
-Two things remain after the stack is up:
-
-1. **Inbound mail: deploy [`ses-bridge`](https://github.com/rapidmx/ses-bridge)** for each mail domain, with the command the
-   summary prints. Then publish its three DKIM CNAME records, point the domain's MX record at the value it outputs (priority 10) and
-   activate its SES receipt rule set. (Its DKIM records also prove the domain to SES; RapidMX's own ownership TXT record from
-   [Before you deploy](#before-you-deploy) is still needed for the admin console.)
-2. **E-mail from the auth-server** (sign-in and verification codes). It can only send over SMTP, which can't use the instance's IAM
-   role, so create an SES SMTP account and re-run `bootstrap.sh` on the instance with `RAPIDMX_SES_SMTP_USERNAME` and
-   `RAPIDMX_SES_SMTP_PASSWORD` set (and optionally `RAPIDMX_MAIL_FROM`, default `noreply@<domain>`). Until then the auth-server's
-   e-mail is switched off and the summary says so.
-
-Then [sign in](#after-the-install-sign-in-and-add-your-domain).
-
-### After the install: sign in and add your domain
-
-Open `https://mail.example.com`: it sends you to `https://auth.example.com` to sign in as `admin`. The auth-server generated
-that account's password at install; read it from the Secret it lives in, `<release>-authserver-service-secrets` in the release's
-namespace (`rapidmx-authserver-service-secrets` in `rapidmx` for the k3s script, as here; on AWS run it as root on the instance with
-`KUBECONFIG=/etc/rancher/k3s/k3s.yaml` and use `rapidmx-server-authserver-service-secrets` in `rapidmx-server`):
-
-```bash
-kubectl -n rapidmx get secret rapidmx-authserver-service-secrets -o jsonpath='{.data.default_accounts}' \
-  | base64 -d | tr -d '\\' | sed -n 's/.*"password":"\([^"]*\)".*/\1/p'
-```
-
-(With Docker Compose, the password is in the file shown in [1. Docker Compose](#1-docker-compose).)
-Then open the admin console at `https://mail.example.com/admin`, add your mail domain under **Domains**, publish the records in
-its DNS setup checklist ([Before you deploy](#before-you-deploy)) and use **Verify now**.
-
-### Upgrading
-
-Upgrade the way you installed. **Back up the database first** (see below).
-
-- **Docker Compose:** `git pull`, then the `up -d --build` command you started with.
-- **Kubernetes, and a k3s server or AWS instance you installed with the scripts:** upgrade the release with `helm`. The scripts install a release named
-  `rapidmx` in the namespace `rapidmx` (`rapidmx-server` on AWS, where you run it as root on the instance, over Session Manager, with
-  `KUBECONFIG=/etc/rancher/k3s/k3s.yaml`):
-
-  ```bash
-  helm upgrade rapidmx oci://ghcr.io/rapidmx/charts/server --version <version> --namespace rapidmx \
-    --reset-then-reuse-values --wait --timeout 10m
-  ```
-
-  `--reset-then-reuse-values` (Helm 3.14+) keeps every value you set and picks up the new chart defaults; a plain `--reuse-values`
-  misses the new defaults, and the render can fail. Re-running `single_node_install.sh ... --version <version>` (or `bootstrap.sh` with
-  `RAPIDMX_CHART_VERSION`) does the same and also re-checks nginx, the Gateway and the other prerequisites.
+### Notes for upgrades
 
 The server has no database migrations: on startup it creates and updates its schema from its models
 (`datastores.*.synchronize`, the chart's `service.datastores.synchronize`, on by default). That's how an upgrade adds new
 collections, tables and columns, but on PostgreSQL TypeORM may drop and recreate a column whose type changed between
-releases, losing that column's data. **Back up the database before upgrading.** If you manage schema changes yourself,
+releases, losing that column's data. If you manage schema changes yourself,
 set `datastores__acl__synchronize` and `datastores__sql__synchronize` (or `datastores__mongo__synchronize`) to `false`.
 
 **Booking pages moved to a plugin.** The public booking pages (`/book`), Settings → Booking Links and the
