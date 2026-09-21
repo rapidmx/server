@@ -1381,7 +1381,7 @@ chmod 600 "$VALUES_FILE"
 {
   if [[ "$OPENBAO" != "true" ]]; then
     # With OpenBao these live in the vault, and External Secrets - not this file - puts them in front of the pods.
-    printf 'global:\n  authSecret: %s\n' "`yamlQuote "$AUTH_SECRET"`"
+    printf 'global:\n  jwt:\n    secret: %s\n' "`yamlQuote "$AUTH_SECRET"`"
     printf '  mailIngestSecret: %s\n' "`yamlQuote "$MAIL_INGEST_SECRET"`"
   fi
   # In the values file rather than --set, which would split the domain list on its commas.
@@ -1500,7 +1500,7 @@ if [[ "$OPENBAO" = "true" ]]; then
   fi
 else
   echo "Re-running this script reuses the release's secrets. To upgrade with helm yourself, pass them again as"
-  echo "global.authSecret and global.mailIngestSecret:"
+  echo "global.jwt.secret and global.mailIngestSecret:"
   echo "  kubectl -n $NAMESPACE get secret $FULLNAME-jwt-auth -o jsonpath='{.data.auth__secret}' | base64 -d"
   echo "  kubectl -n $NAMESPACE get secret $FULLNAME-mail-ingest-secret -o jsonpath='{.data.mail__transport__ingest__secret}' | base64 -d"
 fi

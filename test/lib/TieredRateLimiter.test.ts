@@ -142,6 +142,47 @@ describe("TieredRateLimiter", () => {
         expect(await attempts(await limiter({ ...limits, enabled: false }), 100, "GET|/x", anonymous())).toBe(100);
     });
 
+    describe("with the shipped limits (config.mongo.ts / config.sql.ts)", () => {
+        // Only routes decorated with @RateLimit() reach the limiter at all - key discovery/lookup, directory search, GIF search, the
+        // booking plugin's public endpoints. Page loads, /assets/*, /push and the folder/message/task/contact/calendar CRUD calls never
+        // do, so what is counted below is just the calls a session makes to those few endpoints.
+        const shipped = () => JSON.parse(JSON.stringify(mongoConfig.get("rateLimit")));
+
+        it("gives the mongo and sql configs the same limits", () => {
+            expect(sqlConfig.get("rateLimit")).toEqual(mongoConfig.get("rateLimit"));
+        });
+
+        it("never refuses a signed-in user's busy session: 1,000 lookups in one burst, and 10,000 per five minutes per endpoint", async () => {
+            const rl = await limiter(shipped());
+            const lookup = "alice|GET|/api/mail/mailboxes/1/keys/lookup";
+            expect(await attempts(rl, 1_000, lookup, signedIn("alice", "203.0.113.5"))).toBe(1_000);
+            // ... and it is the user's own budget: another user of the same address is untouched.
+            expect(await attempts(rl, 1_000, "bob|GET|/api/mail/mailboxes/2/keys/lookup", signedIn("bob", "203.0.113.5"))).toBe(1_000);
+            // Only automation gets far enough to be stopped: 10,000 per user and endpoint per five minutes.
+            expect(await attempts(rl, 10_000, lookup, signedIn("alice", "203.0.113.6"))).toBe(9_000);
+        });
+
+        it("lets an office of 50 signed-in users behind one address each look up 200 recipients in five minutes", async () => {
+            const rl = await limiter(shipped());
+            let refused = 0;
+            for (let user = 0; user < 50; user++) {
+                const uid = `user-${user}`;
+                refused += 200 - (await attempts(rl, 200, `${uid}|GET|/api/mail/mailboxes/${user}/keys/lookup`, signedIn(uid, "198.51.100.7")));
+            }
+            expect(refused).toBe(0);
+            // The address as a whole is bounded (a multi-account flood from one source): 20,000 per five minutes, of which 10,000 are spent.
+            expect(await attempts(rl, 15_000, "user-0|GET|/api/mail/directory/search", signedIn("user-0", "198.51.100.7"))).toBe(10_000);
+        });
+
+        it("still stops an anonymous caller: 100 requests per five minutes per address, 100 per minute per endpoint", async () => {
+            const rl = await limiter(shipped());
+            const booking = "POST|/booking/types/a/book";
+            expect(await attempts(rl, 150, booking, anonymous("203.0.113.9"))).toBe(100);
+            // A signed-in user of that address is not held back by it.
+            expect(await attempts(rl, 100, "alice|GET|/api/mail/mailboxes/1/keys/lookup", signedIn("alice", "203.0.113.9"))).toBe(100);
+        });
+    });
+
     it("ships conservative anonymous limits and very high signed-in limits", () => {
         for (const config of [mongoConfig, sqlConfig]) {
             const rateLimit = config.get("rateLimit");

@@ -6,6 +6,7 @@ import crypto from "crypto";
 import fs from "fs";
 import path from "path";
 import { CORE_APP_DIRS, createServerViteConfig, WEB_CLIENT_APP_CSS, type ServerViteConfigOptions } from "../lib/serverViteConfig.js";
+import { precompressDirectory } from "../lib/staticAssets.js";
 import { hasTsxContext } from "../routes/webClientAppDir.js";
 import type { InstalledPlugin } from "./PluginInstaller.js";
 
@@ -267,11 +268,26 @@ export class PluginUiBuilder {
             if (!fs.existsSync(path.join(temp, ".vite", "manifest.json"))) {
                 throw new Error("The build finished without writing a Vite manifest.");
             }
+            await this.precompress(temp);
             this.moveIntoPlace(temp, path.join(this.buildRoot, hash));
             logger?.info?.(`Built the plugin UI ${hash} in ${Math.round((Date.now() - started) / 1000)}s (process memory ${Math.round(process.memoryUsage().rss / 1048576)} MiB).`);
         } finally {
             fs.rmSync(cssDir, { recursive: true, force: true });
             fs.rmSync(temp, { recursive: true, force: true });
+        }
+    }
+
+    /**
+     * Writes brotli and gzip siblings for the build's compressible files, which the static file route sends with
+     * `Content-Encoding` (see `lib/staticAssets.ts`). Best effort: without them the route compresses on first request.
+     * Brotli 9 rather than the image build's 11 keeps the wait before the server starts short.
+     */
+    private async precompress(dir: string): Promise<void> {
+        try {
+            const result = await precompressDirectory(dir, { brotliQuality: 9 });
+            this.options.logger?.info?.(`Pre-compressed ${result.compressed} files of the plugin UI build (${Math.round(result.bytesBefore / 1024)} KiB -> ${Math.round(result.bytesAfter / 1024)} KiB).`);
+        } catch (err: any) {
+            this.options.logger?.warn?.(`Could not pre-compress the plugin UI build, it is compressed on demand instead: ${err?.message ?? err}`);
         }
     }
 
@@ -294,7 +310,7 @@ export class PluginUiBuilder {
         }
         for (const entry of fs.readdirSync(prebuilt)) {
             if (entry !== "assets" && entry !== ".vite") {
-                fs.cpSync(path.join(prebuilt, entry), path.join(outDir, entry), { recursive: true });
+                fs.cpSync(path.join(prebuilt, entry), path.join(outDir, entry), { recursive: true, preserveTimestamps: true });
             }
         }
     }

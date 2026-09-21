@@ -29,6 +29,26 @@ describe("serverViteConfig", () => {
         expect(inputs.filter((input) => input.startsWith("apps/"))).toEqual([]);
     });
 
+    it("gives React and the icon set chunks of their own, so the app's other chunks can change without invalidating them", async () => {
+        const config = await createServerViteConfig();
+        const groups = config.build.rolldownOptions.output.codeSplitting.groups;
+        const group = (name: string) => groups.find((candidate: any) => candidate.name === name);
+        for (const id of ["react", "react-dom", "scheduler"]) {
+            for (const separator of ["/", "\\"]) {
+                expect(group("react").test.test(`C:${separator}app${separator}node_modules${separator}${id}${separator}index.js`), id + separator).toBe(true);
+            }
+        }
+        expect(group("react").test.test("/app/node_modules/react-icons/hi2/index.mjs")).toBe(false);
+        expect(group("react").test.test("/app/node_modules/react-router/index.js")).toBe(false);
+        expect(group("icons").test.test("/app/node_modules/react-icons/hi2/index.mjs")).toBe(true);
+        expect(group("icons").test.test("C:\\app\\node_modules\\react-icons\\lib\\iconBase.mjs")).toBe(true);
+        // Only the compose toolbar uses these, so they stay out of the initial chunks.
+        expect(group("icons").test.test("/app/node_modules/react-icons/bs/index.mjs")).toBe(false);
+        expect(group("icons").test.test("/app/node_modules/react/index.js")).toBe(false);
+        // React is chosen before the icon set where a path could be either.
+        expect(group("react").priority).toBeGreaterThan(group("icons").priority);
+    });
+
     it("adds extra app directories, their stylesheets and the output directory", async () => {
         const config = await createServerViteConfig({
             extraAppDirs: ["test/fixtures/ui-plugin/apps/hello"],

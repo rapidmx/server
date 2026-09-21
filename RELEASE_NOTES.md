@@ -2,6 +2,40 @@
 
 ## Unreleased
 
+### Features
+
+- **The pages carry the trusted role names (`trustedRoles`, from `trusted_roles`, default `admin`):** the web client's account menu uses them to ask auth-server whether the signed-in user is an administrator - an auth-server token only carries the role once elevated - and shows an "Admin Console" item that only navigates (`/admin` still checks the role and starts the elevation). Needs the next `@rapidmx/web-client`.
+- **Static files are sent the way a browser expects:** the browser build (`/assets`, `/fonts`, `/images`, `/styles`, `/favicon.ico`) is
+  served by a route of its own with `Content-Type` (with a charset), an `ETag` answered with `304 Not Modified`, `HEAD`, and brotli/gzip.
+  `yarn build` now writes `.br` and `.gz` files next to every compressible file (`scripts/precompress-assets.mjs`, 5.6 MiB down to
+  1.4 MiB) and the plugin UI build at startup does the same; a file without them is compressed on first request and kept in memory.
+  `static_assets:compress`, `static_assets:memory_cache_bytes` and `static_assets:brotli_quality` configure it.
+- **Envoy Gateway compresses the API's JSON and the pages' HTML:** the chart attaches a `BackendTrafficPolicy` (brotli, then gzip, from
+  1 KiB) to its route. `global.gateway.compression.enabled` is `auto` by default (rendered only when the cluster has Envoy Gateway's
+  API), `true` or `false`; it has no effect with `global.gateway.tlsTermination=pod`. The server's own static files already carry
+  `Content-Encoding`, which Envoy leaves alone, so nothing is compressed twice.
+- **The browser build splits React and the icon set into chunks of their own** (`createServerViteConfig()`'s `codeSplitting` groups `react` and `icons`), on top of the
+  web client's own lazy loading: React, React DOM and the scheduler are byte-for-byte the same from one release of the web client to the next, so a returning visitor
+  keeps that chunk across deploys (its `Cache-Control` is immutable), and the app's other chunks can change without invalidating it. It replaces one
+  1 MB chunk named after an arbitrary module (`MailboxProvisioning-*.js`) and a `client-*.js` holding React DOM and every icon. `strictExecutionOrder` stays on.
+
+### Fixes
+
+- **Without OpenBao the server and the auth-server didn't share a JWT secret,** so every sign-in was refused: `single_node_install.sh --openbao false` and
+  `deploy/aws` (`RAPIDMX_OPENBAO=false`) passed the secret as `global.authSecret`, which no chart reads (the value is `global.jwt.secret`), so each chart generated its own.
+  Both now pass `global.jwt.secret`, and so do the chart's notes and the README, which also describes each way to deploy in full.
+- **Every page load downloaded the whole web client again (about 2.5 MB):** the bundles were sent with no `Cache-Control`, no validator
+  and no compression, so the mail app fetched all ~20 chunks on every folder change and app switch (each one is a full page load).
+  Fingerprinted bundles (`/assets/<name>-<hash>.js|css|wasm`) are now `Cache-Control: public, max-age=31536000, immutable` and fetched
+  once; a cold inbox load is 0.57 MB with brotli instead of 2.5 MB, and a repeat visit fetches only the page itself. Images and fonts are
+  cached for an hour, CSS/JS/HTML that isn't fingerprinted is revalidated (`304`).
+- **The local search index's WebAssembly file returned 404:** `.wasm` wasn't a file type the pages' file serving knew, so
+  `/assets/wa-sqlite-async-*.wasm` answered with an HTML 404 page. It is served (`application/wasm`, brotli 2.2 MiB to 0.6 MiB).
+- **`HEAD` on a static file (`curl -I`) answered 404 with `Content-Length: 9223372036854775808`:** it now answers the real headers and
+  length. (`HEAD /` and other pages still do; that is in `@rapidrest/react` and `@rapidrest/service-core`, see `.claude/NOTES.md`.)
+- Rate limits audited, no change needed: only the few `@RateLimit()` endpoints (key discovery and lookup, directory and GIF search,
+  the booking plugin's public calls) are counted; page loads, `/assets/*`, `/push` and the mail CRUD calls never are.
+
 ## v1.0.0-beta.9
 
 ## v1.0.0-beta.8

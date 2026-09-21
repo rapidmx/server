@@ -26,6 +26,13 @@ global:
     tls: true
     tlsTermination: gateway
     tlsExtraDnsNames: []
+    # Envoy Gateway compresses the API's JSON and the pages' HTML in transit (a BackendTrafficPolicy on this chart's route). The
+    # server already sends its bundles and static files compressed, which Envoy leaves alone. "auto" renders the policy when the
+    # cluster has Envoy Gateway's API, true always, false never. It has no effect with tlsTermination: pod (Envoy can't read it).
+    compression:
+      enabled: auto
+      # Responses smaller than this many bytes are sent as they are (Envoy's minimum is 30).
+      minContentLength: 1024
   jwt:
     audience: >-
       {{ include "rrst.render" (dict "value" .Values.global.domain "context" .)

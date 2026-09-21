@@ -1,0 +1,18 @@
+# Patterns to ignore when building packages (same syntax as .gitignore, but see the note below).
+
+# A chart packaged from inside this directory (`helm package .`) writes server-<version>.tgz here. Left in, the next `helm package`
+# packs it into the chart, and the release Helm stores in a Secret grows past Kubernetes' 1 MiB limit ("Secret ... is invalid: data:
+# Too long"). Named after the chart rather than `*.tgz` or `/*.tgz`: Helm doesn't anchor a leading slash, so those also match the
+# dependency archives under charts/, and packaging then fails with "missing in charts/ directory".
+/server-*.tgz
+
+# Version control and editor leftovers.
+.git/
+.gitignore
+.DS_Store
+*.swp
+*.bak
+*.tmp
+*~
+.vscode/
+.idea/

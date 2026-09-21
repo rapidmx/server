@@ -10,7 +10,7 @@
     "dist"
   ],
   "scripts": {
-    "build": "rapidrest build",
+    "build": "rapidrest build && node scripts/precompress-assets.mjs",
     "debug": "rapidrest dev --inspect",
     "dev": "rapidrest dev",
     "lint": "eslint ./src ./test",

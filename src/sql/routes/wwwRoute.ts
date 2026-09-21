@@ -45,6 +45,10 @@ export class AppRoute extends ReactRoute {
             // Drives the user menu's "Admin" item (see UserMenu.tsx) — a trusted-role caller can always reach
             // the admin console, this just saves them from navigating there manually to discover that.
             trusted: UserUtils.hasRoles(req.user, this.trustedRoles),
+            // The role names that count as trusted (`trusted_roles`), so the user menu can ask auth-server whether the
+            // caller holds one without hard-coding "admin". `trusted` above is false for an administrator whose token
+            // isn't elevated (auth-server strips trusted roles from it); the link this drives only navigates.
+            trustedRoles: this.trustedRoles,
             branding,
             // Settings sections and app rail entries from loaded plugins whose UI built (see plugins/pluginNav.ts).
             pluginNav: getPluginNav(),

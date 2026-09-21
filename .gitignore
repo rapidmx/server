@@ -32,6 +32,9 @@ rrst-test
 # Fetched by `helm dependency update` (see helm/Chart.yaml) - regenerable from helm/Chart.lock (which
 # *should* be committed, unlike these binary archives).
 /helm/charts/*.tgz
+# A chart packaged from inside helm/ (`helm package .`) lands here, and Helm then packs it into the next chart it builds - a stray
+# 1.4 MB copy pushed a release over the 1 MiB Secret limit Helm stores it in. Package with `helm package helm -d <elsewhere>`.
+/helm/*.tgz
 # Local environment overrides (e.g. real API keys like `giphy__api_key`) - never commit real secrets;
 # config.mongo.ts/config.sql.ts only ever check in placeholder defaults.
 .env

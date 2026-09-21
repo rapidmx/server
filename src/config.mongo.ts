@@ -81,6 +81,17 @@ conf.defaults({
         // replaces this at startup with the build it makes in system:plugins:dir/.ui-build (see src/plugins/PluginUiBuilder.ts).
         manifestPath: "dist/public/.vite/manifest.json",
     },
+    // The browser build's static files (`/assets`, `/fonts`, `/images`, `/styles`), served by src/routes/BaseStaticAssetRoute.ts
+    // with ETag/304, Cache-Control (fingerprinted bundles are cached for a year, marked immutable) and brotli/gzip.
+    static_assets: {
+        // Send `Content-Encoding` variants: the `.br`/`.gz` files `yarn build` writes next to each bundle, or ones made on the
+        // first request and kept in memory. Turn off only if a proxy in front must see the bytes uncompressed.
+        compress: true,
+        // The most memory the cache of file contents and compressed variants may hold, in bytes.
+        memory_cache_bytes: 64 * 1024 * 1024,
+        // Brotli quality (0-11) of variants made on the fly, i.e. for files with no `.br` sibling (a plugin UI build gets its own).
+        brotli_quality: 9,
+    },
     // Settings pertaining to the VERIFICATION of authentication tokens issued by the separate `auth-server`
     // deployment (see `.claude/NOTES.md`). This service never issues its own JWTs and mounts no sign-in/
     // sign-up/session routes of its own — `auth:secret` must match auth-server's own signing secret exactly.

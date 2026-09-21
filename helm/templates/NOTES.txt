@@ -28,7 +28,7 @@ JWT Auth:
   auth_secret) and delivered by External Secrets into the "{{ include "rrst.fullname" . }}-jwt-auth" Secret. The bundled
   auth-server reads the same path, and an upgrade doesn't have to pass any of it.
 {{- else }}
-  Secret: the value you supplied as global.authSecret (or auth.secret), stored in the
+  Secret: the value you supplied as global.jwt.secret, which the bundled auth-server reads too, stored in the
   "{{ include "rrst.fullname" . }}-jwt-auth" Secret. Supply it again on every upgrade.
 {{- end }}
 

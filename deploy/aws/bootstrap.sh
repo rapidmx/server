@@ -751,7 +751,7 @@ chmod 600 "$VALUES_FILE"
   printf 'global:\n'
   if [[ "$OPENBAO" != "true" ]]; then
     # With OpenBao these live in the vault, and External Secrets - not this file - puts them in front of the pods.
-    printf '  authSecret: %s\n  mailIngestSecret: %s\n' "`yamlQuote "$AUTH_SECRET"`" "`yamlQuote "$INGEST_SECRET"`"
+    printf '  jwt:\n    secret: %s\n  mailIngestSecret: %s\n' "`yamlQuote "$AUTH_SECRET"`" "`yamlQuote "$INGEST_SECRET"`"
   fi
   # The auth-server can only send its sign-in and verification codes through SMTP, so it uses SES's endpoint with an SMTP
   # account's credentials (from a Secret, below). Without that account its e-mail is left unconfigured rather than pointed at
@@ -883,7 +883,7 @@ install -d -m 0700 "`dirname "$SUMMARY_FILE"`"
     echo "  mail ingest secret      $INGEST_SECRET"
   else
     echo "Secrets (keep them; an upgrade needs the same values):"
-    echo "  global.authSecret       $AUTH_SECRET"
+    echo "  global.jwt.secret       $AUTH_SECRET"
     echo "  global.mailIngestSecret $INGEST_SECRET"
   fi
 } > "$SUMMARY_FILE"

@@ -76,7 +76,22 @@ export function appStylesheetPlugin(stylesheets: AppStylesheet[]): any {
  * `build.rolldownOptions.output.strictExecutionOrder` keeps modules running in import order. Without it Rolldown runs
  * a CommonJS module lazily where it's imported but hoists ESM modules, so `@rapidmx/react-shared`'s
  * `import "reflect-metadata"` (CommonJS) ran after `@peculiar/x509`'s ESM dependency tsyringe, which throws "tsyringe
- * requires a reflect polyfill" on load and left every page that imports the crypto modules blank.
+ * requires a reflect polyfill" on load and left every page that imports the crypto modules blank. The web client loads
+ * those modules lazily (`import()`) now, and `@rapidmx/react-shared` awaits `reflect-metadata` before `@peculiar/x509`
+ * where it loads that; the ordering guarantee is what keeps a lazy chunk that holds both correct.
+ *
+ * `build.rolldownOptions.output.codeSplitting` names the stable third-party pieces, so that they are chunks of their own
+ * rather than parts of whichever shared chunk Rolldown happens to fold them into (which was one 1 MB chunk named after an
+ * arbitrary module, `MailboxProvisioning-*.js`, and a `client-*.js` holding react-dom and the whole icon set).
+ *
+ * The `react` group is React, React DOM and the scheduler, byte-for-byte the same from one release of the app to the next, so a
+ * returning visitor keeps it cached across every deploy of the web client (its `Cache-Control` is immutable).
+ *
+ * The `icons` group is the Heroicons v2 set (`react-icons/hi2`, the app's own icons) and the shared icon base, which change
+ * whenever any page starts using another icon. The Bootstrap icons only the compose toolbar uses stay with the compose chunk.
+ *
+ * Everything else keeps Rolldown's default splitting, which is what makes the lazily loaded parts (the compose editor, the
+ * emoji list, the S/MIME and X.509 code, each page of the client-side router) separate chunks.
  */
 export async function createServerViteConfig(options: ServerViteConfigOptions = {}): Promise<any> {
     const { createViteConfig } = await import("@rapidrest/react/vite");
@@ -94,7 +109,16 @@ export async function createServerViteConfig(options: ServerViteConfigOptions = 
             ...config.build,
             rolldownOptions: {
                 ...rolldownOptions,
-                output: { ...rolldownOptions.output, strictExecutionOrder: true },
+                output: {
+                    ...rolldownOptions.output,
+                    strictExecutionOrder: true,
+                    codeSplitting: {
+                        groups: [
+                            { name: "react", test: /node_modules[\\/](react|react-dom|scheduler)[\\/]/, priority: 30 },
+                            { name: "icons", test: /node_modules[\\/]react-icons[\\/](hi2|lib)[\\/]/, priority: 20 },
+                        ],
+                    },
+                },
             },
         },
         resolve: {

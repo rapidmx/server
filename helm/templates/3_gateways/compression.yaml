@@ -1,0 +1,30 @@
+{{- /*
+Envoy Gateway compression of the API's JSON and the pages' HTML (BackendTrafficPolicy, gateway.envoyproxy.io - Envoy Gateway
+specific, so it is only rendered where that API exists). Who compresses what, so nothing is compressed twice:
+  - the server compresses the browser bundles and static files itself (brotli/gzip variants written at build time, see
+    src/lib/staticAssets.ts) and marks them with Content-Encoding; Envoy leaves a response that already has one alone;
+  - Envoy compresses what the server can't (API JSON, server-rendered HTML, the branding stylesheet), for the content types
+    its compressor handles by default (JSON, HTML, CSS, JavaScript, SVG, plain text and XML - not fonts, images, WebAssembly
+    or the /push event stream).
+Not rendered with pod-terminated TLS (Envoy only passes the bytes through then and can't compress them).
+global.gateway.compression.enabled: "auto" (default; when the cluster has the API), true, or false.
+*/}}
+{{- $mode := toString $.Values.global.gateway.compression.enabled }}
+{{- $podTLS := eq (include "rrst.podTLS" $) "true" }}
+{{- if and (not $podTLS) (or (eq $mode "true") (and (eq $mode "auto") ($.Capabilities.APIVersions.Has "gateway.envoyproxy.io/v1alpha1/BackendTrafficPolicy"))) }}
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: BackendTrafficPolicy
+metadata:
+  name: {{ include "rrst.fullname" . }}-compression
+spec:
+  targetRefs:
+  - group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: {{ include "rrst.fullname" . }}-httproute
+  # Listed in order of preference when a client accepts both at the same weight.
+  compressor:
+  - type: Brotli
+    minContentLength: {{ $.Values.global.gateway.compression.minContentLength }}
+  - type: Gzip
+    minContentLength: {{ $.Values.global.gateway.compression.minContentLength }}
+{{- end }}
