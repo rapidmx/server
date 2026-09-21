@@ -41,6 +41,13 @@ export const DEFAULT_GIPHY_API_KEY = "ChangeMeGiphyApiKey";
  */
 export const DEFAULT_MAX_COMPOSE_ATTACHMENT_BYTES = 25_000_000;
 /**
+ * Default cap, in bytes, on a background image a user uploads for the web client (`mail:preferences:background_max_bytes`,
+ * `POST mail/preferences/appearance/background`) - 8MB, plenty for a photo at screen resolution. Shared here so both
+ * `config.mongo.ts`/`config.sql.ts` (the default value) and `BaseAppearanceRoute` (the fallback when unset) agree on it. The
+ * route answers 413 above it; `max_body_size` below is a separate, larger ceiling on every request.
+ */
+export const DEFAULT_APPEARANCE_BACKGROUND_MAX_BYTES = 8 * 1024 * 1024;
+/**
  * Default cap, in bytes, on any single raw HTTP request body (`max_body_size`, read by
  * `@rapidrest/service-core`'s own `Server.js`) — the framework's own built-in default is a much smaller
  * 10 MiB, buffered entirely in memory per request before any route handler runs. Raised here to 100 MiB

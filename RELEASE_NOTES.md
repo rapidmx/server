@@ -26,6 +26,26 @@
   above removes. The console's **Shared access** and the mail client's **Settings > Sharing** page now look up who was typed (a mailbox address, a username or an e-mail alias, or a user id), show the person's name and address, and grant that user's id; an entry that was never a user id is flagged "has no effect" with **Replace with a user**. `/api/acls` refuses non-uid principals on mailbox ACLs. **The existing `hello@` grant
   is not migrated** (usernames are never matched to uids: they can be released and re-claimed): open the mailbox in the admin console and use **Replace with a user** on the `jean-philippe` entry, or **Add me**.
 
+### Features
+
+- **Per-user appearance preferences:** the server mounts `AppearanceRoute` at `/api/mail/preferences/appearance` (Mongo and SQL): `GET`/`PUT` for the theme mode, colours and window background, `POST`/`GET`/`DELETE .../background` for a background
+  image (PNG, JPEG, WebP or AVIF, recognised by its bytes, at most `mail:preferences:background_max_bytes` = 8 MiB; owner-only, immutable-cacheable), and a live update on the user's own channel. The `AppearancePreferences*` models are
+  registered in `Models.ts` (a new collection/table on the next start, `synchronize` on, no migration), and `WwwRoute`/`AppRoute` return the signed-in user's saved preferences as the `appearance` page prop (a single read that never fails the page),
+  so the web client can theme the first byte of HTML. The cached page can show the previous value for up to a minute after a change (`ReactRoute`'s 60 s cache); the client corrects it after hydration. Needs the next `@rapidmx/restapi`.
+- **Send in the background:** `POST /api/mail/messages/:id/send` with `{ "background": true }` answers `202` at once and relays in this process; `send-succeeded`/`send-retrying`/`send-failed` events carry the outcome. `mail:jobs:scheduled_send:concurrency` (4) and `mail:jobs:scheduled_send:drain_ms`
+  (15000) are in the shipped configs. Also from the new `@rapidmx/restapi`: a message the mail system refuses for good is failed at once instead of retried five times, and a scheduled send is relayed with the receipt request and key announcement an immediate send has.
+- **Uninstalling a plugin can now delete its data:** `DELETE /api/system/plugins/:id` takes `{ "purgeData": true }` (also `?purgeData=true`), and the admin Plugins dialog gets an unchecked **Also delete all data this plugin
+  stored** box that turns the button into a red **Uninstall and delete data** and asks for the plugin's name. Without the flag nothing changes; with it, only an elevated trusted-role caller is accepted, the request, the actor and
+  the plugin are audited (`plugin.purge_requested`, then `plugin.purge_completed` or `plugin.purge_failed`), and the answer says whether a deletion was scheduled. Nothing is deleted while any server still runs the plugin: the
+  deletion is recorded when the plugin is uninstalled and runs once every server copy reports the plugin set without it (rolling restart finished, nobody starting), on whichever copy notices first and exactly once (a lease in the
+  database), again after a restart. It deletes each collection or table the plugin's model classes use (MongoDB and SQL; recorded when a server loads the plugin, and refused for anything a core model, another plugin or the `acl`
+  datastore uses), the plugin's saved settings and this server's leftover package and cached UI builds, after the plugin's optional `onPurge` hook (`./purge` export, 60 s timeout, `AbortPurgeError` stops the purge) - each step
+  recorded and repeatable, a failed one retried from the list (`POST /api/system/plugins/purges/:uid/retry`). Adding the plugin again cancels a pending deletion (a warning says so) and is refused while one runs. The Plugins list
+  shows "Uninstalled - data will be deleted after servers restart", "Data deleted <date>" or "Data deletion failed: <reason>" with Retry (`GET /api/system/plugins/status` gained `purges`). New `PluginPurgeMongo`/`PluginPurgeSQL`
+  models (a `plugin_purge_*` collection/table on the next start, `synchronize` on, no migration). A plugin loaded before this release records what it stores at its first start on it, so one that is disabled until then can't be
+  deleted with its data until it has run once. `@rapidmx/booking-plugin` gets an `onPurge` that deletes its profile images from the BlobStore; ActiveSync's three collections and Booking's three are found from their models; MAPI and
+  Autodiscover own no data. See the README's "Uninstalling a plugin with its data".
+
 ## v1.0.0-beta.10
 
 ### Features

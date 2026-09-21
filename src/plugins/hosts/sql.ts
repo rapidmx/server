@@ -2,6 +2,8 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
+import { AuditLogEntrySQL } from "@rapidmx/restapi/sql";
+import { PluginPurgeSQL } from "../../sql/PluginPurgeSQL.js";
 import { AdminConsoleRoute } from "../../sql/routes/AdminConsoleRoute.js";
 import { EscrowConsoleRoute } from "../../sql/routes/EscrowConsoleRoute.js";
 import { PublicPageRoute } from "../../sql/routes/PublicPageRoute.js";
@@ -15,3 +17,6 @@ export const SQL_PLUGIN_UI_HOSTS: PluginUiHostClasses = {
     escrow: EscrowConsoleRoute,
     public: PublicPageRoute,
 };
+
+/** What deleting an uninstalled plugin's data uses on SQL databases (see `PluginHostOptions.purge`). */
+export const SQL_PLUGIN_PURGE = { purgeClass: PluginPurgeSQL, auditLogClass: AuditLogEntrySQL };

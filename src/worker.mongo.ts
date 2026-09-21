@@ -41,7 +41,7 @@ import { configMs, DEFAULT_RELEASE_TIMEOUT_MS, drainAndStop, withTimeout } from 
 import { startTelemetryToken } from "./lib/telemetryToken.js";
 import { PluginMongo } from "@rapidmx/restapi/mongo";
 import { PluginHost } from "./plugins/PluginHost.js";
-import { MONGO_PLUGIN_UI_HOSTS } from "./plugins/hosts/mongo.js";
+import { MONGO_PLUGIN_PURGE, MONGO_PLUGIN_UI_HOSTS } from "./plugins/hosts/mongo.js";
 import { notifyListening, restartWorker } from "./plugins/supervisor.js";
 import { TieredRateLimiter } from "./lib/TieredRateLimiter.js";
 
@@ -151,7 +151,7 @@ const start = async function (config: any, logger: any) {
 
     // Create and start the server
     // Install and load this deployment's plugins before the server scans for classes - see plugins/PluginHost.ts.
-    pluginHost = await PluginHost.prepare({ config, logger, datastore: "mongo", pluginClass: PluginMongo, appRoot: process.cwd(), uiHosts: MONGO_PLUGIN_UI_HOSTS });
+    pluginHost = await PluginHost.prepare({ config, logger, datastore: "mongo", pluginClass: PluginMongo, appRoot: process.cwd(), uiHosts: MONGO_PLUGIN_UI_HOSTS, purge: MONGO_PLUGIN_PURGE });
     server = new Server({ config, basePath: config.get("base_path"), logger, objectFactory, classLoader: pluginHost.classLoader });
     await server.start();
     notifyListening();

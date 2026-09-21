@@ -97,6 +97,27 @@ export class PluginClassLoader extends ClassLoader {
         await this.afterLoad?.(this.getClasses());
     }
 
+    /**
+     * The classes `pluginName` registered (its exports, keyed by export name) - what its models are found among when its
+     * data is deleted. A class the plugin re-exports from elsewhere is in there too; the purge's guard refuses anything
+     * that is really the server's or another plugin's.
+     */
+    public classesOf(pluginName: string): Map<string, any> {
+        const prefix: string = `${pluginPackagePrefix(pluginName)}.`;
+        const found: Map<string, any> = new Map();
+        for (const [fqn, clazz] of this.getClasses()) {
+            if (fqn.startsWith(prefix) && !fqn.slice(prefix.length).includes(".")) {
+                found.set(fqn.slice(prefix.length), clazz);
+            }
+        }
+        return found;
+    }
+
+    /** Every class the server registered on its own (not from a plugin), keyed by its registered name. */
+    public coreClasses(): Map<string, any> {
+        return new Map([...this.getClasses()].filter(([fqn]) => !fqn.startsWith("plugins.")));
+    }
+
     /** The loaded plugins as `PluginRegistry` entries, with the UI state of those that declare UI. */
     public registryEntries(): LoadedPluginWithUi[] {
         return this.loaded.map((plugin) => {

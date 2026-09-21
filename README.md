@@ -658,6 +658,84 @@ served; the last build is kept, so turning the same plugins back on reuses it.
   are hidden and the admin console's plugin status shows the error), and the rest are rebuilt without it. A page whose
   path clashes with another plugin's pages or with any other route isn't served either.
 
+### Uninstalling a plugin with its data
+
+Uninstalling a plugin (Admin → Plugins → Uninstall) stops the servers running it and keeps what it stored, so adding it
+again brings everything back. The dialog can also delete that data: tick **Also delete all data this plugin stored**,
+type the plugin's name, and choose **Uninstall and delete data**. That can't be undone, and it needs an administrator
+who has recently confirmed their identity (an *elevated* session, like the rest of the admin console); the request,
+who made it and the plugin are written to the audit log (`plugin.purge_requested`, and later `plugin.purge_completed` or
+`plugin.purge_failed`). The API is `DELETE /api/system/plugins/:id` with `{ "purgeData": true }` (or `?purgeData=true`);
+without it the call behaves as it always did, and its answer says whether a deletion was scheduled.
+
+**When it runs.** Never while any server still runs the plugin. The deletion is recorded as pending when the plugin is
+uninstalled, and runs on whichever server copy notices first once every copy that reports reads the plugin set without
+it (`plugins:status` in the cache datastore) - that is, after the rolling restart has reached them all - and nothing lists
+it as loaded, no restart holds the lock and no copy is still starting up. Copies whose status can't be read count as
+still running it. A claim in the database makes it happen exactly once even when several copies notice together, and it
+resumes after a restart or after the copy doing it died (the claim lapses after `system:plugins:purge:lease_ms`, 2
+minutes, and the steps already done are kept). Before every step the checks are made again. Adding the plugin again
+before it starts **cancels** the deletion (the response says so); once it has started, adding it is refused with a `409`
+until it has finished. An uninstalled plugin is listed in the admin console with where its data stands ("Uninstalled -
+data will be deleted after servers restart", "Data deleted 21 Sep 2026", or "Data deletion failed: ..." with a Retry
+button; `GET /api/system/plugins/status` carries them as `purges`, and `POST /api/system/plugins/purges/:uid/retry`
+retries).
+
+**What is deleted.** Each step is recorded (`{ step, ok, count?, error? }`) and is safe to repeat; a failure doesn't stop
+the others, and a retry runs only the failed ones:
+
+1. the plugin's `onPurge` hook, if it has one (below) - first, so it can clean up before its data goes;
+2. every collection or table its **model classes** use, on MongoDB and on SQL: each is emptied and dropped. What a
+   plugin owns is recorded by a server copy when it loads the plugin (from the classes its entry point registered), so
+   it works for a plugin that is already disabled - but a plugin that never loaded on any server since this release can't
+   be uninstalled with its data until it has (the request says so, and changes nothing). Nothing that belongs to the
+   server (any collection or table a core model uses, including one a plugin model tries to share by name or by
+   extending a core model), to another plugin, or to the `acl` datastore is ever touched; such a step fails instead;
+3. blobs: the `BlobStore` has no listing and no plugin-owned prefix, so the server deletes none itself - a plugin that
+   stores blobs removes them in its hook;
+4. the plugin's saved settings (the removed plugin row itself stays, so the default plugin list never adds it again),
+   once everything before it succeeded;
+5. this copy's leftovers of it: its installed package and the cached UI builds that contain its pages.
+
+The bundled plugins: **`@rapidmx/booking-plugin`** owns `booking_type_*`, `booking_*` and `booking_profile_*` (the
+`*_mongo` or `*_sql` collections/tables) and the profile images it keeps in the `BlobStore` under `booking-profiles/`
+(deleted by its `onPurge` hook); the events its bookings created in people's calendars are the calendar owners' own
+`CalendarEvent`s and stay. **`@rapidmx/activesync`** owns `device_sync_state_*`, `eas_collection_state_*` and
+`eas_collection_chunk_*`; the mail it sent lives in the users' mailboxes and stays. **`@rapidmx/mapi`** and
+**`@rapidmx/autodiscover`** own no data (routes only); MAPI's per-connection state is short-lived cache and expires on
+its own.
+
+**For plugin authors: `onPurge`.** A plugin that keeps data the automatic steps can't find - files or blobs, an external
+service, non-model data - exports a hook from a `./purge` entry point in its `package.json`:
+
+```json
+"exports": { "./mongo": "...", "./sql": "...", "./purge": { "import": "./dist/lib/purge.js" } }
+```
+
+```ts
+export async function onPurge(ctx: {
+    plugin: { name: string; version: string };
+    models: { className: string; datastore: string; kind: "mongo" | "sql"; name: string }[]; // what is deleted afterwards
+    connection(datastore: string): unknown; // the server's MongoConnection (`.db`) or TypeORM DataSource
+    blobStore?: unknown; // the server's BlobStore
+    config: { get(key: string): unknown };
+    logger: { info(m: string): void; warn(m: string): void; error(m: string): void };
+    signal: AbortSignal; // aborted when the hook runs out of time (`system:plugins:purge:hook_timeout_ms`, 60 s)
+}): Promise<void>;
+```
+
+The plugin is no longer running anywhere when the hook runs, so the server installs the recorded version into a scratch
+folder (`<plugins dir>/.purge/`, verified against the recorded integrity hash, deleted afterwards) and imports the hook
+from there; a plugin without `./purge` costs no install. The hook's own failure is recorded and doesn't stop the
+automatic steps, **unless it throws an error named `AbortPurgeError`** (a plain `Error` whose `name` is
+`"AbortPurgeError"`, or with `abortPurge: true`; no server import needed): then nothing else is deleted and the purge
+fails, so a hook that couldn't delete what it must can keep the rows that point at it and be retried. Keep the hook
+idempotent.
+
+Configuration (all optional, under `system:plugins:purge:`): `check_ms` (30000, how often unfinished deletions are
+looked at), `initial_delay_ms` (10000), `grace_ms` (180000, how long after uninstalling a plugin that was enabled to wait
+for servers that were mid-start), `lease_ms` (120000), `hook_timeout_ms` (60000).
+
 ## Static Files
 
 The server sends the browser build (`dist/public`: `/assets`, `/fonts`, `/images`, `/styles`, `/favicon.ico`, or the plugin UI
@@ -668,6 +746,32 @@ build that replaces it) itself, from `src/routes/BaseStaticAssetRoute.ts`: the r
 (`scripts/precompress-assets.mjs`), which are sent as they are; a file without them is compressed on first request and kept in
 memory. The plugin UI build gets its own at startup. `static_assets:compress`, `static_assets:memory_cache_bytes` and
 `static_assets:brotli_quality` configure it (see `config.mongo.ts`).
+
+## Appearance Preferences and Background Send
+
+- **Appearance, per user.** `GET`/`PUT /api/mail/preferences/appearance` keep the web client's theme mode, colours and window background for the signed-in
+  user (one record per user, not per mailbox; nobody can read or change another user's, administrators included). `POST`/`DELETE
+  /api/mail/preferences/appearance/background` upload and remove a background image (PNG, JPEG, WebP or AVIF, recognised by its bytes; SVG is refused) and
+  `GET /api/mail/preferences/appearance/background/<version>` serves it to its owner only. A change is published to the user's other tabs and devices, and
+  the pages carry the saved preferences as an `appearance` prop so the theme is applied in the first byte of HTML. `mail:preferences:background_max_bytes`
+  (default 8 MiB, `mail__preferences__background_max_bytes`) caps an upload; the request-wide `max_body_size` is a separate, larger ceiling. The contract is
+  in the `@rapidmx/restapi` README.
+- **Background send.** `POST /api/mail/messages/:id/send` with `{ "background": true }` answers `202` at once and finishes the send in this process: the
+  message sits in Outbox until it is filed in Sent Items, and `send-succeeded`, `send-retrying` or `send-failed` events report the outcome. A process that
+  stops in the middle leaves the message for the scheduled-send job to finish on the next start; it is never sent twice.
+  `mail:jobs:scheduled_send:concurrency` (default 4) is how many messages are scanned and relayed at once, and `mail:jobs:scheduled_send:drain_ms` (default
+  15 s) how long a shutdown waits for the ones in flight. A message the mail system refuses outright (or that fails the spam/virus scan) is reported as
+  failed at once instead of being retried, and stays in Outbox marked as failed.
+
+## Administrators and Other Users' Mail
+
+An administrator is an ordinary user with more powers over the *platform* (domains, policies, plugins, branding, mailbox settings) - **not** over other people's mail. In the mail client and its settings an
+administrator sees their own mailbox and the mailboxes shared with them, nothing else, exactly as any user does (`trusted_roles` no longer opens a mailbox). The admin console works with administrative details only:
+its mailbox lists and pages use `?scope=admin`, which shows addresses, owners, quota and resource settings (never mail, keys or a mailbox's own settings) and is recorded in the audit log. To see an account an
+administrator uses **Impersonate this user** on the mailbox page (the signed-in banner shows it and lets them stop); to reach a shared mailbox such as `hello@` they add themselves under **Shared access**
+on its page - an audited action, and refused for a mailbox that has an owner. Quarantine and the ingest queue are reviewed from the admin console the same way (audited). A data-subject export of a mailbox
+(`/api/mail/data-export-requests`) is the one workflow that lets an administrator download another user's mailbox; each request and each download by someone other than the owner is audited. `/api/acls`
+does not let a trusted role read or change the ACLs of mailboxes and folders. The rules and their tests live in `@rapidmx/restapi` (see its README, "Who can see whose mail").
 
 ## Local Development
 

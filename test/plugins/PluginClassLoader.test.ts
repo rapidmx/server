@@ -47,6 +47,18 @@ describe("PluginClassLoader", () => {
         expect(logger.error).toHaveBeenCalled();
     });
 
+    it("tells a plugin's own classes from the server's, and one plugin's from another whose name it prefixes", async () => {
+        fs.writeFileSync(path.join(dir, "other.mjs"), "export class OtherModel {}\n");
+        const loader = new PluginClassLoader(path.join(dir, "base"), undefined, [plugin("@rapidmx/good", "good.mjs"), plugin("@rapidmx/good-more", "other.mjs")]);
+        await loader.load();
+
+        expect([...loader.classesOf("@rapidmx/good").keys()].sort()).toEqual(["DeviceModel", "EasRoute"]);
+        expect([...loader.classesOf("@rapidmx/good-more").keys()]).toEqual(["OtherModel"]);
+        expect(loader.classesOf("@rapidmx/never-loaded").size).toBe(0);
+        // The server's own registered classes exclude every plugin's.
+        expect([...loader.coreClasses().keys()]).toEqual(["routes.OwnRoute"]);
+    });
+
     it("loads plugins once, not again for each subdirectory it scans, reporting once that it's loading them", async () => {
         const onPluginsLoaded = vi.fn(() => expect(loader.loaded).toHaveLength(0));
         const loader = new PluginClassLoader(path.join(dir, "base"), undefined, [plugin("@rapidmx/good", "good.mjs")], undefined, onPluginsLoaded);

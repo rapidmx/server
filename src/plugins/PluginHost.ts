@@ -16,12 +16,21 @@ import {
     orderByDependencies,
     PluginRegistry,
     pruneUnmetRequirements,
+    recordAuditLog,
+    type AuditAction,
     type Plugin,
     type PluginNamespace,
 } from "@rapidmx/restapi";
 import { PluginClassLoader, type PluginUiLoadOptions } from "./PluginClassLoader.js";
-import { PluginInstaller, type PluginInstallResult } from "./PluginInstaller.js";
-import { findAllPlugins, pluginRepository, PluginStateStore, type DefaultPlugin } from "./PluginStateStore.js";
+import { PluginInstaller, type PluginInstallerOptions, type PluginInstallResult } from "./PluginInstaller.js";
+import { describeModels } from "./PluginOwnedData.js";
+import { clearRemovedPluginSettings, findAllPlugins, pluginRepository, PluginStateStore, type DefaultPlugin } from "./PluginStateStore.js";
+import { clearStarting, markStarting, RedisPurgeCoordination } from "./PluginPurgeCoordination.js";
+import { hasPurgeHook, InstallingPurgeHookRunner, type PurgeHookRunner } from "./PluginPurgeHook.js";
+import { DEFAULT_PURGE_LEASE_MS, PluginPurgeLedger } from "./PluginPurgeLedger.js";
+import { PluginPurgeStore } from "./PluginPurgeStore.js";
+import { DEFAULT_PURGE_CHECK_MS, DEFAULT_PURGE_GRACE_MS, PluginPurger, setPluginPurger } from "./PluginPurger.js";
+import type { PluginOwnedModel } from "./PluginPurgeTypes.js";
 import { PluginUiBuilder, type PluginUiBuildResult } from "./PluginUiBuilder.js";
 import type { PluginUiHostClasses } from "./PluginUiRoutes.js";
 import {
@@ -64,12 +73,19 @@ export interface PluginHostOptions {
     /** The base route of each plugin UI host for this datastore (see `PluginUiRoutes.ts`). Without them no plugin UI is
      * built or served. */
     uiHosts?: PluginUiHostClasses;
+    /** What deleting an uninstalled plugin's data needs for this datastore: the server's `PluginPurgeMongo`/`PluginPurgeSQL`
+     * model and restapi's audit log model. Without it uninstalled plugins' data is never deleted. */
+    purge?: { purgeClass: any; auditLogClass: any };
     /** Test seams. */
     store?: PluginStateStore;
     installer?: PluginInstaller;
     uiBuilder?: Pick<PluginUiBuilder, "build">;
     registry?: NpmRegistryClient;
     createRedisClient?: (url: string) => WatcherRedisClient;
+    /** Replaces the purge's reading of the other copies' status (see `RedisPurgeCoordination`). */
+    purgeCoordination?: { configured: boolean; snapshot(): Promise<any> };
+    /** Replaces running a plugin's purge hook from a scratch install (see `InstallingPurgeHookRunner`). */
+    purgeHooks?: PurgeHookRunner;
 }
 
 /** The restart lock and the cache connection holding it, opened before plugins install. */
@@ -94,6 +110,7 @@ interface RestartLockConnection {
 export class PluginHost {
     public readonly classLoader: PluginClassLoader;
     private watcher?: PluginWatcher;
+    private purger?: PluginPurger;
     private lockClosed: boolean = false;
 
     private constructor(
@@ -106,6 +123,8 @@ export class PluginHost {
         /** How this copy retries and whether it holds up other copies' restarts - see `PluginWatcherOptions`. */
         public readonly retry: Pick<PluginWatcherOptions, "retryDelayMs" | "haltRollout" | "safeModeBaseline" | "safeModeRetryMs">,
         private readonly restartLock?: RestartLockConnection,
+        /** What running a purge hook needs: the installer's options (the hook's package is installed into a scratch directory). */
+        private readonly purgeEnv?: { pluginsDir: string; installer: PluginInstallerOptions },
     ) {
         const { config, logger } = options;
         this.classLoader = new PluginClassLoader(
@@ -167,20 +186,19 @@ export class PluginHost {
 
         const enabled: Plugin[] = rows.filter((row) => row.enabled && !row.removed);
         const pluginsDir: string = config.get("system:plugins:dir") || path.join(appRoot, "plugins");
-        const installer: PluginInstaller =
-            options.installer ??
-            new PluginInstaller({
-                dir: pluginsDir,
-                appRoot,
-                registry: registryUrl,
-                registryToken,
-                namespaces,
-                sources,
-                datastore,
-                logger,
-                npmTimeoutMs: config.get("system:plugins:npm_timeout_ms") ?? undefined,
-                requireIntegrity: config.get("system:plugins:require_integrity") ?? true,
-            });
+        const installerOptions: PluginInstallerOptions = {
+            dir: pluginsDir,
+            appRoot,
+            registry: registryUrl,
+            registryToken,
+            namespaces,
+            sources,
+            datastore,
+            logger,
+            npmTimeoutMs: config.get("system:plugins:npm_timeout_ms") ?? undefined,
+            requireIntegrity: config.get("system:plugins:require_integrity") ?? true,
+        };
+        const installer: PluginInstaller = options.installer ?? new PluginInstaller(installerOptions);
         const result: PluginInstallResult = known
             ? await installer.install(enabled.map((row) => ({ name: row.name, packageVersion: row.packageVersion, integrity: row.integrity })))
             : { installed: [], errors: [] };
@@ -241,7 +259,10 @@ export class PluginHost {
               }
             : { retryDelayMs, haltRollout: !!result.installFailures };
 
-        return new PluginHost(options, computePluginStateHash(safeMode ? [] : rows), errors, safeMode, installed, ui, retry, restartLock);
+        return new PluginHost(options, computePluginStateHash(safeMode ? [] : rows), errors, safeMode, installed, ui, retry, restartLock, {
+            pluginsDir,
+            installer: installerOptions,
+        });
     }
 
     /**
@@ -309,6 +330,9 @@ export class PluginHost {
             const ttlMs: number = config.get("system:plugins:restart:lock_ttl_ms") ?? DEFAULT_LOCK_TTL_MS;
             const lock: PluginRestartLock = new PluginRestartLock(cache, PluginHost.instanceId(config), ttlMs, logger);
             await lock.resume();
+            // Until this copy reports what it loaded (the watcher, once the server is up) it is invisible in the status,
+            // yet may load a plugin that is being uninstalled: a purge of that plugin's data waits for this to clear.
+            await markStarting(cache, PluginHost.instanceId(config)).catch((err: any) => logger.debug?.(`Could not mark this copy as starting: ${err.message}`));
             return { cache, lock };
         } catch (err: any) {
             logger.warn(`Plugin status reporting is unavailable: ${err.message}`);
@@ -356,11 +380,91 @@ export class PluginHost {
             logger,
         });
         await this.watcher.start();
+        if (this.restartLock) {
+            await clearStarting(this.restartLock.cache, PluginHost.instanceId(config)).catch(() => undefined);
+        }
+        await this.startPurger(objectFactory);
+    }
+
+    /**
+     * Records which collections and tables each loaded plugin's models use (what a later purge of its data deletes), and
+     * starts looking for uninstalled plugins whose data is waiting to be deleted (`PluginPurger`). Never fails the start.
+     */
+    private async startPurger(objectFactory: ObjectFactory): Promise<void> {
+        const { config, logger, datastore, pluginClass, purge } = this.options;
+        if (!purge || !this.purgeEnv) {
+            return;
+        }
+        try {
+            const connections = objectFactory.getInstance<ConnectionManager>(ConnectionManager)!.connections;
+            const connection: any = connections.get(datastore);
+            const leaseMs: number = config.get("system:plugins:purge:lease_ms") ?? DEFAULT_PURGE_LEASE_MS;
+            const ledger: PluginPurgeLedger = new PluginPurgeLedger(new PluginPurgeStore(connection, purge.purgeClass), leaseMs);
+
+            const loadedModels: Map<string, PluginOwnedModel[]> = new Map();
+            for (const plugin of this.classLoader.loaded) {
+                const { models, skipped } = describeModels(this.classLoader.classesOf(plugin.name), connections);
+                for (const entry of skipped) {
+                    logger.warn(`Plugin ${plugin.name}'s ${entry.className} isn't recorded for data deletion: ${entry.reason}.`);
+                }
+                loadedModels.set(plugin.name, models);
+                await ledger
+                    .recordInventory(plugin.name, { version: plugin.version, hook: hasPurgeHook(plugin.packageDir), models })
+                    .catch((err: any) => logger.warn(`Could not record what plugin ${plugin.name} stores: ${err.message}`));
+            }
+
+            const { pluginsDir, installer } = this.purgeEnv;
+            const instance: string = PluginHost.instanceId(config);
+            this.purger = new PluginPurger({
+                instance,
+                config,
+                logger,
+                ledger,
+                leaseMs,
+                coordination: this.options.purgeCoordination ?? new RedisPurgeCoordination(config.get("datastores:cache:url"), logger, this.options.createRedisClient),
+                connections,
+                coreClasses: () => this.classLoader.coreClasses(),
+                loadedPlugins: () => loadedModels,
+                readRows: () => findAllPlugins(pluginRepository(connection, pluginClass)),
+                clearSettings: (row) => clearRemovedPluginSettings(connection, pluginClass, row.uid),
+                hooks: this.options.purgeHooks ?? new InstallingPurgeHookRunner((dir) => new PluginInstaller({ ...installer, dir }), path.join(pluginsDir, ".purge")),
+                hookContext: () => ({
+                    connection: (name: string) => connections.get(name),
+                    blobStore: objectFactory.getInstance("BlobStore"),
+                    config,
+                    logger,
+                }),
+                pluginsDir,
+                keepBuild: () => {
+                    const manifest: string | undefined = config.get("react:manifestPath");
+                    return manifest ? path.dirname(path.dirname(path.resolve(manifest))) : undefined;
+                },
+                audit: async (action, plugin, details) =>
+                    recordAuditLog(
+                        objectFactory,
+                        purge.auditLogClass,
+                        { config, logger },
+                        { action: action as AuditAction, targetType: "Plugin", targetUid: plugin.uid ?? plugin.name, details: { name: plugin.name, ...details } },
+                    ),
+                checkIntervalMs: config.get("system:plugins:purge:check_ms") ?? DEFAULT_PURGE_CHECK_MS,
+                initialDelayMs: config.get("system:plugins:purge:initial_delay_ms") ?? undefined,
+                graceMs: config.get("system:plugins:purge:grace_ms") ?? DEFAULT_PURGE_GRACE_MS,
+            });
+            this.purger.start();
+            setPluginPurger(this.purger);
+        } catch (err: any) {
+            logger.warn(`Deleting uninstalled plugins' data is unavailable: ${err.message}`);
+        }
     }
 
     /** Stops watching for plugin changes. With `shutdown` (the process is stopping for good, not restarting), the restart
      * lock is given back even if this copy was part-way through a restart. */
     public async stop(options: { shutdown?: boolean } = {}): Promise<void> {
+        if (this.purger) {
+            setPluginPurger(undefined);
+            await this.purger.stop();
+            this.purger = undefined;
+        }
         if (this.watcher) {
             await this.watcher.stop(options);
         } else if (this.restartLock && !this.lockClosed) {

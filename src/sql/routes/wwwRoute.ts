@@ -4,14 +4,14 @@
 import { ObjectDecorators, UserUtils } from "@rapidrest/core";
 import { ReactRoute } from "@rapidrest/react";
 import { ObjectFactory, RouteDecorators, type HttpRequest } from "@rapidrest/service-core";
-import { fetchBrandingPropsForSSR } from "@rapidmx/restapi";
-import { BrandingSQL } from "@rapidmx/restapi/sql";
+import { fetchAppearanceForSSR, fetchBrandingPropsForSSR } from "@rapidmx/restapi";
+import { AppearancePreferencesSQL, BrandingSQL } from "@rapidmx/restapi/sql";
 import { isRunningUnderYarnDev } from "../../dev/enableDevAutoLogin.js";
 import { getPluginNav } from "../../plugins/pluginNav.js";
 import { webClientAppDir } from "../../routes/webClientAppDir.js";
 
 const { Route } = RouteDecorators;
-const { Config, Inject } = ObjectDecorators;
+const { Config, Inject, Logger } = ObjectDecorators;
 
 @Route("/")
 export class AppRoute extends ReactRoute {
@@ -27,6 +27,9 @@ export class AppRoute extends ReactRoute {
     @Inject(ObjectFactory)
     private brandingObjectFactory!: ObjectFactory;
 
+    @Logger
+    private appearanceLogger?: any;
+
     protected async fetchProps(req: HttpRequest): Promise<any> {
         // Presence alone is enough — the cookie's own validity is what actually governs the active session;
         // this only drives whether the client shows a "stop impersonating" affordance (see MailShell.tsx).
@@ -38,6 +41,9 @@ export class AppRoute extends ReactRoute {
         // so it renders correctly server-side on the very first byte of the response: no client-side flash
         // from the stock defaults, and a crawler reading the raw HTML sees the real branding too.
         const { branding } = await fetchBrandingPropsForSSR(this.brandingObjectFactory, BrandingSQL);
+        // The signed-in user's saved appearance (theme mode, colours, background), so the theme is applied in the first byte of
+        // HTML instead of flashing the default. One read of one row that can never fail the page (undefined when there is none).
+        const appearance = await fetchAppearanceForSSR(this.brandingObjectFactory, AppearancePreferencesSQL, req.user?.uid, this.appearanceLogger);
         return {
             authServerUrl: this.authServerUrl,
             impersonationBaseUrl,
@@ -50,6 +56,7 @@ export class AppRoute extends ReactRoute {
             // isn't elevated (auth-server strips trusted roles from it); the link this drives only navigates.
             trustedRoles: this.trustedRoles,
             branding,
+            appearance,
             // Settings sections and app rail entries from loaded plugins whose UI built (see plugins/pluginNav.ts).
             pluginNav: getPluginNav(),
         };

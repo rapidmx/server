@@ -44,6 +44,20 @@ export function pluginRepository(connection: any, pluginClass: any): PluginRepos
     return connection.options?.type === "mongodb" ? connection.getMongoRepository(pluginClass) : connection.getRepository(pluginClass);
 }
 
+/**
+ * Empties the saved settings of the plugin row `uid` - only while the row is still removed, so a plugin added again in
+ * the meantime keeps its settings. This is the "state" half of deleting an uninstalled plugin's data: the row itself
+ * stays, since it is what stops the server's default plugin list adding a removed plugin again.
+ */
+export async function clearRemovedPluginSettings(connection: any, pluginClass: any, uid: string): Promise<void> {
+    const repo: any = pluginRepository(connection, pluginClass);
+    if (connection.options?.type && connection.options.type !== "mongodb") {
+        await repo.update({ uid, removed: true }, { settings: {} });
+    } else {
+        await (repo.collection ?? repo).updateOne({ uid, removed: true }, { $set: { settings: {} } });
+    }
+}
+
 /** Reads the `package.json` inside an npm package tarball (`.tgz`) without extracting it. */
 export function readTarballPackageJson(file: string): any {
     const tar: Buffer = zlib.gunzipSync(fs.readFileSync(file));

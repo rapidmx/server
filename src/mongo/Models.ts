@@ -8,6 +8,7 @@
 // with every model class @rapidmx/restapi/mongo exports, so a model added there fails the suite until it's added here.
 // (Not `export *`: that entry point also exports restapi's routes and jobs, which this server mounts selectively.)
 export {
+    AppearancePreferencesMongo,
     AttachmentMongo,
     AuditLogEntryMongo,
     BrandingMongo,

@@ -8,6 +8,7 @@
 // with every model class @rapidmx/restapi/sql exports, so a model added there fails the suite until it's added here.
 // (Not `export *`: that entry point also exports restapi's routes and jobs, which this server mounts selectively.)
 export {
+    AppearancePreferencesSQL,
     AttachmentSQL,
     AuditLogEntrySQL,
     BrandingSQL,

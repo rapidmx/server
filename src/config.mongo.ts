@@ -12,6 +12,7 @@ import {
     DEFAULT_GIPHY_API_KEY,
     DEFAULT_MAIL_INGEST_SECRET,
     DEFAULT_MAX_BODY_SIZE_BYTES,
+    DEFAULT_APPEARANCE_BACKGROUND_MAX_BYTES,
     DEFAULT_MAX_COMPOSE_ATTACHMENT_BYTES,
     ensurePushDatastore,
 } from "./config.defaults.js";
@@ -183,6 +184,11 @@ conf.defaults({
             // when this is unset.
             max_attachment_bytes: DEFAULT_MAX_COMPOSE_ATTACHMENT_BYTES,
         },
+        preferences: {
+            // The largest background image a user may upload for the web client (`POST mail/preferences/appearance/background`), in
+            // bytes; the route answers 413 above it. `max_body_size` is a separate, larger ceiling on every request.
+            background_max_bytes: DEFAULT_APPEARANCE_BACKGROUND_MAX_BYTES,
+        },
         search: {
             mongo: {
                 datasource: "mongo",
@@ -318,12 +324,28 @@ conf.defaults({
                 directory_url: "https://acme.castle.cloud/acme/directory",
                 contact_email: "",
                 store_dir: "/var/lib/rapidmx/pki/rfc8823",
+                // How often AcmeEnrollmentDriverJob checks a pending enrollment, in seconds - only what the
+                // enrollment status's `nextCheckAt` is computed from, so keep it equal to
+                // `jobs.acme_enrollment_driver.schedule` (every 5 minutes by default).
+                poll_interval_seconds: 300,
+                // How long a request may wait on the CA before it is failed (`order-expired`) when the CA did not say
+                // when its ACME order expires.
+                max_pending_hours: 168,
             },
         },
         // AcmeEnrollmentDriverJobMongo's own schedule/config - registered unconditionally regardless of
         // `mail:pki:signing_enrollment:backend` (see server.mongo.ts's own comment on why), so this is
         // harmless to leave at its default even when RFC 8823 automation isn't enabled.
         jobs: {
+            scheduled_send: {
+                // Relays a background send (`POST mail/messages/:id/send` with `{ background: true }`) and a scheduled send: how many
+                // messages are scanned and relayed at once in this process. Scanning is CPU work on the main thread, so more is
+                // not faster past a few. (A single-connection SQLite datastore always runs one.)
+                concurrency: 4,
+                // How long a shutdown waits for relays in flight to finish before stopping anyway (one still running is finished by
+                // the next process - it is never relayed twice).
+                drain_ms: 15_000,
+            },
             acme_enrollment_driver: {
                 // Every 5 minutes, cron syntax (seconds field included).
                 schedule: "0 */5 * * * *",
