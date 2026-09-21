@@ -4,23 +4,48 @@
 [![Coverage Status](https://coveralls.io/repos/github/rapidmx/server/badge.svg?branch=main)](https://coveralls.io/github/rapidmx/server?branch=main)
 [![package version](https://ghcr-badge.egpl.dev/rapidmx/server/latest_tag?trim=major&label=latest)](https://github.com/rapidmx/server/pkgs/container/server)
 
-A reference implementation of a RapidMX mail server, providing a complete, deployable mail service that includes a web mail (React) client as well as Exchange ActiveSync, and MAPI support.
+RapidMX is a self-hosted mail and collaboration server. Deploy it and you get one platform for the whole
+organization: webmail with calendar, contacts and tasks, Exchange ActiveSync and MAPI over HTTP for phones and Outlook,
+end-to-end encryption, spam and virus scanning, and an admin console for as many mail domains as you host, with real mail
+transport (Postfix, or Amazon SES) wired in.
 
 ### Key Features
 
-* Web Mail
-* Exchange ActiveSync
-* MAPI over HTTP
-* Autodiscover
-* Booking pages
+* **Webmail.** A fast React web app with conversations, a Focused/Other inbox, folders and labels, rich-text compose with
+  recipient autocomplete, scheduled send and recall, read receipts, signatures, automatic replies, and filter rules. Search
+  covers messages and the text of their attachments (PDF, Word, HTML), with an encrypted search index that lives in the browser.
+* **Calendar, contacts and tasks.** Recurring events, meeting invitations and responses, room and resource mailboxes that
+  accept bookings on their own, shareable calendar links, contact lists with vCard import and export, and tasks.
+* **Booking pages.** Public scheduling pages (a plugin) that confirm by e-mail and let the guest reschedule or cancel.
+* **Exchange clients.** Exchange ActiveSync (protocol versions 14.0 to 16.1) syncs mail, contacts, calendar and tasks to phones and
+  tablets, with remote wipe; MAPI over HTTP connects Outlook; Autodiscover configures both. All three are plugins, installed
+  by default. (There is no IMAP or POP3.)
+* **End-to-end encryption.** S/MIME signing and encryption in the browser, with each user's private key kept in a vault that a
+  password, a recovery code or a passkey unlocks, public-key discovery, and a policy per domain (automatic,
+  optional or prohibited). Certificates come from a certificate authority the server runs, or from OpenBao's PKI.
+* **Key escrow with dual control.** For organizations that must be able to recover mail: escrow scopes, access requests that
+  need M-of-N approvals, and a tamper-evident, hash-chained audit log, with a console of its own.
+* **Security.** rspamd spam scoring and ClamAV virus scanning (a scanner that is down quarantines instead of letting mail
+  through), DKIM signing and verification, mandatory TLS between mail servers with the bundled Postfix, rate limits on public endpoints, and sign-in by
+  the [auth-server](https://github.com/rapidrest/auth-server): passwords, one-time codes, authenticator apps, passkeys and
+  security keys, recovery codes, and Google, Apple, Facebook and Microsoft accounts.
+* **Many domains, one admin console.** Mailboxes, aliases, distribution lists (nested, with external members and sender
+  restrictions), shared mailboxes with delegation, and domains, each with a live DNS checklist for its ownership, MX, SPF, DKIM
+  and DMARC records. A domain you add works at once on Kubernetes, with nothing to restart.
+* **Governance.** Transport rules (reject, quarantine, add a header or a recipient), retention policies, legal hold,
+  eDiscovery search and export, data requests (export and erasure), a quarantine queue and an audit log.
+* **Plugins and branding.** Plugins are npm packages that add API routes, pages, navigation and settings; you search, install,
+  upgrade and remove them from the admin console. Give the site your own logo, title, stylesheet, header and footer.
+* **Moving in and out.** Import mailboxes from mbox or PST files, and export them as mbox or JSON.
+* **Runs where you do.** MongoDB or PostgreSQL, Redis, message storage on disk or in S3, Postfix or Amazon SES for mail
+  transport, [OpenBao](https://openbao.org) for secrets, and Prometheus metrics. Deploy with Docker Compose, a Helm chart,
+  a one-command k3s installer or a CloudFormation stack (below).
 
 ## Getting Started
 
-To get started using this service first clone the source. It is highly recommended that you fork the project first.
-
-```bash
-git clone https://github.com/rapidmx/server
-```
+Choose how to run it under [Deployment](#deployment). The Kubernetes, k3s and AWS options install the published container
+image and Helm chart from the GitHub Container Registry, so there is nothing to clone or build; Docker Compose, meant for
+trying RapidMX out, builds from a checkout of this repository (`git clone https://github.com/rapidmx/server`).
 
 ## Deployment
 

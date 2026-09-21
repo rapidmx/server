@@ -1,7 +1,7 @@
 {
   "name": "server",
   "version": "1.0.0-beta.10",
-  "description": "A reference implementation of a RapidMX mail server.",
+  "description": "The RapidMX mail server: webmail, calendar, contacts, Exchange ActiveSync and MAPI, and end-to-end encryption.",
   "type": "module",
   "repository": "https://github.com/rapidmx/server",
   "author": "Jean-Philippe Steinmetz <rapidrests@gmail.com>",
