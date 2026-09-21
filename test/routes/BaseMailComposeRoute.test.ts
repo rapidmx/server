@@ -113,6 +113,18 @@ describe("BaseMailComposeRoute.assembleRaw() Tests (mocked collaborators)", () =
         await expect(route.assembleRaw("m1", validInput, user)).rejects.toThrow(/permission/i);
     });
 
+    it("hands the ACL check the caller WITHOUT their trusted roles, so an administrator can't compose into somebody else's draft", async () => {
+        // A stand-in for `ACLUtils.hasPermission()`: yes to a trusted role (the framework's shortcut), else no.
+        const hasPermission = vi.fn(async (u: any) => u?.roles?.includes("admin") === true);
+        const route = buildRoute({ aclUtils: { hasPermission } });
+        const admin = { uid: "admin-1", roles: ["admin"], scopes: [], elevated: Date.now() } as any;
+
+        await expect(route.assembleRaw("m1", validInput, admin)).rejects.toThrow(/permission/i);
+
+        expect(hasPermission).toHaveBeenCalledWith({ uid: "admin-1", roles: [], scopes: [], elevated: -1 }, "f1", "update");
+        expect((route as any).blobStore.put).not.toHaveBeenCalled();
+    });
+
     it("rejects when the message's folder isn't Drafts", async () => {
         const route = buildRoute({ folderRepo: { findOne: vi.fn().mockResolvedValue({ uid: "f1", type: "inbox" }) } });
         await expect(route.assembleRaw("m1", validInput, user)).rejects.toThrow(/only a message in drafts/i);

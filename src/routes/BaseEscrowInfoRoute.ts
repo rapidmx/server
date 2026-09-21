@@ -94,7 +94,8 @@ export abstract class BaseEscrowInfoRoute<M extends Mailbox> {
 
         const mailbox: M | undefined = await this.mailboxRepo!.findOne(mailboxId, { ignoreACL: true });
         if (!mailbox) {
-            throw new ApiError(ApiErrors.NOT_FOUND, 404, ApiErrorMessages.NOT_FOUND);
+            // Refused exactly like a mailbox the caller has no access to, so the answer doesn't reveal which addresses have one.
+            throw new ApiError(ApiErrors.AUTH_PERMISSION_FAILURE, 403, ApiErrorMessages.AUTH_PERMISSION_FAILURE);
         }
         await this.requireMailboxAccess(mailbox, user);
 

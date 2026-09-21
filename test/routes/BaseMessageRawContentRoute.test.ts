@@ -70,6 +70,19 @@ describe("BaseMessageRawContentRoute.raw() Tests (mocked collaborators)", () => 
         await expect(route.raw("m1", fakeResponse() as any, user)).rejects.toThrow(/no resource could be found/i);
     });
 
+    it("hands the ACL check the caller WITHOUT their trusted roles - the framework answers yes to any trusted caller - so an administrator with no grant gets a 404", async () => {
+        // A stand-in for `ACLUtils.hasPermission()`: yes to a trusted role (the framework's shortcut), else no.
+        const hasPermission = vi.fn(async (u: any) => u?.roles?.includes("admin") === true);
+        const route: any = buildRoute({ aclUtils: { hasPermission } });
+        const admin = { uid: "admin-1", roles: ["admin"], scopes: [], elevated: Date.now() } as any;
+
+        await expect(route.raw("m1", fakeResponse() as any, admin)).rejects.toThrow(/no resource could be found/i);
+
+        expect(hasPermission).toHaveBeenCalledWith({ uid: "admin-1", roles: [], scopes: [], elevated: -1 }, "f1", "read");
+        expect(route.blobStore.get).not.toHaveBeenCalled();
+        expect(route.auditRepo.create).not.toHaveBeenCalled();
+    });
+
     it("rejects with NOT_FOUND when the message has no stored body yet", async () => {
         const route = buildRoute({ messageRepo: { findOne: vi.fn().mockResolvedValue({ ...message, bodyBlobKey: undefined }) } });
         await expect(route.raw("m1", fakeResponse() as any, user)).rejects.toThrow(/no resource could be found/i);

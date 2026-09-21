@@ -22,6 +22,7 @@ import {
     BlobStore,
     Folder,
     FolderType,
+    hasMailAccess,
     Mailbox,
     Matter,
     Message,
@@ -391,6 +392,10 @@ export abstract class BaseMailComposeRoute<M extends Message, A extends Attachme
     @Inject(ACLUtils)
     private aclUtils?: ACLUtils;
 
+    /** `trusted_roles`: never a grant on a mailbox - see `hasMailAccess()` in `@rapidmx/restapi`. */
+    @Config("trusted_roles", ["admin"])
+    private trustedRoles: string[] = ["admin"];
+
     @Config()
     private config?: { get(key: string): unknown };
 
@@ -464,7 +469,7 @@ export abstract class BaseMailComposeRoute<M extends Message, A extends Attachme
         if (!message) {
             throw new ApiError(ApiErrors.NOT_FOUND, 404, ApiErrorMessages.NOT_FOUND);
         }
-        if (!(await this.aclUtils.hasPermission(user, message.folderUid, ACLAction.UPDATE))) {
+        if (!(await hasMailAccess(this.aclUtils, this.trustedRoles, user, message.folderUid, ACLAction.UPDATE))) {
             throw new ApiError(ApiErrors.AUTH_PERMISSION_FAILURE, 403, ApiErrorMessages.AUTH_PERMISSION_FAILURE);
         }
 
@@ -673,7 +678,7 @@ export abstract class BaseMailComposeRoute<M extends Message, A extends Attachme
         if (!message) {
             throw new ApiError(ApiErrors.NOT_FOUND, 404, ApiErrorMessages.NOT_FOUND);
         }
-        if (!(await this.aclUtils.hasPermission(user, message.folderUid, ACLAction.UPDATE))) {
+        if (!(await hasMailAccess(this.aclUtils, this.trustedRoles, user, message.folderUid, ACLAction.UPDATE))) {
             throw new ApiError(ApiErrors.AUTH_PERMISSION_FAILURE, 403, ApiErrorMessages.AUTH_PERMISSION_FAILURE);
         }
 

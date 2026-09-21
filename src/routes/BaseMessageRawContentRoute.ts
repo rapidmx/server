@@ -3,7 +3,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 import { ApiError, ObjectDecorators, type JWTUser } from "@rapidrest/core";
 import { ACLAction, ACLUtils, ApiErrorMessages, ApiErrors, DocDecorators, HttpResponse, ObjectFactory, RepoUtils, RouteDecorators } from "@rapidrest/service-core";
-import { AuditAction, BlobStore, isNonOwnerAccess, Mailbox, Message, recordAuditLog } from "@rapidmx/restapi";
+import { AuditAction, BlobStore, hasMailAccess, isNonOwnerAccess, Mailbox, Message, recordAuditLog } from "@rapidmx/restapi";
 const { Config, Inject, Logger } = ObjectDecorators;
 const { Description, Summary } = DocDecorators;
 const { Auth, Get, Param, Response, User: AuthUser } = RouteDecorators;
@@ -54,6 +54,10 @@ export abstract class BaseMessageRawContentRoute<M extends Message> {
     @Inject(ACLUtils)
     private aclUtils?: ACLUtils;
 
+    /** `trusted_roles`: never a grant on a mailbox - see `hasMailAccess()` in `@rapidmx/restapi`. */
+    @Config("trusted_roles", ["admin"])
+    private trustedRoles: string[] = ["admin"];
+
     private async init(): Promise<void> {
         if (!this.messageRepo) {
             this.messageRepo = await this._objectFactory!.newInstance(RepoUtils, {
@@ -84,7 +88,7 @@ export abstract class BaseMessageRawContentRoute<M extends Message> {
         await this.init();
 
         const message: M | undefined = await this.messageRepo!.findOne(id, { ignoreACL: true });
-        if (!message || !(await this.aclUtils.hasPermission(user, message.folderUid, ACLAction.READ))) {
+        if (!message || !(await hasMailAccess(this.aclUtils, this.trustedRoles, user, message.folderUid, ACLAction.READ))) {
             throw new ApiError(ApiErrors.NOT_FOUND, 404, ApiErrorMessages.NOT_FOUND);
         }
         if (!message.bodyBlobKey) {

@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+### Security
+
+- **An administrator could read every user's mail through the ordinary mail API - fixed.** Any signed-in administrator holding an *elevated* token (the admin console has every administrator elevate) was
+  treated by the framework as a superuser on mail data: `GET /api/mail/mailboxes` listed every mailbox and the folders, messages, message content, attachments, contacts, events, tasks, notes, search results and
+  live push channels of any of them answered, and the web client's mailbox switcher and Settings "Mailbox" dropdown listed everybody's mailbox. **Affected: any administrator who elevated, against any user's
+  mailbox; a sign-in that did not elevate (its roles empty) never had this, so users' mail was not exposed to other users.** Now an administrator sees only their own mailbox and the mailboxes shared with them -
+  in the mail client and its settings - and reaches anyone else's account only by choosing "Impersonate this user" on the mailbox page. This release's `@rapidmx/restapi` (see its release notes for the full policy)
+  does the check in one place; here:
+  - the admin console lists and opens mailboxes through the new administration scope (`?scope=admin`: administrative details only - addresses, owner, quota, resource settings - never mail or settings, and every call
+    is written to the audit log), shows a note saying so, and replaces "Access this mailbox" with "Impersonate this user";
+  - **Shared access** on a mailbox page now uses the audited Sharing endpoints: an administrator can review any mailbox's members and revoke any of them, and can add themselves (or anyone) to a *shared* mailbox
+    with no owner - how an existing one such as `hello@` becomes visible in their mail client - but cannot grant access to a mailbox that has an owner (that is the owner's to give);
+  - `/api/acls` no longer lets a trusted role read or change the ACLs that decide who reads a mailbox (a mailbox's, a folder's, the `Mailbox` class ACL), the raw-message and compose routes no longer honour a trusted
+    role, and the live push channels are granted by ownership or an explicit share only;
+  - unchanged by design: a data-subject export (`/api/mail/data-export-requests`) can still be requested for and downloaded from any mailbox by an administrator - every request and every download by someone
+    other than the owner is audited (`data_export.downloaded`) - and erasure, retention, legal hold and eDiscovery keep their own approvals.
+  - Rollout: nothing to configure or migrate. Deploy; an administrator's existing elevated session stops showing other people's mail immediately. The admin console asks for nothing new.
+
+### Fixes
+
+- **A shared mailbox that was granted to a username showed up for nobody - sharing now resolves who it grants to (live example: `hello@powerlevel.gg`, "Support", granted to `jean-philippe`).** The admin console stored the text typed in the Sharing form; an ACL record matches only a user's uid, so the grant never applied and the mailbox was visible only through the trusted-role bypass the privacy fix
+  above removes. The console's **Shared access** and the mail client's **Settings > Sharing** page now look up who was typed (a mailbox address, a username or an e-mail alias, or a user id), show the person's name and address, and grant that user's id; an entry that was never a user id is flagged "has no effect" with **Replace with a user**. `/api/acls` refuses non-uid principals on mailbox ACLs. **The existing `hello@` grant
+  is not migrated** (usernames are never matched to uids: they can be released and re-claimed): open the mailbox in the admin console and use **Replace with a user** on the `jean-philippe` entry, or **Add me**.
+
 ## v1.0.0-beta.10
 
 ### Features

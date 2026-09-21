@@ -46,9 +46,9 @@ describe("BaseEscrowInfoRoute.escrowInfo() Tests (mocked collaborators)", () => 
         return route as TestEscrowInfoRoute;
     }
 
-    it("rejects with NOT_FOUND when the mailbox doesn't exist", async () => {
+    it("rejects with a permission failure when the mailbox doesn't exist - the same as for one the caller can't access", async () => {
         const route = buildRoute({ mailboxRepo: { findOne: vi.fn().mockResolvedValue(undefined) } });
-        await expect(route.escrowInfo("mb1", stranger)).rejects.toThrow(/no resource could be found/i);
+        await expect(route.escrowInfo("mb1", stranger)).rejects.toThrow(/permission/i);
     });
 
     it("rejects with AUTH_PERMISSION_FAILURE for a caller who is neither the owner nor holds an ACL grant", async () => {
