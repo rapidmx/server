@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v1.0.0-beta.10
+
 ### Features
 
 - **The pages carry the trusted role names (`trustedRoles`, from `trusted_roles`, default `admin`):** the web client's account menu uses them to ask auth-server whether the signed-in user is an administrator - an auth-server token only carries the role once elevated - and shows an "Admin Console" item that only navigates (`/admin` still checks the role and starts the elevation). Needs the next `@rapidmx/web-client`.

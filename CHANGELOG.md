@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.10] - 2026-09-21
+
+### Added
+- Added an Envoy Gateway BackendTrafficPolicy that compresses API and page responses behind the chart's route, left off for pod-terminated TLS and rendered by default only where the cluster has the API
+
+### Changed
+- Serve the client's static files from a dedicated route that sets the content type, an ETag with 304 answers, Cache-Control (immutable for fingerprinted assets) and Vary, and answers with brotli or gzip, taking .br and .gz files from disk and compressing anything else on the fly into an in-memory cache, so a cold inbox load is 558 KB on the wire instead of 2.5 MB and a repeat visit fetches only the page
+- Pre-compress the built assets after the build and after a plugin UI build, with new static_assets compress, memory_cache_bytes and brotli_quality settings
+- Split React and the icon packs into their own chunks in the client build, keeping strict execution order, so the inbox route loads 467 KB of JavaScript instead of 2 MB
+- Pass the trusted role names to the web client as trustedRoles, so it can show an Admin Console link to an administrator whose token is not elevated
+- Ignore a chart packaged inside helm/ in git and in helm package, since a stray copy pushed a release past the 1 MiB Secret size Helm stores it in
+- Test the asset route over a real uWS server, the compression and cache rules, the rate limiter against the burst of requests a page load makes, and the chunk groups
+- Document the changes in the README, the release notes and NOTES
+- Test that a notifications datastore is copied from events, left alone when one is configured, and skipped when there is no events datastore
+- Document the fixes in the release notes and NOTES, including the gateway diagnosis and what is still unfixed
+- Updated rapidmx deps
+
+### Fixed
+- Fixed the local search index's .wasm file being answered with the HTML 404 page, because the framework's asset handler served no file type it didn't know
+- Fixed live inbox updates, folder count events and new mail pop-ups never being sent, because service-core only creates its push publisher when a datastore named notifications exists and none was configured, by giving notifications the settings of the effective events datastore unless one is set explicitly
+- Fixed the Envoy proxy being restarted about 40 times a day by the kubelet, and every restart resetting every connection, by giving its envoy and shutdown-manager containers 5 second probe timeouts and 6 allowed failures through the EnvoyProxy in single_node_install.sh and deploy/aws/bootstrap.sh
+
 ## [1.0.0-beta.9] - 2026-09-20
 
 ### Removed
@@ -790,7 +812,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed test from .dockerignore, fixing yarn build's lint step failing outright when the build context is missing the test directory its tsconfig.eslint.json requires
 - Removed docker-compose.mail.yml's partial server: service block, since include: only supports merging resources that don't already exist in the including file and hard-errors ("services.server conflicts with imported resource") on a Compose version newer than whatever this had only ever been tested against locally
 
-[Unreleased]: https://github.com/rapidmx/server/compare/v1.0.0-beta.9...HEAD
+[Unreleased]: https://github.com/rapidmx/server/compare/v1.0.0-beta.10...HEAD
+[1.0.0-beta.10]: https://github.com/rapidmx/server/compare/v1.0.0-beta.9...v1.0.0-beta.10
 [1.0.0-beta.9]: https://github.com/rapidmx/server/compare/v1.0.0-beta.8...v1.0.0-beta.9
 [1.0.0-beta.8]: https://github.com/rapidmx/server/compare/v1.0.0-beta.7...v1.0.0-beta.8
 [1.0.0-beta.7]: https://github.com/rapidmx/server/compare/v1.0.0-beta.6...v1.0.0-beta.7

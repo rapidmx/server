@@ -28,7 +28,7 @@ git clone https://github.com/rapidmx/server
 | ------------ | :-------------------: |
 | Registry     | ghcr.io |
 | Repository   | /rapidmx/server |
-| Tag          | 1.0.0-beta.9 |
+| Tag          | 1.0.0-beta.10 |
 
 A RapidMX deployment is this server, the separate [`auth-server`](https://github.com/rapidrest/auth-server) it verifies
 sign-ins against, MongoDB or PostgreSQL, Redis, rspamd and ClamAV (inbound spam and virus scanning), and a mail transport:
@@ -205,7 +205,7 @@ postfix-bridge) into one namespace. What the *cluster* has to provide, because t
 Then install, giving it the mail domain and the two secrets the sides share (generate them once and keep them):
 
 ```bash
-helm upgrade --install --create-namespace --namespace rapidmx rapidmx oci://ghcr.io/rapidmx/charts/server --version 1.0.0-beta.9   --set global.jwt.secret="$(openssl rand -hex 32)" --set global.mailIngestSecret="$(openssl rand -hex 32)"   --set global.domain=example.com
+helm upgrade --install --create-namespace --namespace rapidmx rapidmx oci://ghcr.io/rapidmx/charts/server --version 1.0.0-beta.10   --set global.jwt.secret="$(openssl rand -hex 32)" --set global.mailIngestSecret="$(openssl rand -hex 32)"   --set global.domain=example.com
 ```
 
 With `global.domain=example.com` the server is served at `mail.example.com`, the auth-server at `auth.example.com` and Postfix is
