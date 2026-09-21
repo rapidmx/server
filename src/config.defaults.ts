@@ -123,3 +123,29 @@ export function trustedAuthservIdWarning(config: SecretsConfig): string | undefi
         "replies, recalls and ACME email challenges are ignored. Set it to the authserv-id your inbound MTA stamps."
     );
 }
+
+/** The part of `nconf` `ensurePushDatastore()` needs. */
+export interface WritableConfig extends SecretsConfig {
+    set(key: string, value: unknown): unknown;
+}
+
+/**
+ * Gives the server the datastore `@rapidrest/service-core` publishes push events through. `Server.start()` creates its
+ * `NotificationUtils` (which `ScanQueueJob`, `FolderCountUtils`, the delivery-failure notices and every other publisher of live
+ * mail events call) only when a datastore named `notifications` exists, and nothing configures one: the `events` datastore is what
+ * `/push` subscribes on, so it is the same Redis, but without the alias no event was ever published and the web client's live
+ * inbox, folder counters and new mail pop-ups never heard of new mail until a reload.
+ *
+ * Copies the effective `events` datastore (including the `datastores__events__*` environment variables that point it at a
+ * deployment's Redis, and `rapidrest dev`'s in-memory one) unless a `notifications` one is configured explicitly. Call it once,
+ * after the defaults are set.
+ */
+export function ensurePushDatastore(config: WritableConfig): void {
+    if (config.get("datastores:notifications") !== undefined) {
+        return;
+    }
+    const events: unknown = config.get("datastores:events");
+    if (events && typeof events === "object") {
+        config.set("datastores:notifications", { ...(events as Record<string, unknown>) });
+    }
+}

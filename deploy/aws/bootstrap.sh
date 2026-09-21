@@ -573,6 +573,29 @@ spec:
           service.beta.kubernetes.io/aws-load-balancer-cross-zone-load-balancing-enabled: "true"
           # Who may reach the load balancer. The cloud controller puts these in the security group it creates for it.
           service.beta.kubernetes.io/load-balancer-source-ranges: "$WEB_CIDRS"
+      # Envoy and its shutdown-manager are killed by the kubelet after three missed 1 s probes, and every restart resets
+      # every connection. Found on a single-node k3s host, where it happened 40 or so times a day; the same tolerance costs
+      # nothing here. Five seconds, six misses.
+      envoyDeployment:
+        patch:
+          type: StrategicMerge
+          value:
+            spec:
+              template:
+                spec:
+                  containers:
+                    - name: envoy
+                      livenessProbe:
+                        timeoutSeconds: 5
+                        failureThreshold: 6
+                      readinessProbe:
+                        timeoutSeconds: 5
+                    - name: shutdown-manager
+                      livenessProbe:
+                        timeoutSeconds: 5
+                        failureThreshold: 6
+                      readinessProbe:
+                        timeoutSeconds: 5
 ---
 apiVersion: gateway.networking.k8s.io/v1
 kind: GatewayClass

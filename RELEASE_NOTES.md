@@ -21,6 +21,17 @@
 
 ### Fixes
 
+- **Live inbox updates, folder-count events and new-mail pop-ups never worked:** `@rapidrest/service-core` creates the publisher every push event goes through
+  (`NotificationUtils`) only when a datastore named `notifications` is configured, and none was, so each `sendMessage()` (a delivered message, a changed folder
+  count, a delivery-failure notice) silently did nothing, while `/push` kept subscribing on the `events` datastore and the web client waited for events that were
+  never sent - new mail needed a page reload. The server now gives `notifications` the same settings as the effective `events` datastore (a deployment's Redis,
+  including `datastores__events__*` environment variables) unless a `notifications` datastore is configured explicitly. No chart or values change.
+- **The Envoy gateway restarted itself about 40 times a day, and each restart reset every connection** (about 40% of requests failed while it flapped): the
+  kubelet probes the `envoy` and `shutdown-manager` containers with a 1 s timeout and kills the pod after three misses, and on a single node whose container
+  runtime stalls for a few seconds now and then that is not enough. `single_node_install.sh` (both gateway modes) and `deploy/aws/bootstrap.sh` now give the
+  EnvoyProxy an `envoyDeployment` strategic-merge patch with 5 s probe timeouts and 6 allowed failures. To fix an existing host without reinstalling, patch its
+  EnvoyProxy (`kubectl -n envoy-gateway-system patch envoyproxy <name> --type merge --patch-file ...`, the same JSON the installers render); Envoy Gateway rolls the pod.
+
 - **Without OpenBao the server and the auth-server didn't share a JWT secret,** so every sign-in was refused: `single_node_install.sh --openbao false` and
   `deploy/aws` (`RAPIDMX_OPENBAO=false`) passed the secret as `global.authSecret`, which no chart reads (the value is `global.jwt.secret`), so each chart generated its own.
   Both now pass `global.jwt.secret`, and so do the chart's notes and the README, which also describes each way to deploy in full.

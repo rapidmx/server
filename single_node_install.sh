@@ -1053,6 +1053,29 @@ spec:
     kubernetes:
       envoyService:
         type: ClusterIP
+      # The kubelet probes envoy and its shutdown-manager with a 1 s timeout and restarts the pod after three misses. On a
+      # single node that stalls now and then (the runtime is slow to answer for a few seconds), the pod was killed 40 or so
+      # times a day, and every restart reset every connection: about 40% of requests failed. Five seconds, six misses.
+      envoyDeployment:
+        patch:
+          type: StrategicMerge
+          value:
+            spec:
+              template:
+                spec:
+                  containers:
+                    - name: envoy
+                      livenessProbe:
+                        timeoutSeconds: 5
+                        failureThreshold: 6
+                      readinessProbe:
+                        timeoutSeconds: 5
+                    - name: shutdown-manager
+                      livenessProbe:
+                        timeoutSeconds: 5
+                        failureThreshold: 6
+                      readinessProbe:
+                        timeoutSeconds: 5
 ---
 apiVersion: gateway.networking.k8s.io/v1
 kind: GatewayClass

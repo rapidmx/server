@@ -13,6 +13,7 @@ import {
     DEFAULT_MAIL_INGEST_SECRET,
     DEFAULT_MAX_BODY_SIZE_BYTES,
     DEFAULT_MAX_COMPOSE_ATTACHMENT_BYTES,
+    ensurePushDatastore,
 } from "./config.defaults.js";
 
 const _filename = fileURLToPath(import.meta.url);
@@ -468,5 +469,8 @@ conf.defaults({
     // "10.0.0.0/8"; service-core's own audit-log IP lookup only matches exact addresses.
     trusted_proxies: [],
 });
+
+// The datastore service-core publishes push events through - see ensurePushDatastore().
+ensurePushDatastore(conf);
 
 export default conf;

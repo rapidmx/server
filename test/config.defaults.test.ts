@@ -6,6 +6,7 @@ import {
     DEFAULT_AUTH_SECRET,
     DEFAULT_COOKIE_SECRET,
     DEFAULT_MAIL_INGEST_SECRET,
+    ensurePushDatastore,
     SecretsConfig,
     trustedAuthservIdWarning,
 } from "../src/config.defaults.js";
@@ -85,5 +86,55 @@ describe("trustedAuthservIdWarning", () => {
 
     it("says nothing once it is set", () => {
         expect(trustedAuthservIdWarning(configWith("mx.example.com"))).toBeUndefined();
+    });
+});
+
+describe("ensurePushDatastore", () => {
+    function storeOf(initial: Record<string, unknown>): { get(key: string): unknown; set(key: string, value: unknown): void; values: Record<string, unknown> } {
+        const values: Record<string, unknown> = { ...initial };
+        return { values, get: (key: string) => values[key], set: (key: string, value: unknown) => void (values[key] = value) };
+    }
+
+    it("copies the events datastore to notifications, the one service-core publishes push events through", () => {
+        const events = { type: "redis", url: "redis://cache-host:6380/2" };
+        const config = storeOf({ "datastores:events": events });
+        ensurePushDatastore(config);
+        expect(config.values["datastores:notifications"]).toEqual(events);
+        // a copy, so changing one datastore never changes the other
+        expect(config.values["datastores:notifications"]).not.toBe(events);
+    });
+
+    it("keeps a notifications datastore that is configured explicitly", () => {
+        const explicit = { type: "redis", url: "redis://elsewhere" };
+        const config = storeOf({ "datastores:events": { type: "redis", url: "redis://cache-host" }, "datastores:notifications": explicit });
+        ensurePushDatastore(config);
+        expect(config.values["datastores:notifications"]).toBe(explicit);
+    });
+
+    it("does nothing without an events datastore", () => {
+        const config = storeOf({});
+        ensurePushDatastore(config);
+        expect(config.values).toEqual({});
+    });
+
+    describe("in the shipped configuration", () => {
+        const saved = { ...process.env };
+        afterEach(() => {
+            for (const key of Object.keys(process.env)) {
+                if (!(key in saved)) delete process.env[key];
+            }
+            Object.assign(process.env, saved);
+            vi.resetModules();
+        });
+
+        for (const file of ["../src/config.mongo.js", "../src/config.sql.js"]) {
+            it(`${file} publishes on the events datastore's Redis, whatever the environment points it at`, async () => {
+                vi.resetModules();
+                process.env.datastores__events__url = "redis://push-host:6390/4";
+                const { default: conf } = await import(file);
+                expect(conf.get("datastores:notifications")).toEqual({ type: "redis", url: "redis://push-host:6390/4" });
+                expect(conf.get("datastores:events:url")).toBe("redis://push-host:6390/4");
+            });
+        }
     });
 });

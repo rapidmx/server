@@ -6227,3 +6227,57 @@ chunks Rolldown makes by itself are fine (`react-shared`'s `keys.ts` awaits `ref
   `ReactRoute` caches rendered HTML in Redis (the page keeps naming the old entry chunk). `rapidrest dev` also builds with `NODE_ENV=development`.
   To profile production bundles: `vite build`, copy the result over `plugins/.ui-build/<hash>/`, restart, `FLUSHALL` Redis.
 - Test: `test/lib/serverViteConfig.test.ts` covers the two groups' regular expressions (both path separators, what they must not match, priorities).
+
+### 2026-09-21 - live gateway flapping: Envoy killed by 1 s kubelet probes (patched on the host and in both installers)
+
+Found while acceptance-testing: `https://mail.powerlevel.gg` reset connections about 40% of the time ("Recv failure: Connection was reset", 3 of 8 requests answered). The app pods were
+healthy (`/api/status` 200 from inside the cluster); the proxy pod `envoy-envoy-gateway-system-shared-gateway-*` was `1/2` with 13 restarts and the `envoy-gateway` controller had 19.
+- **Cause:** the kubelet's HTTP probes to the pod IP (`envoy` `/ready` :19003, `shutdown-manager` `/healthz` :19002) have `timeoutSeconds: 1`, period 5-10 s, failure threshold 3, and
+  they timed out ("context deadline exceeded") 35-56 times in 24 h; k3s logged `ExecSync ... timeout 5s exceeded` every 20-30 s at the same time. After three misses the kubelet kills the
+  container, and while Envoy restarts (and again while the controller re-syncs its xDS stream) TLS handshakes are reset. Ruled out: memory (24 GB free, no OOM kills), CPU throttling (no
+  limits, `nr_throttled 0`), conntrack (721/262144), disk, certificates (both Ready), Gateway listeners (all Programmed/Accepted). Load average was 8-12 on 8 cores but only 24% CPU:
+  Bitnami MongoDB's exec probes start `mongosh` (a Node app, ~0.7 core each) every few seconds, which likely causes the stalls. Not proven.
+- **Fix, on the host (approved by JP):** `kubectl -n envoy-gateway-system patch envoyproxy bare-metal-proxy --type merge` adding `spec.provider.kubernetes.envoyDeployment.patch`
+  (`type: StrategicMerge`, both containers: liveness `timeoutSeconds: 5`, `failureThreshold: 6`, readiness `timeoutSeconds: 5`). Dry-run on the server first; the controller rolled a new
+  Deployment; afterwards 20 of 20 checks passed over 2 minutes and the new pod had 0 restarts. The same block is in `single_node_install.sh` (also used for `--gateway chart`, through
+  `$ENVOY_PROXY`) and `deploy/aws/bootstrap.sh`; both rendered manifests were server-side dry-run on the live cluster.
+- **Not fixed:** the `envoy-gateway` *controller* Deployment (from the `gateway-helm` chart) has the same 1 s probes and restarted 20 times (last ~46 min before the patch). A controller
+  restart doesn't reset an already-programmed Envoy, but check `kubectl -n envoy-gateway-system get pods` over a day; if it keeps restarting, raise its probes through the chart values.
+  Also unfixed: the MongoDB probes' CPU cost (consider `livenessProbe`/`readinessProbe` values on the bitnami subchart).
+- **Drift noticed:** the live EnvoyProxy has `externalTrafficPolicy: Local` and `logging.level.default: warn`, which the repo's installer doesn't set (an older or edited script applied them). Re-running
+  the repo's installer won't remove them (`kubectl apply` only prunes what it applied itself).
+
+### 2026-09-20 (QA) — acceptance test of the committed code in a real browser: live updates never worked, because nothing configured the `notifications` datastore
+
+Not committed. Acceptance testing of the web client against a local sandbox (a copy of this server, `NODE_ENV=production`, `node dist/src/worker.js`, mongo:7 + redis:7 in docker, `yarn build` bundle with the
+pre-compression step, `node_modules/@rapidmx/{restapi,react-shared,web-client}` overlaid with the working trees and hash-compared, a stub auth-server on :3901, stub rspamd/clamd so the production
+providers see "clean", a fake `sendmail.exe` for `mail:transport:sendmail:path`, users signed in with JWTs minted from `auth:secret`, elevated or not). Real Chromium through Playwright.
+
+- **Root cause of "new mail needs a refresh": `@rapidrest/service-core`'s `Server.start()` builds its `NotificationUtils` only when a datastore named `notifications` exists**
+  (`connectionManager.connections.get("notifications")`). Nothing in this repo (config, both compose files, the chart, the installers) configures one - only `events`, which `/push` subscribes on - so
+  `NotificationUtils` had no Redis and every `sendMessage()` (ScanQueueJob's delivery events, `FolderCountUtils`' Folder updates, the delivery-failure notices, ScheduledSendJob, CalendarReminderJob...)
+  was a silent no-op. Proven: `redis-cli psubscribe '*'` saw nothing while mail was ingested, delivered, marked read and moved; the same run with `datastores__notifications__*` set showed the toast, badge
+  and tab title in 3-7 s. Nothing here ever published to a client, on the live host or in `yarn dev`; the web client's push work was correct and untestable.
+  **Fix:** `ensurePushDatastore(conf)` (`src/config.defaults.ts`, called at the end of `config.mongo.ts` and `config.sql.ts`) copies the *effective* `datastores:events` (defaults, `datastores__events__*`
+  env from the chart, `rapidrest dev`'s in-memory Redis) to `datastores:notifications` unless one is set explicitly. No chart or values change; same Redis, one more connection. Tests:
+  `test/config.defaults.test.ts` (the helper, and both shipped configs with `datastores__events__url` set).
+  **Also fixed by this:** the Drafts badge took the 45 s poll to show a new draft and never noticed a discarded one (no Folder event was published); now 156 ms and immediate.
+- Measured (production bundle, `Accept-Encoding: br`, neutral User-Agent - see below): cold inbox load 61 requests / 528,391 B on the wire, of which JS before the `load` event 25 requests / 150,855 B and
+  idle prefetch of Calendar/Contacts/Tasks/compose 21 requests / 221,279 B; 32 of 47 assets `Content-Encoding: br` (the rest are under 1 KB, where a variant isn't smaller), every fingerprinted asset
+  `public, max-age=31536000, immutable` with an ETag, `If-None-Match` -> 304; a repeat load is the page plus its API calls (12 requests / 70 KB) and 0 JS. Folder switch 29-34 ms (a full frame is 15 ms in
+  headless Chromium), app switch 13-16 ms (Settings 66), Reply window visible 14 ms / editor in the DOM 32-45 ms, with the message body held 3 s the window and editor still appear at 14 / 32 ms and the quote
+  6 s later (`/content` then `/raw`, 3 s each), with CPU 4x and 100 ms / 4 Mbit 17 / 178 ms.
+- **Measuring on this machine lies unless the User-Agent is neutral:** ESET (`ekrn`, `ekrnEpfw`) rewrites loopback HTTP whose User-Agent looks like a browser - it decodes `br`/`gzip` and adds
+  `X-Content-Encoding-Over-Network` and `Transfer-Encoding: chunked` - so DevTools, Resource Timing and a counting TCP proxy all showed 1.69 MB "on the wire" for the same bytes the server sent as ~480 KB
+  (reproduced with a raw socket and no browser: only the UA line changes the answer). Use `Mozilla/5.0 (Windows NT 10.0; Win64; x64) QAProbe/1.0` (or `curl`) for wire numbers here. Also, Playwright's
+  `page.route`/`context.route` disables the HTTP cache, so use `--host-resolver-rules` to keep Google Fonts out instead of routing.
+- **Scheduled sends that the MTA refuses permanently are retried like transient ones:** with `554 5.7.1` (`temporary: false`) `ScheduledSendJob` still makes `max_attempts` (5) attempts with `attempts x 60 s`
+  backoff, so the "Undeliverable: ..." notice reached the Inbox 12 minutes after the send time (exactly once, full `multipart/report` with the SMTP code, response, command, exit status 75 and the
+  reason). Left alone (restapi behaviour, and arguably intended); a permanent failure for every recipient could file the notice on the first attempt.
+- Server-side observations left alone: `POST /api/mail/messages` from an admin lists every mailbox in the sidebar (expected for a trusted caller); `from.type` of a delivered message is `"to"`;
+  the fake sendmail's path shows in "Technical details" (`command=`), so a real `/usr/sbin/sendmail` would show that instead.
+- Not verified: the Helm chart / Envoy (compression policy, WebSockets through the gateway), plugin UI builds (`system__plugins__defaults=[]` here, so no `.ui-build`), a real auth-server contract (everything
+  identity-related was proven against the stub only: `users/me`, `profiles/me`, `aliases`, `logout`, `elevate`), a real rspamd/clamd/Postfix, Safari/Firefox/Edge and which keys a real browser reserves
+  (Playwright delivers key events straight to the page), macOS, the Electron window (tsc/lint/tests only), the 6-hour age rule for pop-ups end to end (an ingested message is stamped with its arrival time;
+  unit-tested only).
+- Verified: `yarn tsc --noEmit` and `yarn lint` clean, `yarn test` 32 files / 404 tests (398 + the 6 new ones), and every finding above re-run in the sandbox after the fix.
