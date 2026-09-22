@@ -3,11 +3,13 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import { ObjectDecorators } from "@rapidrest/core";
-import { DnsMxRecord, DnsResolver } from "@rapidmx/restapi";
+import { DnsMxRecord, DnsResolver, DnsSrvRecord } from "@rapidmx/restapi";
 const { Config } = ObjectDecorators;
 
 const TXT_TYPE = 16;
 const MX_TYPE = 15;
+const CNAME_TYPE = 5;
+const SRV_TYPE = 33;
 
 interface DohAnswer {
     name: string;
@@ -45,6 +47,18 @@ function parseMxRecord(data: string): DnsMxRecord {
     const priority = Number.parseInt(data.slice(0, spaceIndex), 10);
     const exchange = data.slice(spaceIndex + 1).replace(/\.$/, "");
     return { priority, exchange };
+}
+
+/** Parses a DoH JSON SRV answer's `data` field (`"<priority> <weight> <port> <target>"`, unquoted) into
+ * the same shape `NodeDnsResolver` returns - `target` without the trailing root dot DoH responses include. */
+function parseSrvRecord(data: string): DnsSrvRecord {
+    const [priority, weight, port, target] = data.split(" ");
+    return {
+        priority: Number.parseInt(priority, 10),
+        weight: Number.parseInt(weight, 10),
+        port: Number.parseInt(port, 10),
+        target: target.replace(/\.$/, ""),
+    };
 }
 
 /**
@@ -88,6 +102,16 @@ export class DohDnssecDnsResolver implements DnsResolver {
     public async resolveMx(hostname: string): Promise<DnsMxRecord[]> {
         const answers = await this.query(hostname, MX_TYPE);
         return answers.map((answer) => parseMxRecord(answer.data));
+    }
+
+    public async resolveCname(hostname: string): Promise<string[]> {
+        const answers = await this.query(hostname, CNAME_TYPE);
+        return answers.map((answer) => answer.data.replace(/\.$/, ""));
+    }
+
+    public async resolveSrv(hostname: string): Promise<DnsSrvRecord[]> {
+        const answers = await this.query(hostname, SRV_TYPE);
+        return answers.map((answer) => parseSrvRecord(answer.data));
     }
 
     private async query(hostname: string, type: number): Promise<DohAnswer[]> {

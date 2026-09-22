@@ -22,6 +22,9 @@
 
 ### Fixes
 
+- **Autodiscover never actually worked - the setting it needs had no default anywhere.** Added the missing `autodiscover: { public_url: "" }` config block (an administrator sets it from the admin
+  console's Plugins page, same as `mail:booking:public_url`) - without it, `@rapidmx/autodiscover-plugin` silently 404'd every request regardless of DNS. The domain DNS setup checklist now also
+  recommends the `autodiscover.<domain>` CNAME and `_autodiscover._tcp.<domain>` SRV records a real EAS/Outlook client needs to find this server in the first place.
 - **Requesting a digital-signature certificate could sit "pending" forever with no way to tell why, and no way for an administrator to finish it - fixed.** The chart's default backend
   (`mail.signingEnrollment.backend: auto`, `manual` for a local/test domain) waited for a certificate to be uploaded through an admin route that didn't exist yet, while Settings > Encryption said a
   public certificate authority issues it automatically - true only once `mail.signingEnrollment.backend` resolves to `rfc8823`. Every signing-certificate status now names its `provider`

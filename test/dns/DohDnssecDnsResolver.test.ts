@@ -177,6 +177,48 @@ describe("DohDnssecDnsResolver Tests", () => {
         });
     });
 
+    describe("resolveCname()", () => {
+        it("parses the target hostname, stripping the trailing root dot.", async () => {
+            vi.stubGlobal(
+                "fetch",
+                vi.fn().mockResolvedValue(
+                    fakeFetchResponse({
+                        Status: 0,
+                        AD: true,
+                        Answer: [{ name: "autodiscover.example.com.", type: 5, TTL: 300, data: "mail.example.com." }],
+                    }),
+                ),
+            );
+
+            const resolver = new DohDnssecDnsResolver();
+            const result = await resolver.resolveCname("autodiscover.example.com");
+            expect(result).toEqual(["mail.example.com"]);
+            const [url] = (fetch as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
+            expect(url).toContain("type=5");
+        });
+    });
+
+    describe("resolveSrv()", () => {
+        it("parses priority, weight, port and target, stripping the trailing root dot.", async () => {
+            vi.stubGlobal(
+                "fetch",
+                vi.fn().mockResolvedValue(
+                    fakeFetchResponse({
+                        Status: 0,
+                        AD: true,
+                        Answer: [{ name: "_autodiscover._tcp.example.com.", type: 33, TTL: 300, data: "0 0 443 mail.example.com." }],
+                    }),
+                ),
+            );
+
+            const resolver = new DohDnssecDnsResolver();
+            const result = await resolver.resolveSrv("_autodiscover._tcp.example.com");
+            expect(result).toEqual([{ priority: 0, weight: 0, port: 443, target: "mail.example.com" }]);
+            const [url] = (fetch as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
+            expect(url).toContain("type=33");
+        });
+    });
+
     it("reads its endpoint/require_ad/timeout_ms from config when constructed via the DI container.", async () => {
         config.set("mail:dns:doh:endpoint", "https://dns.example.net/dns-query");
         const objectFactory = new ObjectFactory(config, new Logger());

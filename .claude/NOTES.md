@@ -6390,3 +6390,15 @@ entry covers what changed here (chart, config, route mounts, docs). Not verified
   `rapidmx.signingEnrollmentContactEmail`, `rapidmx.assertSigningEnrollment`), `helm/templates/1_deployments/service.yaml` (one assert call), `helm/templates/NOTES.txt`; `src/config.{mongo,sql}.ts`
   (`failure_audit_after`); new `src/{mongo,sql}/routes/SigningEnrollment{Info,Admin}Route.ts`; `test/routes/MailAccessRoutes.test.ts` (+2 route names); README ("Signing certificates" section),
   `deploy/aws/README.md` (a note that `rfc8823` needs `ses-bridge` deployed too). `restapi`'s built `dist` copied over `node_modules/@rapidmx/restapi/dist` (never linked) after both rounds of restapi edits.
+
+### 2026-09-22 - Autodiscover's `public_url` setting had no default anywhere, so it silently never worked
+
+restapi's `DnsSetupUtils`/`BaseDomainRoute` gained checklist entries for the two DNS records Autodiscover actually needs (see restapi's own NOTES for
+the full picture); on this side, the missing half of the fix: `config.mongo.ts`/`config.sql.ts` had no `autodiscover: { public_url }` block at all
+(every other plugin setting of this shape, e.g. `mail:booking:public_url`, already has one) - added, matching that convention exactly (empty default,
+"an administrator sets this after install" framing, no Helm wiring, since it's meant to be set from the admin console's Plugins page). Also extended
+`DohDnssecDnsResolver` (the DNSSEC-validating resolver real deployments run) with `resolveCname()`/`resolveSrv()`, required by restapi's widened
+`DnsResolver` interface.
+
+Files: changed `src/config.mongo.ts`, `src/config.sql.ts`, `src/dns/DohDnssecDnsResolver.ts`, `test/dns/DohDnssecDnsResolver.test.ts`. No Helm/chart
+changes - this setting is admin-console-configurable, not chart-configured. `yarn lint`/`yarn test` clean: 44/44 files, 574/574 tests.

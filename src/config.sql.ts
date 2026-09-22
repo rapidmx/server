@@ -205,6 +205,17 @@ conf.defaults({
             quota_bytes: 5_000_000_000,
             timeout_ms: 10_000
         },
+        // Read by @rapidmx/autodiscover-plugin (see `system.plugins.defaults`), where it's also a setting in the
+        // admin console. Must be this deployment's externally-reachable https:// base URL (e.g.
+        // `https://mail.example.com`) - the same host DNS setup (mail:dns:mx_hostname) and TLS already point at
+        // - since both the EAS (`/Microsoft-Server-ActiveSync`) and MAPI (`/mapi/emsmdb`) endpoint URLs the
+        // plugin advertises to real mail clients are built by appending a path to it. Empty by default:
+        // Autodiscover then answers nothing rather than pointing a client at a host that isn't this deployment.
+        // No Helm chart wiring, unlike similar settings - an administrator sets it from the admin console's
+        // Plugins page after install; set mail__autodiscover__public_url otherwise.
+        autodiscover: {
+            public_url: "",
+        },
         // `BaseBrandingRoute` builds a self-hosted logo/stylesheet's public URL as `${public_url}` +
         // a literal `/branding/logo`/`/branding/stylesheet`, which assumes the route is mounted at bare
         // `/branding` — but this repo mounts it under `@ApiRoute("system/branding")` (real path
