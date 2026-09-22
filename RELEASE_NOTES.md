@@ -22,6 +22,16 @@
 
 ### Fixes
 
+- **Requesting a digital-signature certificate could sit "pending" forever with no way to tell why, and no way for an administrator to finish it - fixed.** The chart's default backend
+  (`mail.signingEnrollment.backend: auto`, `manual` for a local/test domain) waited for a certificate to be uploaded through an admin route that didn't exist yet, while Settings > Encryption said a
+  public certificate authority issues it automatically - true only once `mail.signingEnrollment.backend` resolves to `rfc8823`. Every signing-certificate status now names its `provider`
+  (`"manual"`/`"rfc8823"`), a new **Signing Certificates** admin page (`/api/admin/signing-enrollments`, mounted Mongo+SQL) lets an administrator download a request's CSR, upload the certificate a
+  CA issued, or reject a request with a reason its owner sees, and `GET /api/system/signing-enrollment` (any signed-in user) says which backend is active, whether it's automatic, the certificate
+  authority's host, a typical duration and the background job's last contact with it. A stale enrollment id (left over from switching backends) now answers 404 `signing-enrollment-unknown` instead
+  of a dead end, and cancelling one is idempotent. See the README's "Signing certificates" for the chart's `mail.signingEnrollment.*` values and a switch-to-automatic runbook.
+- **An unreachable signing-certificate authority was invisible beyond a per-tick debug log line - it now surfaces.** `AcmeEnrollmentDriverJob` logs a warning once when the certificate authority starts
+  failing (and again only if the failure changes, not every 5 minutes), an info line once it answers again, and after `mail:jobs:acme_enrollment_driver:failure_audit_after` (3) failed checks in a row
+  writes one audit entry an administrator sees in the audit log - all from the unreleased `@rapidmx/restapi`.
 - **A shared mailbox that was granted to a username showed up for nobody - sharing now resolves who it grants to (live example: `hello@powerlevel.gg`, "Support", granted to `jean-philippe`).** The admin console stored the text typed in the Sharing form; an ACL record matches only a user's uid, so the grant never applied and the mailbox was visible only through the trusted-role bypass the privacy fix
   above removes. The console's **Shared access** and the mail client's **Settings > Sharing** page now look up who was typed (a mailbox address, a username or an e-mail alias, or a user id), show the person's name and address, and grant that user's id; an entry that was never a user id is flagged "has no effect" with **Replace with a user**. `/api/acls` refuses non-uid principals on mailbox ACLs. **The existing `hello@` grant
   is not migrated** (usernames are never matched to uids: they can be released and re-claimed): open the mailbox in the admin console and use **Replace with a user** on the `jean-philippe` entry, or **Add me**.
@@ -45,6 +55,11 @@
   models (a `plugin_purge_*` collection/table on the next start, `synchronize` on, no migration). A plugin loaded before this release records what it stores at its first start on it, so one that is disabled until then can't be
   deleted with its data until it has run once. `@rapidmx/booking-plugin` gets an `onPurge` that deletes its profile images from the BlobStore; ActiveSync's three collections and Booking's three are found from their models; MAPI and
   Autodiscover own no data. See the README's "Uninstalling a plugin with its data".
+- **Every mailbox has every well-known folder, and the signing-certificate status shows progress (the unreleased `@rapidmx/restapi` changes).** New mailboxes get Inbox, Drafts, Outbox, Sent Items, Deleted Items, Junk
+  Email, Archive, Calendar, Contacts, Tasks and Notes when they are created, older ones (and a shared mailbox like `hello@`) get the missing ones the next time their folders are listed - no migration - and every
+  folder created is announced live so an open client shows it at once. `GET /api/mail/mailboxes/:id/keyvault/keys/sign-enrollment/:enrollmentId` now reports the stage, a progress percentage, times and, for a
+  failure, a code and whether trying again can work; `POST .../:enrollmentId/check` re-checks it on demand (once per ~10 seconds per request) and `GET .../sign-enrollment` finds a mailbox's current request. The
+  config files gain `mail:pki:rfc8823:poll_interval_seconds` (300) and `max_pending_hours` (168); nothing needs changing.
 
 ## v1.0.0-beta.10
 

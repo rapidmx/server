@@ -51,6 +51,13 @@ Manager. The stack only reports success once the whole install finished, so a fa
   and the account may still be in the SES sandbox. Inbound needs [`ses-bridge`](https://github.com/rapidmx/ses-bridge)
   deployed per mail domain, with its Lambda in this VPC so it can reach the internal `/internal/mta` load balancer this
   stack creates (the public Gateway answers 404 for `/internal`). The summary prints the exact deploy command.
+- **Signing certificates need `ses-bridge` too.** With a real `MailDomain` the chart's `mail.signingEnrollment.backend`
+  defaults to automated RFC 8823 issuance, which requires a certificate authority's verification e-mail to actually
+  reach the mailbox and the mailbox's own reply to go back out DKIM-signed - both only work once `ses-bridge` is
+  deployed and delivering inbound mail. Until then, a signing-certificate request stalls at "awaiting challenge"
+  (visible on the Signing Certificates admin page and `GET /api/system/signing-enrollment`'s `health`); it starts
+  moving once `ses-bridge` is in place. Set `mail.signingEnrollment.backend: manual` instead if you'd rather an
+  administrator upload certificates by hand until `ses-bridge` is deployed.
 - **The auth-server's e-mail:** it can only send its sign-in and verification codes over SMTP, which can't use the instance's
   role, so set `RAPIDMX_SES_SMTP_USERNAME` and `RAPIDMX_SES_SMTP_PASSWORD` (an SES SMTP account, from the SES console's SMTP
   settings) for it to send through `email-smtp.<region>.amazonaws.com` as `RAPIDMX_MAIL_FROM` (default `noreply@<domain>`, which

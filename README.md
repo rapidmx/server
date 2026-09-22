@@ -622,6 +622,51 @@ The chart runs one replica by default, because its message, DKIM and PKI volumes
 use `mail.blob.backend: s3` (or `ReadWriteMany` storage) and `ReadWriteMany` for `mail.dkim.storage` and
 `mail.pki.storage`.
 
+### Signing certificates
+
+`mail.signingEnrollment` chooses how mailboxes get the S/MIME certificate their digital-signature key needs
+(`@rapidmx/restapi`'s `mail:pki:signing_enrollment:backend`/`mail:pki:rfc8823:*`):
+
+* `backend: auto` (the default) picks **`rfc8823`** - real, automated issuance through any RFC 8823 (`email-reply-00`
+  ACME) certificate authority, `mail.signingEnrollment.directoryUrl` (default: CASTLE Platform's public CA,
+  `https://acme.castle.cloud/acme/directory`) - for a real `global.domain`, and **`manual`** for `localhost` or a domain
+  ending in `.local`, `.localhost`, `.test` or `.invalid` (a public CA can't issue for those). Set `backend: rfc8823` or
+  `backend: manual` explicitly to override the guess; anything else fails the render, as does a non-`https://`
+  `directoryUrl` once resolved to `rfc8823`.
+* `contactEmail` is the address given to the certificate authority when registering this deployment's ACME account (not
+  one of this deployment's own mailboxes); it defaults to `global.certmanager.email`.
+* **`rfc8823` needs inbound mail and DKIM signing working**: the certificate authority sends a verification e-mail to the
+  mailbox requesting the certificate, the mailbox's own reply (which the server sends automatically) has to be
+  DKIM-signed and delivered back to the CA, and only then is the certificate issued - typically 10-30 minutes end to
+  end. With `postfixBridge.create: false` (SES sending, `deploy/aws`'s SES-backed installs), that inbound leg is
+  `ses-bridge` (https://github.com/rapidmx/ses-bridge): it has to be reachable and delivering to the mailbox, and
+  `mail.trustedAuthservId` has to name the DKIM verifier it stamps, or every automatic request stalls at "awaiting
+  challenge" forever. This only affects issuing new signing certificates - normal mail send/receive is unaffected.
+* The ACME account key and every in-flight request persist on the same `pki-data` volume as the local encryption CA
+  (`/var/lib/rapidmx/pki`), so they survive a pod restart; back it up like the rest of that volume.
+* **Manual fallback / escape hatch.** Whatever the backend, an administrator can see and act on pending requests from the
+  Signing Certificates admin page (`/api/admin/signing-enrollments`, trusted role and an elevated token, audited): with
+  `backend: manual` this is *how* certificates are issued (download a request's CSR, paste it into any public CA's own
+  portal, upload the certificate the CA returns, or reject the request with a reason its owner sees); with `rfc8823` the
+  same page lists automatic requests read-only, so an administrator can see one that has stalled. `GET
+  /api/system/signing-enrollment` (any signed-in user) reports which backend is active, whether it's automatic, the
+  certificate authority's host, a typical duration and the background job's last contact with the CA (`health`), so the
+  web client can word a request's status truthfully instead of guessing.
+
+**Switching an existing deployment from manual to automatic** (`helm upgrade --set mail.signingEnrollment.backend=rfc8823`,
+or letting `backend: auto` pick it up once `global.domain` is a real one):
+
+1. `helm upgrade` with the new value, then let the rolling restart finish (`kubectl rollout status`).
+2. Any request left over from the manual backend is now unknown to the active one: its owner's Settings > Encryption
+   shows it as failed/cancellable (404 `signing-enrollment-unknown` on its status) - have them cancel it and request
+   again, which starts a fresh `rfc8823` enrollment.
+3. What to expect: the CA's verification e-mail should arrive within a few minutes, the reply goes out automatically,
+   and the certificate is issued and installed within about 10-30 minutes.
+4. If it stalls: check the Signing Certificates admin page (it lists the request and, for `rfc8823`, the last error);
+   check `GET /api/system/signing-enrollment`'s `health.lastError`; check the server logs for
+   `Rfc8823AcmeSigningCertificateEnrollment`/`AcmeEnrollmentDriverJob` lines; and confirm inbound mail is reaching the
+   mailbox and that the mailbox's own reply is DKIM-signed (see above) - the most common cause of a stuck request.
+
 ### Notes for upgrades
 
 The server has no database migrations: on startup it creates and updates its schema from its models

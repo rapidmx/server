@@ -425,6 +425,9 @@ conf.defaults({
                 // Every 5 minutes, cron syntax (seconds field included).
                 schedule: "0 */5 * * * *",
                 expiry_warning_days: 30,
+                // How many checks of the certificate authority in a row must fail before a SIGNING_ENROLLMENT_CA_UNREACHABLE audit entry is
+                // written (once per run of failures) - the failure itself is logged at warn on the first one and whenever the error changes.
+                failure_audit_after: 3,
             },
         },
     },

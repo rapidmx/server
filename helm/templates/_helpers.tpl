@@ -309,6 +309,67 @@ Usage: include "rapidmx.trustedAuthservId" .
 {{-   end -}}
 {{- end -}}
 
+{{/*
+"true" when `global.domain` is one a public certificate authority could never issue for: `localhost` or a domain ending in
+`.local`, `.localhost`, `.test` or `.invalid` (the reserved-for-testing/local-use TLDs). Usage: include "rapidmx.isLocalDomain" .
+*/}}
+{{- define "rapidmx.isLocalDomain" -}}
+{{-   $domain := toString .Values.global.domain -}}
+{{-   if or (eq $domain "localhost") (hasSuffix ".local" $domain) (hasSuffix ".localhost" $domain) (hasSuffix ".test" $domain) (hasSuffix ".invalid" $domain) -}}
+true
+{{-   end -}}
+{{- end -}}
+
+{{/*
+Resolves mail.signingEnrollment.backend to the concrete backend restapi's mail:pki:signing_enrollment:backend takes: "auto" (the
+default) becomes "rfc8823" for a real domain and "manual" for a local/test one (rapidmx.isLocalDomain); "rfc8823"/"manual" pass
+through unchanged; anything else fails the render. Usage: include "rapidmx.signingEnrollmentBackend" .
+*/}}
+{{- define "rapidmx.signingEnrollmentBackend" -}}
+{{-   $backend := .Values.mail.signingEnrollment.backend -}}
+{{-   if eq $backend "auto" -}}
+{{-     if eq (include "rapidmx.isLocalDomain" .) "true" -}}
+manual
+{{-     else -}}
+rfc8823
+{{-     end -}}
+{{-   else if eq $backend "rfc8823" -}}
+rfc8823
+{{-   else if eq $backend "manual" -}}
+manual
+{{-   else -}}
+{{-     fail (printf "mail.signingEnrollment.backend is %q - it must be \"auto\", \"rfc8823\" or \"manual\"." (toString $backend)) -}}
+{{-   end -}}
+{{- end -}}
+
+{{/*
+The e-mail address the RFC 8823 ACME account registers with: mail.signingEnrollment.contactEmail when set, else
+global.certmanager.email. Usage: include "rapidmx.signingEnrollmentContactEmail" .
+*/}}
+{{- define "rapidmx.signingEnrollmentContactEmail" -}}
+{{-   $email := include "rrst.render" (dict "value" .Values.mail.signingEnrollment.contactEmail "context" .) -}}
+{{-   if $email -}}
+{{ $email }}
+{{-   else -}}
+{{ include "rrst.render" (dict "value" .Values.global.certmanager.email "context" .) }}
+{{-   end -}}
+{{- end -}}
+
+{{/*
+Fails the render when mail.signingEnrollment doesn't make sense: an unrecognized backend (rapidmx.signingEnrollmentBackend already
+fails for that) or, once resolved to "rfc8823", a directoryUrl that isn't https:// - RFC 8823 exchanges the account key and order
+data over it, and a plain-HTTP CA is not one the automated flow will trust. Usage: include "rapidmx.assertSigningEnrollment" $
+*/}}
+{{- define "rapidmx.assertSigningEnrollment" -}}
+{{-   $backend := include "rapidmx.signingEnrollmentBackend" . -}}
+{{-   if eq $backend "rfc8823" -}}
+{{-     $url := include "rrst.render" (dict "value" .Values.mail.signingEnrollment.directoryUrl "context" .) -}}
+{{-     if not (hasPrefix "https://" $url) -}}
+{{-       fail (printf "mail.signingEnrollment.directoryUrl is %q - an RFC 8823 ACME directory URL must be https://." $url) -}}
+{{-     end -}}
+{{-   end -}}
+{{- end -}}
+
 {{- define "rapidmx.assertPostfixBridge" -}}
 {{-   if and .Values.postfixBridge.create (eq .Values.mail.transport.provider "ses") -}}
 {{-     fail "mail.transport.provider is \"ses\" but postfixBridge.create is true, so this release would both send through SES and run its own Postfix. Set postfixBridge.create=false (inbound mail then comes from ses-bridge), or mail.transport.provider=postfix." -}}

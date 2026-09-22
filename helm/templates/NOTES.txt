@@ -62,3 +62,17 @@ MTA stamps on Authentication-Results (the bundled Postfix does this, and it's th
 forward-rule copies are sent with a rewritten From, forwarded calendar invites are refused, and key discovery, read
 receipts, iTIP replies, recalls and ACME email challenges are ignored. Set it with --set mail.trustedAuthservId=<id>.
 {{- end }}
+
+{{- $signingBackend := include "rapidmx.signingEnrollmentBackend" . }}
+
+Signing certificates (S/MIME, mailboxes' digital-signature keys):
+{{- if eq $signingBackend "rfc8823" }}
+  Issued automatically (RFC 8823) by {{ include "rrst.render" (dict "value" .Values.mail.signingEnrollment.directoryUrl "context" .) }}.
+  Requesting one sends a verification e-mail to the mailbox from that certificate authority, and the mailbox must reply to it
+  (DKIM-signed) for the certificate to be issued - so inbound mail delivery and DKIM signing must both be working before a request
+  can complete. Track a request's progress, and any error, on the Signing Certificates admin page or in Settings > Encryption.
+{{- else }}
+  Issued manually: a request waits for an administrator to obtain a certificate from a public CA and upload it on the Signing
+  Certificates admin page (mail.signingEnrollment.backend is "manual", or "auto" resolved to it because {{ tpl (toString .Values.global.domain) . }}
+  isn't a real domain a public CA can issue for).
+{{- end }}
