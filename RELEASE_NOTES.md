@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v1.0.0-beta.11
+
 ### Security
 
 - **An administrator could read every user's mail through the ordinary mail API - fixed.** Any signed-in administrator holding an *elevated* token (the admin console has every administrator elevate) was

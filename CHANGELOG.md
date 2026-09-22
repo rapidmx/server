@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.11] - 2026-09-22
+
+### Added
+- Added BaseGuardedACLRoute for /api/acls, so a trusted role can no longer read or change the ACLs of mailboxes and folders it has no grant on, and reject a grant to anything that doesn't resolve to a user
+- Added per-user appearance preferences at /api/mail/preferences/appearance on MongoDB and SQL, with a background image upload, and pass the caller's appearance to every page as a prop so the theme applies before first paint
+- Added a background option to sending, which answers 202 at once and relays in the process with retries, and its configuration
+- Added uninstalling a plugin with its data through purgeData, which waits until no server runs the plugin, claims the deletion with a lease so it runs once, drops only the collections and tables of the plugin's own models, runs the plugin's onPurge hook first, removes its settings and files, and can be retried
+- Added the mail:pki:rfc8823 poll_interval_seconds and max_pending_hours settings to the MongoDB and SQL configs, which time the signing certificate's status checks and give up on an enrollment the CA never answers
+- Added mail.signingEnrollment.backend to the chart, defaulting to auto so a real domain gets automatic rfc8823 issuance and a localhost/.local/.test/.invalid domain keeps the manual backend, with an explicit override and a failed render on an unknown backend or a non-https directory URL
+- Added mail:jobs:acme_enrollment_driver:failure_audit_after to the Mongo and SQL configs, controlling how many consecutive CA check failures precede an audit entry
+- Added junit.xml to gitignore
+- Added a default autodiscover.public_url config block, matching every other plugin setting of this shape, so Autodiscover's setting is never left unset with no way to know why
+- Added resolveCname and resolveSrv to DohDnssecDnsResolver, the DNSSEC-validating resolver real deployments run, needed by restapi's widened DnsResolver interface
+
+### Changed
+- Updated package description and readme
+- Updated readme with clearer instructions
+- Test the guarded ACL route, and add a guard test that fails when a server route is neither classified nor free of a direct aclUtils.hasPermission call
+- Document the fix in the release notes and NOTES, including the rollout and the route audit
+- Test the appearance route, the purge coordination, purger, hook, files, ledger and store, the plugin owned data rules and the route gating
+- Document the changes in the README, the release notes and NOTES, including the folders every account now gets and the signing certificate status contract
+- Mount the new signing enrollment info and admin routes on both Mongo and SQL
+- Test the mounted routes and document the chart option and the live-host upgrade runbook in the README, deploy/aws README, release notes and NOTES
+- Document the fix in the release notes and NOTES
+- Upgraded rapidmx deps
+
+### Fixed
+- Fixed an administrator with an elevated token reading every user's mail through /api/acls, a message's raw source, message assembly and the escrow info, by checking the mailbox owner or an explicit grant with the trusted roles stripped
+
 ## [1.0.0-beta.10] - 2026-09-21
 
 ### Added
@@ -812,7 +841,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed test from .dockerignore, fixing yarn build's lint step failing outright when the build context is missing the test directory its tsconfig.eslint.json requires
 - Removed docker-compose.mail.yml's partial server: service block, since include: only supports merging resources that don't already exist in the including file and hard-errors ("services.server conflicts with imported resource") on a Compose version newer than whatever this had only ever been tested against locally
 
-[Unreleased]: https://github.com/rapidmx/server/compare/v1.0.0-beta.10...HEAD
+[Unreleased]: https://github.com/rapidmx/server/compare/v1.0.0-beta.11...HEAD
+[1.0.0-beta.11]: https://github.com/rapidmx/server/compare/v1.0.0-beta.10...v1.0.0-beta.11
 [1.0.0-beta.10]: https://github.com/rapidmx/server/compare/v1.0.0-beta.9...v1.0.0-beta.10
 [1.0.0-beta.9]: https://github.com/rapidmx/server/compare/v1.0.0-beta.8...v1.0.0-beta.9
 [1.0.0-beta.8]: https://github.com/rapidmx/server/compare/v1.0.0-beta.7...v1.0.0-beta.8
