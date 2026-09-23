@@ -6564,3 +6564,30 @@ deleted `.yarn/patches/@rapidmx-react-shared-npm-0.6.0-77e24a4355.patch`; `RELEA
 every prior round this session (`Server.mongo.test.ts`, `Server.sql.test.ts`, `PluginRoute.mongo.test.ts`,
 `StaticAssetRoute.test.ts`), confirmed pre-existing and environmental (no Redis binary in this sandbox), not a
 regression from this batch.
+
+### 2026-09-23 (later) — CSRF fix landed ecosystem-wide; the 2026-09-15 "Review round 6" item 8 investigation is now resolved
+
+Item 8 above (`auth-server`'s `jwt`/`refresh` cookies are `SameSite=Lax`, exploitable from a same-site sibling
+subdomain) was "investigation, no change" at the time. A coordinated cross-repo fix landed today across
+`@rapidrest/service-core` (the actual double-submit CSRF mechanism, `RouteUtils.checkCsrf()`, enforced
+automatically on every cookie-authenticated, state-changing request), `@rapidrest/auth` (`CsrfUtils`, issuing/
+rotating a deliberately host-only `csrf` cookie alongside `jwt`/`refresh`), `@rapidrest/auth-server` (config
+defaults + its own frontend), and `@rapidmx/react-shared` (`apiFetch()`/`authApiFetch()` now echo the cookie
+back as `x-csrf-token`). See `@rapidrest/auth`'s and `@rapidrest/service-core`'s own NOTES.md for the full
+design writeup, and `@rapidmx/react-shared`'s NOTES.md for where this open finding lived most recently.
+
+This repo's own share was small: `DevImpersonationRoute`'s `/impersonate/stop` (dev-only, mirrors the real
+`BaseImpersonationRoute` for `yarn dev` without a real auth-server) changed from `GET` to `POST` to match the
+real route's own fix, since a state-changing `GET` bypasses CSRF defenses entirely (they only ever apply to
+non-safe methods). `react-shared`'s `stopImpersonating()` was updated in the same pass to POST, so nothing here
+needed to change beyond the dev route and its own metadata-level regression test
+(`test/dev/DevImpersonationRoute.test.ts`).
+
+**Not done in this repo**: `server`'s own ~50 CRUD routes (from `@rapidmx/restapi`'s base classes) rely on the
+same shared `jwt` cookie and will start getting the new `RouteUtils.checkCsrf()` enforcement automatically the
+moment this repo upgrades to the fixed `@rapidrest/service-core`, with zero code changes needed here — but that
+upgrade itself (and verifying nothing in this repo's own routes breaks under it) is a real follow-up, not done
+as part of this pass. Flag it before bumping the `@rapidrest/service-core` dependency.
+
+Verified: `tsc --noEmit`, and `test/dev/DevImpersonationRoute.test.ts` (10/10, including the new regression
+test). Did not run the full suite for this small, isolated change.

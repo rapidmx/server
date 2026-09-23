@@ -92,6 +92,20 @@ describe("DevImpersonationRoute Tests", () => {
     });
 
     describe("stopImpersonating()", () => {
+        // Regression: mirrors the real BaseImpersonationRoute's own GET->POST fix - a state-changing GET
+        // is exploitable via a bare navigation, bypassing CSRF defenses entirely (they only ever apply to
+        // non-safe methods). Asserted off the route metadata so a regression back to @Get is caught even
+        // by a test that never spins up a real server.
+        it("is registered as POST, not GET, at the framework metadata level.", () => {
+            const metadata: any = Reflect.getMetadata(
+                "rrst:route",
+                DevImpersonationRoute.prototype,
+                "stopImpersonating",
+            );
+            expect(metadata.methods.has("post")).toBe(true);
+            expect(metadata.methods.has("get")).toBe(false);
+        });
+
         it("returns restored:false and sets no cookies when there is no jwt_impersonator cookie.", () => {
             const { res, setCookieCalls } = fakeRes();
             const result = route.stopImpersonating(fakeReq(), res, { uid: "target-user", roles: [], scopes: [] });

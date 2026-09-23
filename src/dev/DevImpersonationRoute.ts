@@ -11,7 +11,7 @@
  * Mirrors `@rapidrest/auth`'s real `BaseImpersonationRoute` contract closely enough that the admin console's
  * "Access this mailbox" button and the webmail client's impersonation banner (see
  * `@rapidmx/react-shared`'s `mailApi.ts`) work identically against `yarn dev`, without a real auth-server running:
- * `POST /impersonate` / `GET /impersonate/stop`, the same `jwt`/`jwt_impersonator` cookie names and shape.
+ * `POST /impersonate` / `POST /impersonate/stop`, the same `jwt`/`jwt_impersonator` cookie names and shape.
  *
  * Unlike the real auth-server endpoint, this can't look up a target user's real roles/scopes — mail-server
  * has no local user directory of its own (identity lives entirely in auth-server's own database, which
@@ -25,7 +25,7 @@ import { ApiError, JWTUtils, ObjectDecorators, type JWTUser, type JWTUtilsConfig
 import { ApiErrorMessages, ApiErrors, RouteDecorators, type HttpRequest, type HttpResponse } from "@rapidrest/service-core";
 
 const { Config, Logger } = ObjectDecorators;
-const { ApiRoute, Auth, Get, Post, Request, Response } = RouteDecorators;
+const { ApiRoute, Auth, Post, Request, Response } = RouteDecorators;
 const AuthUser = RouteDecorators.User;
 
 /** Matches `JWTStrategyOptions.cookieName`'s hardcoded default — see `DevAutoAuthStrategy.ts`. */
@@ -93,7 +93,9 @@ export class DevImpersonationRoute {
     }
 
     @Auth(["jwt"])
-    @Get("/impersonate/stop")
+    // POST, not GET: mirrors the real BaseImpersonationRoute — a state-changing GET is exploitable via a
+    // bare navigation, bypassing CSRF defenses entirely (see that route's own doc comment).
+    @Post("/impersonate/stop")
     public stopImpersonating(
         @Request req: HttpRequest,
         @Response res: HttpResponse,

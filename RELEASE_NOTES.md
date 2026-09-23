@@ -4,6 +4,13 @@
 
 ### Security
 
+- **The dev-only mock impersonation "stop" endpoint now matches the real one's CSRF-hardened contract.**
+  `DevImpersonationRoute`'s `/impersonate/stop` (only ever mounted under `yarn dev`, mirroring
+  `@rapidrest/auth`'s `BaseImpersonationRoute` for local development without a real auth-server) changed
+  from `GET` to `POST`, as part of a coordinated cross-repo CSRF hardening pass (`@rapidrest/service-core`,
+  `@rapidrest/auth`, `@rapidrest/auth-server`, `@rapidmx/react-shared`). A state-changing `GET` is
+  exploitable via a bare cross-site/same-site navigation - no form or script required - which bypasses
+  CSRF defenses entirely, since they only ever apply to non-safe methods.
 - **`NODE_ENV=test` no longer bypasses the production-secrets guard.** `assertProductionSecretsAreSet()` previously treated `dev`, `development` and `test` alike, so an operator who left `NODE_ENV=test`
   set on a real deployment would boot with the checked-in default `cookie_secret`/`auth:secret`/`mail:transport:ingest:secret` still in effect - letting anyone forge a JWT or call the internal
   `/internal/mta/deliver` hand-off route directly. Only an explicit `dev` or `development` now skips this check; `test` is treated the same as an unset or unexpected `NODE_ENV` and must set its own

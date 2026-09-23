@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Changed the dev-only DevImpersonationRoute's `/impersonate/stop` from GET to POST, matching @rapidrest/auth's real BaseImpersonationRoute fix (part of a cross-repo CSRF hardening pass) - a state-changing GET is exploitable via a bare navigation, bypassing CSRF defenses entirely
+- Add regression tests for the above
+
 ## [1.0.0-beta.12] - 2026-09-23
 
 ### Added
