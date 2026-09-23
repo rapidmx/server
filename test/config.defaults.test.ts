@@ -7,6 +7,7 @@ import {
     DEFAULT_COOKIE_SECRET,
     DEFAULT_MAIL_INGEST_SECRET,
     ensurePushDatastore,
+    SECRETS_GUARD_SKIP_ENVIRONMENTS,
     SecretsConfig,
     trustedAuthservIdWarning,
 } from "../src/config.defaults.js";
@@ -30,16 +31,26 @@ const realSecrets = {
 };
 
 describe("assertProductionSecretsAreSet", () => {
-    it("is a no-op in an explicit development environment, even with every default secret still in effect", () => {
-        for (const env of ["dev", "development", "test"]) {
+    it("is a no-op in an explicit dev/development environment, even with every default secret still in effect", () => {
+        expect(SECRETS_GUARD_SKIP_ENVIRONMENTS).toEqual(["dev", "development"]);
+        for (const env of SECRETS_GUARD_SKIP_ENVIRONMENTS) {
             expect(() => assertProductionSecretsAreSet(fakeConfig({}), env)).not.toThrow();
         }
     });
 
-    it("enforces real secrets when NODE_ENV is unset or anything other than dev/development/test", () => {
+    it("enforces real secrets when NODE_ENV is unset or anything other than dev/development", () => {
         for (const env of [undefined, "production", "staging", "prod", "Development"]) {
             expect(() => assertProductionSecretsAreSet(fakeConfig({}), env)).toThrow(/Refusing to start/);
         }
+    });
+
+    it("still enforces real secrets under NODE_ENV=test - unlike dev/development, 'test' does not skip this guard, even though the test suite itself runs under NODE_ENV=test and other dev-only behaviors (registerMailProviders, dev auto-login) do treat it as a development environment", () => {
+        expect(() => assertProductionSecretsAreSet(fakeConfig({}), "test")).toThrow(
+            /Refusing to start \(NODE_ENV=test\)/,
+        );
+        expect(() => assertProductionSecretsAreSet(fakeConfig({}), "test")).toThrow(
+            /cookie_secret, auth__secret, mail__transport__ingest__secret/,
+        );
     });
 
     it("throws naming every secret still at its default, by the env var name nconf actually reads", () => {

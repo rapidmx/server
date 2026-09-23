@@ -48,23 +48,25 @@ const ACL_DB_FILE = path.join(DB_DIR, "rrst-test-acl");
 describe("Server Tests", () => {
     const logger = new Logger();
     const objectFactory: ObjectFactory = new ObjectFactory(config, logger);
-    // Mirrors the DI provider registration in src/server.sql.ts — this test builds its own Server rather
-    // than importing that script, so it must register the same @rapidmx/restapi string-token dependencies
-    // itself or any route touching them (BlobStore/SearchProvider/SpamScanProvider/AvScanProvider/
+    // Mirrors the DI provider registration registerCoreProviders() (src/lib/registerCoreProviders.ts) applies for
+    // src/worker.sql.ts — this test builds its own Server rather than importing that entry point (it runs `void
+    // start(...)` unconditionally at module load with no "only if this is the main module" guard - see
+    // selectConfigDrivenBackend()'s own doc comment), so it must register the same @rapidmx/restapi string-token
+    // dependencies itself or any route touching them (BlobStore/SearchProvider/SpamScanProvider/AvScanProvider/
     // MailTransport/DnsResolver/DkimKeyProvider) fails to instantiate.
-    // Always LocalFsBlobStore here, even though server.sql.ts's real registration is config-driven
+    // Always LocalFsBlobStore here, even though worker.sql.ts's real registration is config-driven
     // (mail:blob:backend) - a test run has no business making live network S3 calls.
     objectFactory.register(LocalFsBlobStore, "BlobStore");
     objectFactory.register(PostgresFullTextSearchProvider, "SearchProvider");
     objectFactory.register(RspamdSpamScanProvider, "SpamScanProvider");
     objectFactory.register(ClamAvScanProvider, "AvScanProvider");
     objectFactory.register(PostfixSendmailTransport, "MailTransport");
-    // Always NodeDnsResolver here, even though server.sql.ts's real registration is config-driven
+    // Always NodeDnsResolver here, even though worker.sql.ts's real registration is config-driven
     // (mail:dns:resolver) - a test run has no business making live network DoH queries, and nothing this
     // suite exercises depends on DNSSEC validation actually happening.
     objectFactory.register(NodeDnsResolver, "DnsResolver");
     objectFactory.register(FsDkimKeyProvider, "DkimKeyProvider");
-    // Mirrors server.sql.ts's config-driven CA backend selection (mail:pki:backend) - not currently
+    // Mirrors worker.sql.ts's config-driven CA backend selection (mail:pki:backend) - not currently
     // exercised by any mounted route/test, but kept in sync so registering a KeyVault-style route later
     // doesn't hit a "no class found with name: EncryptionCertificateAuthority" surprise here.
     const caBackend: string = config.get("mail:pki:backend") || "local";
@@ -72,7 +74,7 @@ describe("Server Tests", () => {
         caBackend === "openbao" ? OpenBaoPkiCertificateAuthority : LocalX509CertificateAuthority,
         "EncryptionCertificateAuthority"
     );
-    // Always ManualSigningCertificateEnrollment here, even though server.sql.ts's real registration is
+    // Always ManualSigningCertificateEnrollment here, even though worker.sql.ts's real registration is
     // config-driven (mail:pki:signing_enrollment:backend) - a test run has no business making live ACME
     // network calls against a real certificate authority.
     objectFactory.register(ManualSigningCertificateEnrollment, "SigningCertificateEnrollment");

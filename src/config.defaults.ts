@@ -71,24 +71,39 @@ export interface SecretsConfig {
 }
 
 /**
- * `NODE_ENV` values under which the checked-in development secrets are allowed. Anything else - including an unset,
- * misspelled or unexpected `NODE_ENV` (e.g. `staging`) - is treated as a real deployment.
+ * `NODE_ENV` values under which dev-only *behavioral* opt-ins (the dev auto-login route, `registerMailProviders()`'s
+ * scan/transport bypass, skipping the shutdown drain delay) kick in. Anything else - including an unset, misspelled
+ * or unexpected `NODE_ENV` (e.g. `staging`) - gets the real, production behavior.
+ *
+ * Deliberately **not** used by `assertProductionSecretsAreSet()` below - see `SECRETS_GUARD_SKIP_ENVIRONMENTS`'s own
+ * doc comment for why the secrets guard needs a strictly narrower list than this one.
  */
 export const DEVELOPMENT_ENVIRONMENTS: readonly string[] = ["dev", "development", "test"];
 
 /**
+ * `NODE_ENV` values under which the checked-in development default secrets are allowed to still be in effect.
+ * Narrower than `DEVELOPMENT_ENVIRONMENTS` on purpose: `test` opts into every other dev-only behavior (the test suite
+ * itself runs with `NODE_ENV=test`, e.g. `registerMailProviders.test.ts`/`enableDevAutoLogin.test.ts` both assert
+ * `test` gets the same treatment as `dev`/`development`), but it is also exactly the value an operator would leave
+ * behind on a real box by copying a `.env.test`-style file or a CI-oriented default into production - unlike `dev`/
+ * `development`, nothing about the literal string `test` reliably signals "not a real deployment". Only an explicit
+ * `dev`/`development` skips this specific guard; a real `NODE_ENV=test` deployment must still set its own secrets.
+ */
+export const SECRETS_GUARD_SKIP_ENVIRONMENTS: readonly string[] = ["dev", "development"];
+
+/**
  * Refuses to let the server start with any of the checked-in development default secrets (`cookie_secret`,
  * `auth:secret`, `mail:transport:ingest:secret`) still in effect, or with one of them empty, unless `NODE_ENV` is
- * explicitly a development environment (`dev`, `development` or `test`). The defaults are visible to anyone who reads
- * this public repo, so leaving one in place would let an attacker forge JWTs outright, or call the internal MTA
- * hand-off route directly.
+ * explicitly a development environment (`dev` or `development` - see `SECRETS_GUARD_SKIP_ENVIRONMENTS`, notably
+ * `test` does **not** skip this check). The defaults are visible to anyone who reads this public repo, so leaving one
+ * in place would let an attacker forge JWTs outright, or call the internal MTA hand-off route directly.
  *
  * @param config The loaded runtime configuration to check.
- * @param environment The raw `NODE_ENV`. Only `dev`, `development` and `test` skip the check.
+ * @param environment The raw `NODE_ENV`. Only `dev` and `development` skip the check.
  * @throws If any of the guarded secrets is empty or still holds its known default value outside development.
  */
 export function assertProductionSecretsAreSet(config: SecretsConfig, environment: string | undefined): void {
-    if (environment !== undefined && DEVELOPMENT_ENVIRONMENTS.includes(environment)) {
+    if (environment !== undefined && SECRETS_GUARD_SKIP_ENVIRONMENTS.includes(environment)) {
         return;
     }
 
@@ -108,7 +123,7 @@ export function assertProductionSecretsAreSet(config: SecretsConfig, environment
         throw new Error(
             `Refusing to start (NODE_ENV=${environment ?? "unset"}) with empty or default development secret(s): ${names}. ` +
                 "Set the corresponding environment variable(s) to a unique, secret value before deploying, or set " +
-                `NODE_ENV to one of ${DEVELOPMENT_ENVIRONMENTS.join("/")} for local development.`,
+                `NODE_ENV to one of ${SECRETS_GUARD_SKIP_ENVIRONMENTS.join("/")} for local development.`,
         );
     }
 }

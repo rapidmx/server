@@ -115,6 +115,9 @@ export abstract class BaseMessageRawContentRoute<M extends Message> {
 
         const raw: Buffer = await this.blobStore.get(message.bodyBlobKey);
         res.setHeader("content-type", "message/rfc822");
+        // Matches every other file-serving path in this repo (BaseStaticAssetRoute, staticAssets.ts): this is raw,
+        // unsanitized RFC 5322 MIME source, so a browser must never be allowed to sniff/render it as HTML.
+        res.setHeader("x-content-type-options", "nosniff");
         res.send(raw);
     }
 }

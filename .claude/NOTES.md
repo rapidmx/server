@@ -6402,3 +6402,44 @@ the full picture); on this side, the missing half of the fix: `config.mongo.ts`/
 
 Files: changed `src/config.mongo.ts`, `src/config.sql.ts`, `src/dns/DohDnssecDnsResolver.ts`, `test/dns/DohDnssecDnsResolver.test.ts`. No Helm/chart
 changes - this setting is admin-console-configurable, not chart-configured. `yarn lint`/`yarn test` clean: 44/44 files, 574/574 tests.
+
+### 2026-09-22 - Adversarial review fixes: NODE_ENV=test bypassing the secrets guard, triplicated worker bootstrap files, missing nosniff on raw MIME, orphaned patches
+
+Four confirmed findings from an adversarial review, fixed in one pass:
+
+- **`NODE_ENV=test` no longer skips `assertProductionSecretsAreSet()`.** `DEVELOPMENT_ENVIRONMENTS` (`["dev","development","test"]`) is still exactly what it was - other consumers
+  (`registerMailProviders()`'s scan/transport dev-bypass, `enableDevAutoLogin.ts`'s auto-login/auto-provisioning, the shutdown drain-skip) all intentionally treat `test` the same as `dev`/`development`,
+  and their own tests assert exactly that (`registerMailProviders.test.ts`, `enableDevAutoLogin.test.ts`) - narrowing that shared constant would have broken them for no reason. Instead added a second,
+  strictly narrower constant, `SECRETS_GUARD_SKIP_ENVIRONMENTS = ["dev", "development"]`, used only by the secrets guard. Confirmed safe to narrow: `worker.ts`/`worker.mongo.ts`/`worker.sql.ts` (the only
+  callers of `assertProductionSecretsAreSet()`) are excluded from `vitest.config.ts`'s coverage config and never imported by any test (both run `void start(...)` unconditionally at module load), so
+  nothing in `yarn test` - which itself runs under Vitest's default `NODE_ENV=test` - exercises this guard as a side effect. Test: `config.defaults.test.ts` now asserts `test` throws the same as
+  `production`/`staging`/unset, and only `dev`/`development` are a no-op.
+- **`worker.ts`/`worker.mongo.ts`/`worker.sql.ts`'s DI-token registration block extracted into `registerCoreProviders()`** (`src/lib/registerCoreProviders.ts`), called identically from all three. Read
+  all three files plus `git log` first: the actual drift history is `d485c2e` (`NodeDnsResolver` added to `worker.mongo.ts`/`worker.sql.ts` but not `worker.ts`) and an earlier commit visible only in
+  `worker.ts`'s own doc comment (`EncryptionCertificateAuthority`/`SigningCertificateEnrollment` added to the Mongo/SQL files but not the generic one `yarn dev` runs, breaking `KeyVaultRoute` under
+  `yarn dev` until caught by hand). `registerCoreProviders(objectFactory, config, { searchProvider, devDeliveryTransport, environment, ...testOverrides })` takes only the two pieces that actually differ
+  per entry point (search backend, dev delivery transport class) plus optional overrides the `Server.*.test.ts` harnesses use to force deterministic providers (no live S3/DoH/ACME calls from a test run);
+  everything else - RateLimiter, config-driven BlobStore/DnsResolver/EncryptionCertificateAuthority/SigningCertificateEnrollment, DkimKeyProvider, `registerMailProviders()` - lives in exactly one place
+  now. Left `Server.mongo.test.ts`/`Server.sql.test.ts`'s own inline registration alone (rewriting them to call `registerCoreProviders()` needs a throwaway `DevLocalDeliveryTransport` stub purely to
+  satisfy the type and would touch already-green integration tests for a secondary benefit); only updated their comments, which still named the pre-rename `server.mongo.ts`/`server.sql.ts` files. Also
+  dropped an actually-unused `import * as path from "path"` from `worker.mongo.ts`/`worker.sql.ts` (shadowed by an unused second import of the same module) found while touching these files. Tests:
+  `test/lib/registerCoreProviders.test.ts` - the function's own token set and config-driven/override resolution, plus a static guard that greps all three worker files for exactly one real call site and
+  no reintroduced inline `"DnsResolver"`/`"EncryptionCertificateAuthority"`/`"SigningCertificateEnrollment"` registration, so silently copy-pasting the block back into just one file fails the suite.
+- **`BaseMessageRawContentRoute.raw()` now sends `X-Content-Type-Options: nosniff`** alongside its existing `content-type: message/rfc822`, matching `BaseStaticAssetRoute`/`staticAssets.ts`. Test:
+  extended `BaseMessageRawContentRoute.test.ts`'s existing "streams the raw blob content" case with the header assertion.
+- **Deleted two orphaned Yarn patches**: `.yarn/patches/@rapidmx-restapi-npm-0.12.0-*.patch` and `@rapidmx-web-client-npm-0.6.0-*.patch` were on disk but wired into no `package.json` `resolutions` entry
+  (only the react-shared patch is). Checked each patch's actual diff against the versions this repo depends on (`@rapidmx/restapi@^0.19.0`, `@rapidmx/web-client@^0.13.0`, both present in
+  `node_modules`): the restapi patch's `buildDeliveredRecipients()` import/call in `MailboxImportJob.js` is already in installed 0.19.0's source, and the web-client patch's `embedded` prop on
+  `BrandingForm.tsx`/`EncryptionPolicyForm.tsx` is already in installed 0.13.0's source - both fixes landed upstream since these patches were cut. Confirmed no other reference to either patch filename
+  anywhere in the repo before deleting.
+- **Checked for stale `@rapidmx/videoconf-plugin` prose** (should read `@rapidmx/meet-plugin`) per the review's optional fifth item: no matches anywhere under `src/`, nothing to change. (The
+  `mail:videoconf:*` config keys themselves are deliberately left alone regardless - see the split project's own prerelease-decisions note.)
+
+Environment note for whoever runs this suite next: this sandbox has no Redis binary at all (`redis-cli` not found), so `Server.mongo.test.ts`, `Server.sql.test.ts`, `PluginRoute.mongo.test.ts` and
+`StaticAssetRoute.test.ts` (each builds a real `Server` that waits on a Redis connection) hang until their `beforeEach`/`beforeAll` hook times out - confirmed via `git stash` that this reproduces
+identically on unmodified `main`, so it's pre-existing/environmental, not a regression from this batch. Not otherwise touched.
+
+Files: added `src/lib/registerCoreProviders.ts`, `test/lib/registerCoreProviders.test.ts`; changed `src/config.defaults.ts`, `src/worker.ts`, `src/worker.mongo.ts`, `src/worker.sql.ts`,
+`src/routes/BaseMessageRawContentRoute.ts`, `test/config.defaults.test.ts`, `test/routes/BaseMessageRawContentRoute.test.ts`, `test/Server.mongo.test.ts`, `test/Server.sql.test.ts` (comments only),
+`RELEASE_NOTES.md`; deleted the two orphaned `.yarn/patches/*` files. `yarn lint` clean. `yarn build` clean. `yarn test`: 553/583 passing, 22 skipped, 8 failing - all 8 in the four Redis-dependent files
+above, confirmed pre-existing (see environment note).

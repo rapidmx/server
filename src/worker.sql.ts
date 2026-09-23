@@ -12,16 +12,6 @@ import { fileURLToPath } from "url";
 import { dirname } from "path";
 import { Logger } from "@rapidrest/core";
 import { ObjectFactory, Server } from "@rapidrest/service-core";
-import {
-    FsDkimKeyProvider,
-    LocalFsBlobStore,
-    LocalX509CertificateAuthority,
-    ManualSigningCertificateEnrollment,
-    NodeDnsResolver,
-    OpenBaoPkiCertificateAuthority,
-    Rfc8823AcmeSigningCertificateEnrollment,
-    S3BlobStore,
-} from "@rapidmx/restapi";
 import { PostgresFullTextSearchProvider } from "@rapidmx/restapi/search";
 import {
     configureDevAutoProvisioningIfApplicable,
@@ -29,13 +19,10 @@ import {
     mountDevImpersonationRouteIfApplicable,
 } from "./dev/enableDevAutoLogin.js";
 import { DevLocalDeliveryTransportSQL } from "./dev/DevLocalDeliveryTransportSQL.js";
-import { registerMailProviders } from "./dev/registerMailProviders.js";
-import { DohDnssecDnsResolver } from "./dns/DohDnssecDnsResolver.js";
-import { selectConfigDrivenBackend } from "./lib/configDrivenBackend.js";
+import { registerCoreProviders } from "./lib/registerCoreProviders.js";
 
 import * as fs from "fs";
 import { readFile } from "fs/promises";
-import * as path from "path";
 import { assertProductionSecretsAreSet, DEVELOPMENT_ENVIRONMENTS, trustedAuthservIdWarning } from "./config.defaults.js";
 import { configMs, DEFAULT_RELEASE_TIMEOUT_MS, drainAndStop, withTimeout } from "./lib/gracefulShutdown.js";
 import { startTelemetryToken } from "./lib/telemetryToken.js";
@@ -44,7 +31,6 @@ import { PluginSQL } from "@rapidmx/restapi/sql";
 import { PluginHost } from "./plugins/PluginHost.js";
 import { SQL_PLUGIN_PURGE, SQL_PLUGIN_UI_HOSTS } from "./plugins/hosts/sql.js";
 import { notifyListening, restartWorker } from "./plugins/supervisor.js";
-import { TieredRateLimiter } from "./lib/TieredRateLimiter.js";
 
 const _filename = fileURLToPath(import.meta.url);
 const _dirname = dirname(_filename);
@@ -65,67 +51,28 @@ console.log("Log Level=" + logLevel);
 
 const objectFactory = new ObjectFactory(config, logger);
 
-// Separate anonymous and signed-in rate limits (config `rateLimit` and `rateLimit.authenticated`) - see TieredRateLimiter.ts.
-objectFactory.register(TieredRateLimiter, "RateLimiter");
-
 // @rapidmx/restapi's routes/jobs pull these via string-token @Inject(...) — they only resolve once
 // something has explicitly registered a concrete implementation under that exact token (there is no
 // config-driven auto-wiring for these). See @rapidmx/restapi's own README ("Usage") and .claude/NOTES.md.
-// BlobStore backend is config-driven (mail:blob:backend) rather than hardcoded, same pattern as
-// mail:pki:backend below: `"local"` (default) needs only `mail:blob:local:root`; `"s3"` delegates to an
-// S3-compatible bucket (mail:blob:s3:*) for production use - see config.sql.ts for the full key list.
-objectFactory.register(selectConfigDrivenBackend(config, "mail:blob:backend", "s3", LocalFsBlobStore, S3BlobStore), "BlobStore");
-objectFactory.register(PostgresFullTextSearchProvider, "SearchProvider");
-// SpamScanProvider/AvScanProvider/MailTransport: rspamd, ClamAV and Postfix. Under a development NODE_ENV only, wrapped so
-// `yarn dev` can send mail without them running - see dev/registerMailProviders.ts. Any other NODE_ENV fails closed.
-registerMailProviders(objectFactory, DevLocalDeliveryTransportSQL, process.env.NODE_ENV, config);
-// DnsResolver backend is config-driven (mail:dns:resolver) rather than hardcoded, same rationale as
-// mail:pki:backend below: `"node"` (default) is Node's own built-in resolver with no DNSSEC validation,
-// `"doh-dnssec"` validates DNSSEC (specs/end-to-end_encryption.md's Transport Trust requirement) via a
-// trusted upstream DoH resolver (mail:dns:doh:*) instead - see DohDnssecDnsResolver.ts's own doc comment
-// for why Node's built-in resolver can't do this itself.
-const dnsResolverBackend: string = config.get("mail:dns:resolver") || "node";
-objectFactory.register(dnsResolverBackend === "doh-dnssec" ? DohDnssecDnsResolver : NodeDnsResolver, "DnsResolver");
-// Opts into automatic per-domain DKIM key generation (writing into the shared volume the Postfix/rspamd
-// container reads from - see docker-compose.mail.yml's `dkim_rspamd_keys` volume and `mail:dkim:*`
-// config) rather than the library's default manual model (`NullDkimKeyProvider`, an admin fills in
-// dkimSelector/dkimPublicKey by hand). See @rapidmx/restapi's dkim/DkimKeyProvider.ts doc comment for the
-// security tradeoff this represents before changing it back.
-objectFactory.register(FsDkimKeyProvider, "DkimKeyProvider");
-// EncryptionCertificateAuthority backend is config-driven (mail:pki:backend) rather than hardcoded like
-// every provider above, since an admin needs to pick this per-deployment without a code change: `"local"`
-// (default) is zero-infra (LocalX509CertificateAuthority persists its CA key/cert to mail:pki:local_ca:dir),
-// `"openbao"` delegates to a self-hosted OpenBao/Vault PKI mount (mail:pki:openbao:*) for production use.
-// See config.sql.ts for the full key list and .claude/NOTES.md for why this one provider breaks from the
-// rest of this file's hardcoded-per-file convention.
-const caBackend: string = config.get("mail:pki:backend") || "local";
-objectFactory.register(
-    caBackend === "openbao" ? OpenBaoPkiCertificateAuthority : LocalX509CertificateAuthority,
-    "EncryptionCertificateAuthority"
-);
-// SigningCertificateEnrollment backend is config-driven (mail:pki:signing_enrollment:backend) rather
-// than hardcoded, same pattern as mail:pki:backend above: `"manual"` (default) is the CA-agnostic,
-// human-in-the-loop flow (mail:pki:manual_enrollment:store_path); `"rfc8823"` automates public-CA
-// enrollment end to end via RFC 8823 email-reply-00 ACME (mail:pki:rfc8823:*) - see config.sql.ts for
-// the full key list. AcmeEnrollmentDriverJobSQL (src/sql/Jobs.ts) is registered unconditionally
-// regardless of this setting, not because it's a full no-op under "manual": only its
-// driveEnrollments() half feature-detects the injected SigningCertificateEnrollment and no-ops without
-// rfc8823. Its other half, flagExpiringSigningCerts(), runs unconditionally on every tick regardless of
-// backend - an unfiltered scan of every mailbox, writing a SIGNING_CERT_EXPIRING audit entry for any
-// with a near-expiry signing key - so re-exporting this job is a real new periodic DB-scan + audit-log-
-// write cost for every deployment upgrading through this batch, not just rfc8823 ones. Confirmed
-// intentional on restapi's side (flagging an expiring signing key is useful under "manual" too, since
-// nothing else would notice), so left as-is rather than gated - just don't assume it's inert.
-objectFactory.register(
-    selectConfigDrivenBackend(
-        config,
-        "mail:pki:signing_enrollment:backend",
-        "rfc8823",
-        ManualSigningCertificateEnrollment,
-        Rfc8823AcmeSigningCertificateEnrollment,
-    ),
-    "SigningCertificateEnrollment"
-);
+// Shared with worker.ts/worker.mongo.ts by registerCoreProviders() (src/lib/registerCoreProviders.ts) so a
+// newly-introduced token only ever needs to be added in one place - see that function's own doc comment for the
+// two past incidents (missing NodeDnsResolver, then missing EncryptionCertificateAuthority/
+// SigningCertificateEnrollment) this exists to prevent.
+//
+// AcmeEnrollmentDriverJobSQL (src/sql/Jobs.ts) is registered unconditionally regardless of the
+// mail:pki:signing_enrollment:backend setting registerCoreProviders() reads, not because it's a full no-op under
+// "manual": only its driveEnrollments() half feature-detects the injected SigningCertificateEnrollment and no-ops
+// without rfc8823. Its other half, flagExpiringSigningCerts(), runs unconditionally on every tick regardless of
+// backend - an unfiltered scan of every mailbox, writing a SIGNING_CERT_EXPIRING audit entry for any with a
+// near-expiry signing key - so re-exporting this job is a real new periodic DB-scan + audit-log-write cost for
+// every deployment upgrading through this batch, not just rfc8823 ones. Confirmed intentional on restapi's side
+// (flagging an expiring signing key is useful under "manual" too, since nothing else would notice), so left as-is
+// rather than gated - just don't assume it's inert.
+registerCoreProviders(objectFactory, config, {
+    searchProvider: PostgresFullTextSearchProvider,
+    devDeliveryTransport: DevLocalDeliveryTransportSQL,
+    environment: process.env.NODE_ENV,
+});
 
 let server: any = undefined;
 let pluginHost: PluginHost | undefined = undefined;

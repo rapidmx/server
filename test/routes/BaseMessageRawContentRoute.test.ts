@@ -96,6 +96,8 @@ describe("BaseMessageRawContentRoute.raw() Tests (mocked collaborators)", () => 
 
         expect((route as any).blobStore.get).toHaveBeenCalledWith("bodies/abc123");
         expect(res.setHeader).toHaveBeenCalledWith("content-type", "message/rfc822");
+        // Raw, unsanitized MIME source must never be sniffable/renderable as HTML by a browser.
+        expect(res.setHeader).toHaveBeenCalledWith("x-content-type-options", "nosniff");
         expect(res.send).toHaveBeenCalledWith(Buffer.from("raw mime source", "utf-8"));
     });
 

@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+### Security
+
+- **`NODE_ENV=test` no longer bypasses the production-secrets guard.** `assertProductionSecretsAreSet()` previously treated `dev`, `development` and `test` alike, so an operator who left `NODE_ENV=test`
+  set on a real deployment would boot with the checked-in default `cookie_secret`/`auth:secret`/`mail:transport:ingest:secret` still in effect - letting anyone forge a JWT or call the internal
+  `/internal/mta/deliver` hand-off route directly. Only an explicit `dev` or `development` now skips this check; `test` is treated the same as an unset or unexpected `NODE_ENV` and must set its own
+  secrets. The test suite itself runs under `NODE_ENV=test` but never exercises this guard as a side effect (see `config.defaults.ts`'s `SECRETS_GUARD_SKIP_ENVIRONMENTS`), so nothing else changes.
+
+### Fixes
+
+- **`GET mail/messages/:id/raw` (the raw RFC 5322 MIME source used for client-side E2E decrypt/signature verification) now sends `X-Content-Type-Options: nosniff`,** matching every other file-serving
+  path in this repo. It was already served with `content-type: message/rfc822` rather than `text/html`, but the missing header meant an older or misconfigured browser could still be talked into sniffing
+  and rendering the unsanitized raw mail source.
+- **Removed two orphaned Yarn patch files** (`@rapidmx-restapi-npm-0.12.0-*.patch`, `@rapidmx-web-client-npm-0.6.0-*.patch`) that were no longer wired up in `package.json`'s `resolutions` and whose fixes
+  had already landed upstream in the versions this repo actually depends on (`@rapidmx/restapi@^0.19.0`, `@rapidmx/web-client@^0.13.0`) - they were inert on disk either way, but left the impression a
+  patched fix was still in effect when it was not.
+- **De-duplicated the `worker.ts`/`worker.mongo.ts`/`worker.sql.ts` DI-token registration** (BlobStore, SearchProvider, the scan/mail-transport providers, DnsResolver, DkimKeyProvider,
+  EncryptionCertificateAuthority, SigningCertificateEnrollment) into one shared `registerCoreProviders()` (`src/lib/registerCoreProviders.ts`), called identically from all three entry points. The
+  previous hand-kept-identical copies had already silently drifted twice (a missing `NodeDnsResolver`, then a missing `EncryptionCertificateAuthority`/`SigningCertificateEnrollment`); a newly-introduced
+  token now only needs to be added in one place.
+
 ## v1.0.0-beta.12
 
 ## v1.0.0-beta.11
