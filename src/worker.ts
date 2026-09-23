@@ -40,7 +40,8 @@ const _dirname = dirname(_filename);
 
 const environment: string = process.env.NODE_ENV || "production";
 
-// The raw NODE_ENV: only an explicit dev/development/test allows the checked-in development secrets.
+// The raw NODE_ENV: only an explicit dev/development allows the checked-in development secrets - see
+// SECRETS_GUARD_SKIP_ENVIRONMENTS's own doc comment for why `test` does not.
 assertProductionSecretsAreSet(config, process.env.NODE_ENV);
 
 const logLevel: string = config.get("logger:level") || (environment === "production" ? "info" : "debug");
