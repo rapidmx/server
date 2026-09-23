@@ -40,25 +40,47 @@ function parseTxtChunks(data: string): string[] {
     return chunks.length > 0 ? chunks : [data];
 }
 
+/** A non-negative integer field of a parsed record, or `undefined` when `raw` isn't one (missing, non-numeric,
+ * fractional or negative) - `Number.parseInt()` alone would silently turn any of those into `NaN` instead of
+ * refusing the record, and a `NaN` priority/weight/port then propagates into whatever sorts or compares it (e.g. a
+ * distribution list's or Autodiscover's own MX/SRV preference logic) with no clear error pointing at the resolver
+ * response that caused it. */
+function parsedNonNegativeInt(raw: string | undefined): number | undefined {
+    if (raw === undefined || raw === "") {
+        return undefined;
+    }
+    const value: number = Number(raw);
+    return Number.isInteger(value) && value >= 0 ? value : undefined;
+}
+
 /** Parses a DoH JSON MX answer's `data` field (`"<priority> <exchange>"`, unquoted) into the same shape
- * `NodeDnsResolver` returns - `exchange` without the trailing root dot DoH responses include. */
+ * `NodeDnsResolver` returns - `exchange` without the trailing root dot DoH responses include.
+ * @throws when `data` isn't `"<non-negative integer priority> <exchange>"` - a malformed or tampered-with answer is
+ * refused outright rather than silently producing a `NaN` priority (see `parsedNonNegativeInt()`). */
 function parseMxRecord(data: string): DnsMxRecord {
     const spaceIndex = data.indexOf(" ");
-    const priority = Number.parseInt(data.slice(0, spaceIndex), 10);
-    const exchange = data.slice(spaceIndex + 1).replace(/\.$/, "");
+    const priority: number | undefined = spaceIndex >= 0 ? parsedNonNegativeInt(data.slice(0, spaceIndex)) : undefined;
+    const exchange: string = spaceIndex >= 0 ? data.slice(spaceIndex + 1).replace(/\.$/, "") : "";
+    if (priority === undefined || !exchange) {
+        throw new Error(`Malformed MX record data: "${data}"`);
+    }
     return { priority, exchange };
 }
 
 /** Parses a DoH JSON SRV answer's `data` field (`"<priority> <weight> <port> <target>"`, unquoted) into
- * the same shape `NodeDnsResolver` returns - `target` without the trailing root dot DoH responses include. */
+ * the same shape `NodeDnsResolver` returns - `target` without the trailing root dot DoH responses include.
+ * @throws when `data` isn't `"<non-negative integer priority> <non-negative integer weight> <port 0-65535> <target>"`
+ * - a malformed or tampered-with answer is refused outright rather than silently producing `NaN` fields (see
+ * `parsedNonNegativeInt()`). */
 function parseSrvRecord(data: string): DnsSrvRecord {
-    const [priority, weight, port, target] = data.split(" ");
-    return {
-        priority: Number.parseInt(priority, 10),
-        weight: Number.parseInt(weight, 10),
-        port: Number.parseInt(port, 10),
-        target: target.replace(/\.$/, ""),
-    };
+    const [priorityRaw, weightRaw, portRaw, target] = data.split(" ");
+    const priority: number | undefined = parsedNonNegativeInt(priorityRaw);
+    const weight: number | undefined = parsedNonNegativeInt(weightRaw);
+    const port: number | undefined = parsedNonNegativeInt(portRaw);
+    if (priority === undefined || weight === undefined || port === undefined || port > 65535 || !target) {
+        throw new Error(`Malformed SRV record data: "${data}"`);
+    }
+    return { priority, weight, port, target: target.replace(/\.$/, "") };
 }
 
 /**

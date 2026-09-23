@@ -101,8 +101,10 @@ async function withTimeout<R>(work: Promise<R>, ms: number, controller: AbortCon
  */
 export class InstallingPurgeHookRunner implements PurgeHookRunner {
     constructor(
-        /** Makes an installer that installs into the given scratch directory. */
-        private readonly createInstaller: (dir: string) => { install(desired: DesiredPlugin[]): Promise<PluginInstallResult> },
+        /** Makes an installer that installs into the given scratch directory. `signal` (when the installer honors it,
+         * as `PluginInstaller.install()` does) lets `run()` actually kill an install that outlives its own timeout,
+         * rather than merely giving up on awaiting it while the underlying npm process keeps running. */
+        private readonly createInstaller: (dir: string) => { install(desired: DesiredPlugin[], signal?: AbortSignal): Promise<PluginInstallResult> },
         /** `<plugins dir>/.purge`, holding the scratch installs. */
         private readonly scratchRoot: string,
         private readonly importModule: (url: string) => Promise<PluginPurgeModule> = (url) => import(url),
@@ -120,10 +122,15 @@ export class InstallingPurgeHookRunner implements PurgeHookRunner {
     ): Promise<PurgeHookOutcome> {
         const scratch: string = this.scratchDir(plugin.name);
         try {
+            // Threads the real controller's signal into the install call itself (as the hook-function call below
+            // does with its own controller), so the outer timeout actually kills the underlying npm child process
+            // instead of merely abandoning the await while npm keeps running in the background - a second purge
+            // attempt's install then wouldn't collide with an orphaned one still writing into the same scratch dir.
+            const installController: AbortController = new AbortController();
             const result: PluginInstallResult = await withTimeout(
-                this.createInstaller(scratch).install([{ name: plugin.name, packageVersion: plugin.packageVersion, integrity: plugin.integrity }]),
+                this.createInstaller(scratch).install([{ name: plugin.name, packageVersion: plugin.packageVersion, integrity: plugin.integrity }], installController.signal),
                 timeoutMs,
-                new AbortController(),
+                installController,
                 `Installing ${plugin.name}@${plugin.packageVersion} to run its purge hook took longer than ${duration(timeoutMs)}.`,
             );
             const installed: InstalledPlugin | undefined = result.installed.find((candidate) => candidate.name === plugin.name);

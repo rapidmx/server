@@ -8,19 +8,43 @@
   set on a real deployment would boot with the checked-in default `cookie_secret`/`auth:secret`/`mail:transport:ingest:secret` still in effect - letting anyone forge a JWT or call the internal
   `/internal/mta/deliver` hand-off route directly. Only an explicit `dev` or `development` now skips this check; `test` is treated the same as an unset or unexpected `NODE_ENV` and must set its own
   secrets. The test suite itself runs under `NODE_ENV=test` but never exercises this guard as a side effect (see `config.defaults.ts`'s `SECRETS_GUARD_SKIP_ENVIRONMENTS`), so nothing else changes.
+- **Bumped `@rapidmx/react-shared` to `^0.14.0`**, which carries two real security fixes: session keys are no longer extractable, and a gap in the SVG/MathML sanitizer is closed. The dependency was
+  still pinned to `^0.13.0`; being pre-1.0, caret semantics meant that could never auto-resolve to 0.14.0 on its own.
+- **`GET mail/messages/:id/raw` now has its own tighter rate limit** (`perUser: true, maxAttempts: 300, windowSeconds: 60`, matching `BaseGiphySearchRoute`'s own per-request-cost cap), instead of
+  falling to the generous default "authenticated" tier. It loads a whole raw MIME blob into memory per request - up to the compose attachment cap (25MB default) for a composed message, unbounded for
+  inbound mail.
+- **A purge hook's scratch install can no longer outlive its own timeout.** `InstallingPurgeHookRunner.run()` raced a fresh, never-connected `AbortController` against the install step, so nothing
+  actually stopped the underlying `npm` child process when the outer `system:plugins:purge:hook_timeout_ms` (default 60s) fired - it kept running for up to `system:plugins:npm_timeout_ms` (default
+  10 minutes) in the background while the purge reported failure and moved on, and since the scratch directory is deterministic per plugin name, a retried purge could launch a second `npm install` into
+  the same directory as the still-running first one. `runNpm()`/`PluginInstaller.install()` now take an `AbortSignal` that actually kills the `execFile` child process, threaded through the same way the
+  hook-function call already was.
+- **Capped the total size of a freshly-installed `node_modules`** (`system:plugins:max_install_bytes`, default 500MB) as defense in depth against a malicious or compromised registry package: an install
+  that exceeds it is refused entirely (the same as an npm failure) and the oversized `node_modules` is removed. `--ignore-scripts` already stops an install script from running; this only bounds disk
+  usage.
+- **DoH MX/SRV answers with a non-numeric or out-of-range priority/weight/port are now refused outright** instead of silently producing a `NaN` field that could propagate into whatever compares or sorts
+  it. `DohDnssecDnsResolver`'s `parseMxRecord()`/`parseSrvRecord()` throw on a malformed answer.
 
 ### Fixes
 
 - **`GET mail/messages/:id/raw` (the raw RFC 5322 MIME source used for client-side E2E decrypt/signature verification) now sends `X-Content-Type-Options: nosniff`,** matching every other file-serving
   path in this repo. It was already served with `content-type: message/rfc822` rather than `text/html`, but the missing header meant an older or misconfigured browser could still be talked into sniffing
   and rendering the unsanitized raw mail source.
-- **Removed two orphaned Yarn patch files** (`@rapidmx-restapi-npm-0.12.0-*.patch`, `@rapidmx-web-client-npm-0.6.0-*.patch`) that were no longer wired up in `package.json`'s `resolutions` and whose fixes
-  had already landed upstream in the versions this repo actually depends on (`@rapidmx/restapi@^0.19.0`, `@rapidmx/web-client@^0.13.0`) - they were inert on disk either way, but left the impression a
-  patched fix was still in effect when it was not.
+- **Removed three orphaned Yarn patch files** (`@rapidmx-restapi-npm-0.12.0-*.patch`, `@rapidmx-web-client-npm-0.6.0-*.patch`, `@rapidmx-react-shared-npm-0.6.0-*.patch`, the last found alongside the
+  `react-shared` version bump above) that were no longer wired up in `package.json`'s `resolutions` and whose fixes had already landed upstream in the versions this repo actually depends on
+  (`@rapidmx/restapi@^0.19.0`, `@rapidmx/web-client@^0.13.0`, `@rapidmx/react-shared@^0.14.0`) - they were inert on disk either way, but left the impression a patched fix was still in effect when it
+  was not.
 - **De-duplicated the `worker.ts`/`worker.mongo.ts`/`worker.sql.ts` DI-token registration** (BlobStore, SearchProvider, the scan/mail-transport providers, DnsResolver, DkimKeyProvider,
   EncryptionCertificateAuthority, SigningCertificateEnrollment) into one shared `registerCoreProviders()` (`src/lib/registerCoreProviders.ts`), called identically from all three entry points. The
   previous hand-kept-identical copies had already silently drifted twice (a missing `NodeDnsResolver`, then a missing `EncryptionCertificateAuthority`/`SigningCertificateEnrollment`); a newly-introduced
   token now only needs to be added in one place.
+- **Plugin purge no longer blocks the event loop walking a large `node_modules` tree.** `PluginPurgeFiles.ts`'s file deletion (routinely thousands of files for a plugin's full dependency tree, retried
+  on every purge attempt) now walks and removes with `fs.promises` (`removeContainedAsync()`) instead of the fully-synchronous `*Sync` calls, so a large or slow delete no longer stalls the whole process
+  - which also serves live HTTP/mail traffic - for its entire duration.
+- **Draft autosave no longer re-scans the entire `Matter` collection on every save.** `BaseMailComposeRoute`'s legal-hold check (deciding whether a replaced draft body must be kept) is now cached per
+  mailbox for `mail:compose:legal_hold_cache_ms` (default 10s), so a mailbox saving rapidly reuses the last answer instead of forcing a fresh, full, keyset-paged scan on every autosave.
+- **A failed plugin install's own npm output is now truncated before it's kept.** Previously, npm's full stderr/stdout (up to `execFile`'s 16MB `maxBuffer`) became every affected plugin's error message
+  and was folded into the status `JSON.stringify`'d into the shared `plugins:status` Redis key on every heartbeat for as long as the failure persisted. It's now capped at a few KB
+  (`NPM_ERROR_MESSAGE_MAX_CHARS`).
 
 ## v1.0.0-beta.12
 

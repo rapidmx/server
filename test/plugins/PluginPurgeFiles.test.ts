@@ -5,7 +5,7 @@
 import fs from "fs";
 import os from "os";
 import path from "path";
-import { deletePluginFiles, isContained, removeContained } from "../../src/plugins/PluginPurgeFiles.js";
+import { deletePluginFiles, isContained, removeContained, removeContainedAsync } from "../../src/plugins/PluginPurgeFiles.js";
 
 let root: string;
 
@@ -127,11 +127,95 @@ describe("removeContained", () => {
     });
 });
 
+describe("removeContainedAsync", () => {
+    it("deletes a folder inside the root, and says when there was nothing there", async () => {
+        write(path.join(root, "pkg", "deep", "file.txt"));
+        expect(await removeContainedAsync(root, path.join(root, "pkg"))).toBe(true);
+        expect(fs.existsSync(path.join(root, "pkg"))).toBe(false);
+        expect(await removeContainedAsync(root, path.join(root, "pkg"))).toBe(false);
+    });
+
+    it("refuses the root itself and anything outside it", async () => {
+        const outside = write(path.join(os.tmpdir(), `outside-async-${Date.now()}.txt`));
+        try {
+            await expect(removeContainedAsync(root, root)).rejects.toThrow(/isn't inside/);
+            await expect(removeContainedAsync(root, outside)).rejects.toThrow(/isn't inside/);
+            await expect(removeContainedAsync(root, path.join(root, "..", "elsewhere"))).rejects.toThrow(/isn't inside/);
+            expect(fs.existsSync(outside)).toBe(true);
+        } finally {
+            fs.rmSync(outside, { force: true });
+        }
+    });
+
+    it("refuses a target that is a link, leaving both the link and what it points at", async () => {
+        const elsewhere = path.join(root, "elsewhere");
+        const keep = write(path.join(elsewhere, "keep.txt"));
+        const unlink = link(elsewhere, path.join(root, "inside", "pkg"));
+        try {
+            await expect(removeContainedAsync(path.join(root, "inside"), path.join(root, "inside", "pkg"))).rejects.toThrow(/is a link/);
+            expect(fs.existsSync(keep)).toBe(true);
+        } finally {
+            unlink();
+        }
+    });
+
+    it("refuses a target that contains a link, or that sits behind one", async () => {
+        const elsewhere = path.join(root, "elsewhere");
+        const keep = write(path.join(elsewhere, "keep.txt"));
+        write(path.join(root, "inside", "pkg", "a.txt"));
+        const unlinkInner = link(elsewhere, path.join(root, "inside", "pkg", "inner"));
+        try {
+            await expect(removeContainedAsync(path.join(root, "inside"), path.join(root, "inside", "pkg"))).rejects.toThrow(/is a link/);
+            expect(fs.existsSync(path.join(root, "inside", "pkg", "a.txt"))).toBe(true);
+        } finally {
+            unlinkInner();
+        }
+        const unlinkRoot = link(elsewhere, path.join(root, "linked-root"));
+        try {
+            await expect(removeContainedAsync(path.join(root, "linked-root"), path.join(root, "linked-root", "keep.txt"))).rejects.toThrow(/is a link/);
+        } finally {
+            unlinkRoot();
+        }
+        expect(fs.existsSync(keep)).toBe(true);
+    });
+
+    it("refuses a link that no longer leads anywhere", async () => {
+        const gone = path.join(root, "gone");
+        fs.mkdirSync(gone);
+        const unlink = link(gone, path.join(root, "inside", "dangling"));
+        fs.rmdirSync(gone);
+        try {
+            await expect(removeContainedAsync(path.join(root, "inside"), path.join(root, "inside", "dangling"))).rejects.toThrow(/is a link/);
+        } finally {
+            unlink();
+        }
+    });
+
+    it("refuses a target whose real path is outside the root", async () => {
+        const realpath = vi.spyOn(fs.promises, "realpath").mockImplementation(((value: any) => Promise.resolve(String(value).endsWith("target") ? path.join(os.tmpdir(), "elsewhere-real") : String(value))) as any);
+        try {
+            write(path.join(root, "inside", "target", "f.txt"));
+            await expect(removeContainedAsync(path.join(root, "inside"), path.join(root, "inside", "target"))).rejects.toThrow(/resolves outside/);
+            expect(fs.existsSync(path.join(root, "inside", "target", "f.txt"))).toBe(true);
+        } finally {
+            realpath.mockRestore();
+        }
+    });
+
+    it("walks a large tree without blocking (a stand-in for a plugin's full node_modules), and still deletes it all", async () => {
+        for (let i = 0; i < 50; i++) {
+            write(path.join(root, "pkg", `dep-${i}`, "nested", "file.js"), `// ${i}`);
+        }
+        expect(await removeContainedAsync(root, path.join(root, "pkg"))).toBe(true);
+        expect(fs.existsSync(path.join(root, "pkg"))).toBe(false);
+    });
+});
+
 describe("deletePluginFiles", () => {
     const NAME = "@rapidmx/notes-plugin";
     const manifest = (...srcs: string[]) => JSON.stringify(Object.fromEntries(srcs.map((src) => [src, { src, file: "assets/x.js" }])));
 
-    it("deletes the installed package and every cached UI build that contains the plugin's pages, and nothing else", () => {
+    it("deletes the installed package and every cached UI build that contains the plugin's pages, and nothing else", async () => {
         const pkg = write(path.join(root, "node_modules", "@rapidmx", "notes-plugin", "package.json"));
         const other = write(path.join(root, "node_modules", "@rapidmx", "other-plugin", "package.json"));
         const withPlugin = path.join(root, ".ui-build", "a".repeat(64));
@@ -147,7 +231,7 @@ describe("deletePluginFiles", () => {
         write(path.join(root, ".ui-build", "failed-x.json"), "{}");
         const noManifest = write(path.join(root, ".ui-build", "e".repeat(64), "readme.txt"));
 
-        const result = deletePluginFiles(root, NAME, inUse);
+        const result = await deletePluginFiles(root, NAME, inUse);
 
         expect(result.removed.sort()).toEqual([path.join(root, "node_modules", "@rapidmx", "notes-plugin"), withPlugin, withPluginToo].sort());
         expect(fs.existsSync(path.dirname(pkg))).toBe(false);
@@ -160,28 +244,28 @@ describe("deletePluginFiles", () => {
         expect(fs.existsSync(noManifest)).toBe(true);
     });
 
-    it("has nothing to do when the server never had the plugin's files", () => {
-        expect(deletePluginFiles(root, NAME)).toEqual({ removed: [] });
+    it("has nothing to do when the server never had the plugin's files", async () => {
+        expect(await deletePluginFiles(root, NAME)).toEqual({ removed: [] });
         fs.mkdirSync(path.join(root, ".ui-build"));
-        expect(deletePluginFiles(root, NAME)).toEqual({ removed: [] });
+        expect(await deletePluginFiles(root, NAME)).toEqual({ removed: [] });
     });
 
-    it("refuses a package folder that is a link, and leaves what it points at alone", () => {
+    it("refuses a package folder that is a link, and leaves what it points at alone", async () => {
         const elsewhere = path.join(root, "elsewhere");
         const keep = write(path.join(elsewhere, "keep.txt"));
         const unlink = link(elsewhere, path.join(root, "node_modules", "@rapidmx", "notes-plugin"));
         try {
-            expect(() => deletePluginFiles(root, NAME)).toThrow(/is a link/);
+            await expect(deletePluginFiles(root, NAME)).rejects.toThrow(/is a link/);
         } finally {
             unlink();
         }
         expect(fs.existsSync(keep)).toBe(true);
     });
 
-    it("refuses a name that would leave the plugin directory", () => {
+    it("refuses a name that would leave the plugin directory", async () => {
         write(path.join(root, "keep.txt"));
-        expect(() => deletePluginFiles(root, "../../keep.txt")).toThrow();
-        expect(() => deletePluginFiles(root, "..")).toThrow();
+        await expect(deletePluginFiles(root, "../../keep.txt")).rejects.toThrow();
+        await expect(deletePluginFiles(root, "..")).rejects.toThrow();
         expect(fs.existsSync(path.join(root, "keep.txt"))).toBe(true);
     });
 });

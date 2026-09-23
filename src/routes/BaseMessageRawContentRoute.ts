@@ -6,7 +6,7 @@ import { ACLAction, ACLUtils, ApiErrorMessages, ApiErrors, DocDecorators, HttpRe
 import { AuditAction, BlobStore, hasMailAccess, isNonOwnerAccess, Mailbox, Message, recordAuditLog } from "@rapidmx/restapi";
 const { Config, Inject, Logger } = ObjectDecorators;
 const { Description, Summary } = DocDecorators;
-const { Auth, Get, Param, Response, User: AuthUser } = RouteDecorators;
+const { Auth, Get, Param, RateLimit, Response, User: AuthUser } = RouteDecorators;
 
 /**
  * Serves a message's raw RFC 5322 MIME source, byte-for-byte — the one thing `@rapidmx/restapi`'s own
@@ -80,6 +80,12 @@ export abstract class BaseMessageRawContentRoute<M extends Message> {
             "directly (see GET /:id/content for the sanitized HTML every other view uses).",
     )
     @Auth(["jwt"])
+    // Unlike most routes, which fall to the generous "authenticated" tier (~10k req/300s), this one loads a whole raw
+    // MIME blob into memory per request - up to mail:compose:max_attachment_bytes (25MB default) for a composed
+    // message, and unbounded for inbound mail. A real user fetches this a handful of times per message they actually
+    // decrypt/verify, not per page view, so 300/min (matching BaseGiphySearchRoute's own per-user cap for its other
+    // expensive, per-request-cost route) is generous headroom over real usage while bounding a mass-download abuse case.
+    @RateLimit({ perUser: true, maxAttempts: 300, windowSeconds: 60 })
     @Get("/:id/raw")
     public async raw(@Param("id") id: string, @Response res: HttpResponse, @AuthUser user?: JWTUser): Promise<void> {
         if (!this.blobStore || !this.aclUtils) {

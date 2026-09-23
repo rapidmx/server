@@ -24,6 +24,11 @@ describe("BaseMessageRawContentRoute Tests (dependency guard clause only)", () =
         vi.restoreAllMocks();
     });
 
+    it("declares a per-user rate limit on raw(), unlike the generous default 'authenticated' tier - it loads a whole raw MIME blob into memory per request.", () => {
+        const route = Reflect.getMetadata("rrst:route", BaseMessageRawContentRoute.prototype, "raw");
+        expect(route.rateLimit).toMatchObject({ perUser: true, maxAttempts: 300, windowSeconds: 60 });
+    });
+
     it("raw() throws INTERNAL_ERROR when blobStore/aclUtils are not set.", async () => {
         const route = objectFactory.newInstance<TestMessageRawContentRoute>(TestMessageRawContentRoute, { initialize: false });
 

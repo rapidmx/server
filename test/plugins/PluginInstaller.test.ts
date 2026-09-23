@@ -5,7 +5,17 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import * as uuid from "uuid";
-import { findPackageDir, PluginInstaller, runNpm } from "../../src/plugins/PluginInstaller.js";
+import { findPackageDir, NPM_ERROR_MESSAGE_MAX_CHARS, PluginInstaller, runNpm, truncateNpmOutput } from "../../src/plugins/PluginInstaller.js";
+
+// Wraps the real execFile in a vi.fn() (calling through by default) so a single test below can override it for one
+// call with vi.mocked(...).mockImplementationOnce(...) to prove runNpm() truncates real execFile output end to end,
+// without disturbing every other test here that relies on a real npm process (module-namespace properties from a
+// built-in ESM module can't be spied on directly - see https://vitest.dev/guide/mocking/modules#mocking-a-module).
+vi.mock("child_process", async (importOriginal) => {
+    const actual = await importOriginal<typeof import("child_process")>();
+    return { ...actual, execFile: vi.fn(actual.execFile) };
+});
+import { execFile } from "child_process";
 
 const MANIFEST = { plugin: { apiVersion: 1, displayName: "Test plugin" } };
 
@@ -92,6 +102,7 @@ describe("PluginInstaller", () => {
             expect.arrayContaining(["install", "--omit=dev", "--omit=peer", "--legacy-peer-deps", "--ignore-scripts", "--registry", "https://registry.example.com"]),
             dir,
             600_000,
+            undefined,
         );
         expect(JSON.parse(fs.readFileSync(path.join(dir, "package.json"), "utf8")).dependencies).toEqual({ "@rapidmx/one": "1.0.0" });
     });
@@ -194,7 +205,7 @@ describe("PluginInstaller", () => {
         // Upgrading two fails: one is untouched and still loads; two's installed copy is the wrong version.
         const timeout = vi.fn(async () => Promise.reject(new Error("npm install failed: ETIMEDOUT")));
         const result = await installer(timeout, { npmTimeoutMs: 5_000 }).install([one, { ...two, packageVersion: "1.1.0" }]);
-        expect(timeout).toHaveBeenCalledWith(expect.any(Array), dir, 5_000);
+        expect(timeout).toHaveBeenCalledWith(expect.any(Array), dir, 5_000, undefined);
         expect(result.installed.map((p) => p.name)).toEqual(["@rapidmx/one"]);
         expect(result.errors).toEqual([{ name: "@rapidmx/two", message: "npm install failed: ETIMEDOUT" }]);
         expect(result.installFailures).toBe(1);
@@ -352,6 +363,36 @@ describe("PluginInstaller", () => {
         expect(fs.existsSync(path.join(dir, "node_modules", "@rapidmx", "bad", "node_modules", "helper"))).toBe(true);
     });
 
+    it("forwards a given AbortSignal through to runNpm, so a caller's own timeout can actually stop the npm child process", async () => {
+        const npm = fakeNpm({ "@rapidmx/one": {} });
+        const controller = new AbortController();
+        await installer(npm).install([{ name: "@rapidmx/one", packageVersion: "1.0.0", integrity: "sha512-@rapidmx/one" }], controller.signal);
+        expect(npm).toHaveBeenCalledWith(expect.any(Array), dir, 600_000, controller.signal);
+    });
+
+    it("refuses the whole install, and removes node_modules, once it exceeds max_install_bytes - defense in depth against a malicious/compromised registry package", async () => {
+        const npm = fakeNpm({ "@rapidmx/one": {} });
+        const result = await installer(npm, { maxInstallBytes: 10 }).install([{ name: "@rapidmx/one", packageVersion: "1.0.0", integrity: "sha512-@rapidmx/one" }]);
+
+        expect(result.installed).toEqual([]);
+        expect(result.errors).toEqual([{ name: "@rapidmx/one", message: expect.stringContaining("over the") }]);
+        expect(result.errors[0].message).toMatch(/over the .* limit \(system:plugins:max_install_bytes\)/i);
+        expect(result.installFailurePermanent).toBe(true);
+        expect(fs.existsSync(path.join(dir, "node_modules"))).toBe(false);
+    });
+
+    it("skips the size check entirely when max_install_bytes is 0", async () => {
+        const npm = fakeNpm({ "@rapidmx/one": {} });
+        const result = await installer(npm, { maxInstallBytes: 0 }).install([{ name: "@rapidmx/one", packageVersion: "1.0.0", integrity: "sha512-@rapidmx/one" }]);
+        expect(result.installed.map((p) => p.name)).toEqual(["@rapidmx/one"]);
+    });
+
+    it("stays under the default 500MB ceiling for an ordinary small install", async () => {
+        const npm = fakeNpm({ "@rapidmx/one": {} });
+        const result = await installer(npm).install([{ name: "@rapidmx/one", packageVersion: "1.0.0", integrity: "sha512-@rapidmx/one" }]);
+        expect(result.installed.map((p) => p.name)).toEqual(["@rapidmx/one"]);
+    });
+
     it("removes installed plugins when none are enabled, without running npm", async () => {
         await installer(fakeNpm({ "@rapidmx/one": {} })).install([{ name: "@rapidmx/one", packageVersion: "1.0.0", integrity: "sha512-@rapidmx/one" }]);
         const npm = vi.fn();
@@ -369,5 +410,37 @@ describe("PluginInstaller", () => {
         await expect(runNpm(["--version"], appRoot)).resolves.toBeUndefined();
         await expect(runNpm(["definitely-not-a-command"], appRoot)).rejects.toThrow(/npm definitely-not-a-command failed/);
         await expect(runNpm(["--version"], appRoot, 1)).rejects.toThrow(/npm --version failed: it took longer than 0s/);
+    }, 60_000);
+
+    it("truncates a real failed run's stderr before rejecting, end to end through runNpm() itself", async () => {
+        const huge = "z".repeat(NPM_ERROR_MESSAGE_MAX_CHARS + 999);
+        vi.mocked(execFile).mockImplementationOnce(((..._args: any[]) => {
+            const callback = _args[_args.length - 1];
+            callback(Object.assign(new Error("npm install exited with code 1"), { killed: false, signal: null }), "", huge);
+            return {} as any;
+        }) as any);
+        const error: any = await runNpm(["install"], appRoot).catch((err) => err);
+        expect(error.message.length).toBeLessThan(huge.length);
+        expect(error.message).toContain("z".repeat(NPM_ERROR_MESSAGE_MAX_CHARS));
+        expect(error.message).toMatch(/truncated/);
+    });
+
+    it("truncates a failed install's own output to NPM_ERROR_MESSAGE_MAX_CHARS, so it can't bloat the plugin status this eventually feeds into an unbounded amount", () => {
+        expect(truncateNpmOutput("short")).toBe("short");
+        expect(truncateNpmOutput("x".repeat(NPM_ERROR_MESSAGE_MAX_CHARS))).toBe("x".repeat(NPM_ERROR_MESSAGE_MAX_CHARS));
+
+        const huge = "x".repeat(NPM_ERROR_MESSAGE_MAX_CHARS + 12_345);
+        const truncated = truncateNpmOutput(huge);
+        expect(truncated.length).toBeLessThan(huge.length);
+        expect(truncated).toContain("x".repeat(NPM_ERROR_MESSAGE_MAX_CHARS));
+        expect(truncated).toMatch(/truncated, 12,?345 more characters omitted/);
+    });
+
+    it("actually kills the npm child process when the given signal aborts, rather than only giving up on awaiting it", async () => {
+        const controller = new AbortController();
+        controller.abort();
+        // Already aborted before the child process is even spawned - execFile's own `signal` option refuses to run it
+        // at all, proving the signal reaches the real child_process call, not just runNpm's own promise.
+        await expect(runNpm(["--version"], appRoot, 5_000, controller.signal)).rejects.toThrow(/npm --version was stopped: the caller's own timeout expired\./);
     }, 60_000);
 });

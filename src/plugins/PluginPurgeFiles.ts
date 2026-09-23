@@ -75,6 +75,83 @@ function isLink(target: string): boolean {
     }
 }
 
+/** The first symbolic link or junction at or below `dir`, found without following any link - the async twin of
+ * `findLink()`, used by `removeContainedAsync()` so the walk doesn't block the event loop. */
+async function findLinkAsync(dir: string): Promise<string | undefined> {
+    const stat: fs.Stats = await fs.promises.lstat(dir);
+    if (stat.isSymbolicLink()) {
+        return dir;
+    }
+    if (!stat.isDirectory()) {
+        return undefined;
+    }
+    for (const entry of await fs.promises.readdir(dir)) {
+        const found: string | undefined = await findLinkAsync(path.join(dir, entry));
+        if (found) {
+            return found;
+        }
+    }
+    return undefined;
+}
+
+async function isLinkAsync(target: string): Promise<boolean> {
+    try {
+        return (await fs.promises.lstat(target)).isSymbolicLink();
+    } catch {
+        return false;
+    }
+}
+
+async function existsAsync(target: string): Promise<boolean> {
+    try {
+        await fs.promises.stat(target);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * The async twin of `removeContained()` - same refuse-outside-root/never-through-a-link contract, but walks the tree
+ * with `fs.promises` instead of the `*Sync` calls, so deleting a large tree (a plugin's full `node_modules`, routinely
+ * thousands of files) doesn't block the event loop of a process also serving live HTTP/mail traffic for the walk's
+ * whole duration. `removeContained()` itself is kept for callers whose target is always small and bounded (a single
+ * plugin's own scratch install directory), where the sync call's simplicity is worth keeping.
+ *
+ * @returns `true` when something was deleted, `false` when it didn't exist.
+ * @throws when `target` is outside `root`, is or holds a link, or can't be removed.
+ */
+export async function removeContainedAsync(root: string, target: string): Promise<boolean> {
+    const resolvedRoot: string = path.resolve(root);
+    const resolvedTarget: string = path.resolve(target);
+    if (resolvedTarget === resolvedRoot || !isContained(resolvedRoot, resolvedTarget)) {
+        throw new Error(`Refusing to delete ${resolvedTarget}: it isn't inside ${resolvedRoot}.`);
+    }
+    if (!(await existsAsync(resolvedTarget)) && !(await isLinkAsync(resolvedTarget))) {
+        return false;
+    }
+    // No link on the way down from the root either: `root` itself, or a folder between it and the target.
+    let step: string = resolvedRoot;
+    for (const part of [".", ...path.relative(resolvedRoot, resolvedTarget).split(path.sep)]) {
+        step = part === "." ? step : path.join(step, part);
+        if (await isLinkAsync(step)) {
+            throw new Error(`Refusing to delete ${resolvedTarget}: ${step} is a link.`);
+        }
+    }
+    const link: string | undefined = await findLinkAsync(resolvedTarget);
+    if (link) {
+        throw new Error(`Refusing to delete ${resolvedTarget}: ${link} is a link.`);
+    }
+    if (await existsAsync(resolvedRoot)) {
+        const [realRoot, realTarget] = await Promise.all([fs.promises.realpath(resolvedRoot), fs.promises.realpath(resolvedTarget)]);
+        if (!isContained(realRoot, realTarget)) {
+            throw new Error(`Refusing to delete ${resolvedTarget}: it resolves outside ${resolvedRoot}.`);
+        }
+    }
+    await fs.promises.rm(resolvedTarget, { recursive: true, force: true });
+    return true;
+}
+
 /** What `deletePluginFiles()` removed, for the step's note. */
 export interface PluginFilesResult {
     removed: string[];
@@ -86,18 +163,23 @@ export interface PluginFilesResult {
  * removal) and every cached UI build that contains its pages (`<plugins dir>/.ui-build/<hash>`, judged by the build's
  * Vite manifest naming the plugin's package; the build in use, `keepBuild`, is never touched). Only paths inside the
  * plugins directory are ever deleted, and never through a link.
+ *
+ * Async (`fs.promises` throughout, `removeContainedAsync()` for both removals) rather than the old fully-synchronous
+ * walk: the package directory is a plugin's whole `node_modules` tree - routinely thousands of files - and this runs
+ * on the same process serving live HTTP/mail traffic, on every purge attempt (retried every `checkIntervalMs` on
+ * failure), so a synchronous walk of it stalled the event loop for the walk's entire duration.
  */
-export function deletePluginFiles(pluginsDir: string, pluginName: string, keepBuild?: string): PluginFilesResult {
+export async function deletePluginFiles(pluginsDir: string, pluginName: string, keepBuild?: string): Promise<PluginFilesResult> {
     const removed: string[] = [];
     const packageDir: string = path.join(pluginsDir, "node_modules", ...pluginName.split("/"));
-    if (removeContained(path.join(pluginsDir, "node_modules"), packageDir)) {
+    if (await removeContainedAsync(path.join(pluginsDir, "node_modules"), packageDir)) {
         removed.push(packageDir);
     }
 
     const buildRoot: string = path.join(pluginsDir, UI_BUILD_DIR);
     let entries: string[] = [];
     try {
-        entries = fs.readdirSync(buildRoot);
+        entries = await fs.promises.readdir(buildRoot);
     } catch {
         return { removed };
     }
@@ -109,11 +191,11 @@ export function deletePluginFiles(pluginsDir: string, pluginName: string, keepBu
         }
         let manifest: string;
         try {
-            manifest = fs.readFileSync(path.join(build, ".vite", "manifest.json"), "utf8");
+            manifest = await fs.promises.readFile(path.join(build, ".vite", "manifest.json"), "utf8");
         } catch {
             continue;
         }
-        if (manifest.replace(/\\\\/g, "/").includes(needle) && removeContained(buildRoot, build)) {
+        if (manifest.replace(/\\\\/g, "/").includes(needle) && (await removeContainedAsync(buildRoot, build))) {
             removed.push(build);
         }
     }

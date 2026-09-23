@@ -71,6 +71,79 @@ const PERMANENT_NPM_ERRORS = /\b(E404|E401|E403|ETARGET|EINTEGRITY|EBADENGINE|EN
 /** How long an npm install may take before it's stopped, when not configured. */
 export const DEFAULT_NPM_TIMEOUT_MS = 10 * 60_000;
 
+/**
+ * How much of npm's own stderr/stdout (`execFile`'s `maxBuffer` allows up to 16MB) is kept in the `Error` this module
+ * raises on a failed install. Without a cap, that full, untruncated text becomes `PluginInstallResult.errors[].message`
+ * for every plugin the failure affects, and `PluginHost` folds those straight into the status it reports to
+ * `PluginWatcher`, which `JSON.stringify`s the whole thing into the shared `plugins:status` Redis key on every
+ * heartbeat (`system:plugins:watch:interval_ms`, default 30s) for as long as the failure persists - an unbounded,
+ * repeatedly-written blob relative to how verbose npm's own error output happened to be and how long the failure
+ * lasts. A few KB is plenty to show an administrator what went wrong (npm's own error summary is normally much
+ * shorter than this) without that risk.
+ */
+export const NPM_ERROR_MESSAGE_MAX_CHARS = 4000;
+
+/** `text`, cut to `NPM_ERROR_MESSAGE_MAX_CHARS` with a note of how much was left out - see that constant's own doc
+ * comment for why. Exported only so the cap itself is directly unit-testable without a real npm process producing
+ * many KB of output on demand; `runNpm()` is where it's actually applied. */
+export function truncateNpmOutput(text: string): string {
+    if (text.length <= NPM_ERROR_MESSAGE_MAX_CHARS) {
+        return text;
+    }
+    return `${text.slice(0, NPM_ERROR_MESSAGE_MAX_CHARS)}… (truncated, ${text.length - NPM_ERROR_MESSAGE_MAX_CHARS} more characters omitted)`;
+}
+
+/**
+ * Default ceiling, in bytes, on the total size of `<plugins dir>/node_modules` right after a successful install
+ * (`system:plugins:max_install_bytes`) - 500MB, generous for any real plugin's dependency tree, but bounds what a
+ * malicious or compromised registry package could pull onto disk before anything ever runs it. `--ignore-scripts`
+ * already stops an install script from running, so this is defense in depth against disk exhaustion, not code
+ * execution. The size is only known once npm has already fetched everything - this can't prevent the download
+ * itself, only refuse to keep and load the result, the same way an install that fails outright is refused: the whole
+ * batch's `node_modules` is removed and every plugin in it reports the same error, an already-installed plugin that
+ * still matches what's wanted keeps loading (see the `npmFailure` handling this reuses), and it counts toward
+ * `installFailures` like any other install failure - except it is always `installFailurePermanent`, since a package
+ * that's too big now will still be too big on the next retry.
+ */
+export const DEFAULT_MAX_INSTALL_BYTES = 500 * 1024 * 1024;
+
+/** `bytes`, as a short human-readable size for an error message. */
+function formatBytes(bytes: number): string {
+    return bytes >= 1024 * 1024 * 1024 ? `${(bytes / (1024 * 1024 * 1024)).toFixed(1)}GB` : `${Math.round(bytes / (1024 * 1024))}MB`;
+}
+
+/**
+ * Total size, in bytes, of every regular file at or below `dir`, never following a link (only what was actually
+ * written under `dir` counts). Async, walking with `fs.promises` rather than `*Sync`, so summing a huge or
+ * deliberately bloated tree doesn't block the event loop of a process also serving live HTTP/mail traffic - the same
+ * rationale as `PluginPurgeFiles.ts`'s `removeContainedAsync()`. A missing or unreadable entry is skipped rather than
+ * failing the whole walk: this backs a best-effort ceiling, not a value that must be exact.
+ */
+async function directorySizeBytes(dir: string): Promise<number> {
+    let entries: import("fs").Dirent[];
+    try {
+        entries = await fs.promises.readdir(dir, { withFileTypes: true });
+    } catch {
+        return 0;
+    }
+    let total: number = 0;
+    for (const entry of entries) {
+        const full: string = path.join(dir, entry.name);
+        if (entry.isSymbolicLink()) {
+            continue;
+        } else if (entry.isDirectory()) {
+            total += await directorySizeBytes(full);
+        } else if (entry.isFile()) {
+            try {
+                total += (await fs.promises.stat(full)).size;
+            } catch {
+                // Removed mid-walk, or otherwise unreadable - not counted.
+            }
+        }
+    }
+    return total;
+}
+
 /** What the last install was run with, recorded in `.install-stamp`. */
 interface InstallStamp {
     /** Hash of the plugin directory's `package.json`. */
@@ -122,25 +195,39 @@ export interface PluginInstallerOptions {
     logger?: any;
     /** How long npm may run before it's stopped and the install counts as failed. */
     npmTimeoutMs?: number;
+    /** Ceiling, in bytes, on the total size of the installed `node_modules` - see `DEFAULT_MAX_INSTALL_BYTES`'s own
+     * doc comment. `0` (not `undefined`) disables the check. */
+    maxInstallBytes?: number;
     /** Whether a registry plugin must have an integrity hash recorded when it was added (default `true`). With `false`,
      * a plugin from a registry that doesn't publish integrity hashes loads without its package being verified. */
     requireIntegrity?: boolean;
     /** Runs npm. Replaceable so tests needn't reach a registry. */
-    runNpm?: (args: string[], cwd: string, timeoutMs: number) => Promise<void>;
+    runNpm?: (args: string[], cwd: string, timeoutMs: number, signal?: AbortSignal) => Promise<void>;
 }
 
-/** Runs `npm` in `cwd`, rejecting with its output when it fails or takes longer than `timeoutMs`. */
-export function runNpm(args: string[], cwd: string, timeoutMs: number = DEFAULT_NPM_TIMEOUT_MS): Promise<void> {
+/**
+ * Runs `npm` in `cwd`, rejecting with its output when it fails, takes longer than `timeoutMs`, or `signal` aborts.
+ *
+ * `signal` lets a caller with its own, shorter outer timeout (e.g. `InstallingPurgeHookRunner`'s purge-hook timeout,
+ * typically well under `timeoutMs`) actually kill this child process when that outer timeout fires, rather than
+ * leaving it running in the background for up to `timeoutMs` while the caller has already given up and moved on -
+ * `execFile`'s own `signal` option kills the process the same way `AbortController.abort()` would.
+ */
+export function runNpm(args: string[], cwd: string, timeoutMs: number = DEFAULT_NPM_TIMEOUT_MS, signal?: AbortSignal): Promise<void> {
     const windows: boolean = process.platform === "win32";
     return new Promise((resolve, reject) => {
-        execFile(windows ? "npm.cmd" : "npm", args, { cwd, shell: windows, maxBuffer: 16 * 1024 * 1024, timeout: timeoutMs }, (err, stdout, stderr) => {
+        execFile(windows ? "npm.cmd" : "npm", args, { cwd, shell: windows, maxBuffer: 16 * 1024 * 1024, timeout: timeoutMs, signal }, (err, stdout, stderr) => {
             if (err) {
+                if (signal?.aborted) {
+                    reject(new Error(`npm ${args[0]} was stopped: the caller's own timeout expired.`));
+                    return;
+                }
                 const timedOut: boolean = (err as any).killed && (err as any).signal !== null;
                 reject(
                     new Error(
                         timedOut
                             ? `npm ${args[0]} failed: it took longer than ${Math.round(timeoutMs / 1000)}s.`
-                            : `npm ${args[0]} failed: ${String(stderr || stdout || err.message).trim()}`,
+                            : `npm ${args[0]} failed: ${truncateNpmOutput(String(stderr || stdout || err.message).trim())}`,
                     ),
                 );
                 return;
@@ -186,13 +273,15 @@ function exportTarget(pkg: any, subpath: string): string | undefined {
  * dependencies, which resolve to the server's own copies instead.
  */
 export class PluginInstaller {
-    private readonly runNpm: (args: string[], cwd: string, timeoutMs: number) => Promise<void>;
+    private readonly runNpm: (args: string[], cwd: string, timeoutMs: number, signal?: AbortSignal) => Promise<void>;
 
     constructor(private readonly options: PluginInstallerOptions) {
         this.runNpm = options.runNpm ?? runNpm;
     }
 
-    public async install(desired: DesiredPlugin[]): Promise<PluginInstallResult> {
+    /** @param signal Aborts the underlying npm child process (see `runNpm()`'s own doc comment) - optional, since most
+     * callers rely on `timeoutMs`/`npmTimeoutMs` alone. */
+    public async install(desired: DesiredPlugin[], signal?: AbortSignal): Promise<PluginInstallResult> {
         const { dir } = this.options;
         fs.mkdirSync(dir, { recursive: true });
         const errors: { name: string; message: string }[] = [];
@@ -257,6 +346,7 @@ export class PluginInstaller {
                         ],
                         dir,
                         this.options.npmTimeoutMs ?? DEFAULT_NPM_TIMEOUT_MS,
+                        signal,
                     );
                 } catch (err: any) {
                     // One unavailable package fails the whole install. Plugins an earlier install left in place still load
@@ -264,6 +354,21 @@ export class PluginInstaller {
                     const installFailures: number = (Number(this.readJson(failuresFile)) || 0) + 1;
                     fs.writeFileSync(failuresFile, String(installFailures));
                     npmFailure = { message: err.message, installFailures, installFailurePermanent: PERMANENT_NPM_ERRORS.test(String(err.message)) };
+                }
+                if (!npmFailure) {
+                    const maxInstallBytes: number = this.options.maxInstallBytes ?? DEFAULT_MAX_INSTALL_BYTES;
+                    const installedBytes: number = maxInstallBytes > 0 ? await directorySizeBytes(path.join(dir, "node_modules")) : 0;
+                    if (maxInstallBytes > 0 && installedBytes > maxInstallBytes) {
+                        const installFailures: number = (Number(this.readJson(failuresFile)) || 0) + 1;
+                        fs.writeFileSync(failuresFile, String(installFailures));
+                        npmFailure = {
+                            message: `The installed plugins total ${formatBytes(installedBytes)}, over the ${formatBytes(maxInstallBytes)} limit (system:plugins:max_install_bytes) - refusing to load any of them.`,
+                            installFailures,
+                            installFailurePermanent: true,
+                        };
+                        this.options.logger?.error?.(npmFailure.message);
+                        fs.rmSync(path.join(dir, "node_modules"), { recursive: true, force: true });
+                    }
                 }
             }
             if (!npmFailure) {

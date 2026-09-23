@@ -13,6 +13,7 @@ import {
     DEFAULT_MAIL_INGEST_SECRET,
     DEFAULT_MAX_BODY_SIZE_BYTES,
     DEFAULT_APPEARANCE_BACKGROUND_MAX_BYTES,
+    DEFAULT_LEGAL_HOLD_CACHE_MS,
     DEFAULT_MAX_COMPOSE_ATTACHMENT_BYTES,
     ensurePushDatastore,
 } from "./config.defaults.js";
@@ -194,6 +195,10 @@ conf.defaults({
             // memory at once to build MIME — see `DEFAULT_MAX_COMPOSE_ATTACHMENT_BYTES` for the fallback used
             // when this is unset.
             max_attachment_bytes: DEFAULT_MAX_COMPOSE_ATTACHMENT_BYTES,
+            // How long a legal-hold lookup for a mailbox may be reused before scanning the Matter collection
+            // again — see `DEFAULT_LEGAL_HOLD_CACHE_MS` for the fallback used when this is unset and the full
+            // rationale (avoids a fresh full scan on every draft autosave).
+            legal_hold_cache_ms: DEFAULT_LEGAL_HOLD_CACHE_MS,
         },
         preferences: {
             // The largest background image a user may upload for the web client (`POST mail/preferences/appearance/background`), in
@@ -408,6 +413,10 @@ conf.defaults({
             require_integrity: true,
             // How long npm may take to install plugins before it's stopped and the install counts as failed.
             npm_timeout_ms: 600_000,
+            // Ceiling, in bytes, on the total installed node_modules size - see PluginInstaller.ts's
+            // DEFAULT_MAX_INSTALL_BYTES for the default (500MB) and full rationale (bounds what a malicious or
+            // compromised registry package can pull onto disk). 0 disables the check.
+            max_install_bytes: 500 * 1024 * 1024,
             // How server copies restart to apply a plugin change (see src/plugins/PluginWatcher.ts).
             restart: {
                 // How long a copy reports itself not ready (GET /api/status answers 503) before it stops, so the load

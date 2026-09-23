@@ -1831,6 +1831,27 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@rapidmx/react-shared@npm:^0.14.0":
+  version: 0.14.0
+  resolution: "@rapidmx/react-shared@npm:0.14.0"
+  dependencies:
+    "@emoji-mart/data": "npm:^1.2.1"
+    "@peculiar/x509": "npm:^2.1.0"
+    asn1js: "npm:^3.0.10"
+    date-fns: "npm:^4.4.0"
+    dompurify: "npm:^3.4.15"
+    hash-wasm: "npm:^4.12.0"
+    pkijs: "npm:^3.4.0"
+    react-icons: "npm:^5.7.0"
+    reflect-metadata: "npm:^0.2.2"
+    rrule: "npm:^2.8.1"
+  peerDependencies:
+    react: 19.x
+    react-dom: 19.x
+  checksum: 10c0/fd9869f7342f03ab6b5fc6a89dc0687212aa6754450a658f3f6b73af6fbed0803652d1fbe70a51d6f72f709a772dcd4092813bdd38f7b4868297ea91db7d80b5
+  languageName: node
+  linkType: hard
+
 "@rapidmx/restapi@npm:^0.19.0":
   version: 0.19.0
   resolution: "@rapidmx/restapi@npm:0.19.0"
@@ -9905,7 +9926,7 @@ __metadata:
   resolution: "server@workspace:."
   dependencies:
     "@aws-sdk/client-s3": "npm:^3.906.0"
-    "@rapidmx/react-shared": "npm:^0.13.0"
+    "@rapidmx/react-shared": "npm:^0.14.0"
     "@rapidmx/restapi": "npm:^0.19.0"
     "@rapidmx/web-client": "npm:^0.13.0"
     "@rapidrest/cli": "npm:^2.1.0"

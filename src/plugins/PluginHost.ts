@@ -197,6 +197,7 @@ export class PluginHost {
             logger,
             npmTimeoutMs: config.get("system:plugins:npm_timeout_ms") ?? undefined,
             requireIntegrity: config.get("system:plugins:require_integrity") ?? true,
+            maxInstallBytes: config.get("system:plugins:max_install_bytes") ?? undefined,
         };
         const installer: PluginInstaller = options.installer ?? new PluginInstaller(installerOptions);
         const result: PluginInstallResult = known

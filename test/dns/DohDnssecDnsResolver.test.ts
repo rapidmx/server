@@ -175,6 +175,17 @@ describe("DohDnssecDnsResolver Tests", () => {
             const result = await resolver.resolveMx("example.com");
             expect(result).toEqual([{ priority: 10, exchange: "mail.example.com" }]);
         });
+
+        it("rejects a malformed answer instead of silently producing a NaN priority.", async () => {
+            for (const data of ["ten mail.example.com.", "mail.example.com.", "10", "-1 mail.example.com.", "1.5 mail.example.com."]) {
+                vi.stubGlobal(
+                    "fetch",
+                    vi.fn().mockResolvedValue(fakeFetchResponse({ Status: 0, AD: true, Answer: [{ name: "example.com.", type: 15, TTL: 300, data }] })),
+                );
+                const resolver = new DohDnssecDnsResolver();
+                await expect(resolver.resolveMx("example.com")).rejects.toThrow(/Malformed MX record data/);
+            }
+        });
     });
 
     describe("resolveCname()", () => {
@@ -216,6 +227,26 @@ describe("DohDnssecDnsResolver Tests", () => {
             expect(result).toEqual([{ priority: 0, weight: 0, port: 443, target: "mail.example.com" }]);
             const [url] = (fetch as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
             expect(url).toContain("type=33");
+        });
+
+        it("rejects a malformed answer instead of silently producing NaN priority/weight/port fields.", async () => {
+            for (const data of [
+                "zero zero 443 mail.example.com.",
+                "0 zero 443 mail.example.com.",
+                "0 0 not-a-port mail.example.com.",
+                "0 0 443",
+                "0 0 70000 mail.example.com.",
+                "-1 0 443 mail.example.com.",
+            ]) {
+                vi.stubGlobal(
+                    "fetch",
+                    vi.fn().mockResolvedValue(
+                        fakeFetchResponse({ Status: 0, AD: true, Answer: [{ name: "_autodiscover._tcp.example.com.", type: 33, TTL: 300, data }] }),
+                    ),
+                );
+                const resolver = new DohDnssecDnsResolver();
+                await expect(resolver.resolveSrv("_autodiscover._tcp.example.com")).rejects.toThrow(/Malformed SRV record data/);
+            }
         });
     });
 

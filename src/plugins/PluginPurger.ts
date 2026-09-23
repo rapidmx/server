@@ -337,7 +337,7 @@ export class PluginPurger {
             last: true,
             run: async () => {
                 try {
-                    const result = deletePluginFiles(this.options.pluginsDir, record.name, this.options.keepBuild?.());
+                    const result = await deletePluginFiles(this.options.pluginsDir, record.name, this.options.keepBuild?.());
                     return { ok: true, count: result.removed.length, ...(result.removed.length === 0 ? { note: "This server had no files for the plugin." } : {}) };
                 } catch (err: any) {
                     return { ok: false, error: err?.message ?? String(err) };

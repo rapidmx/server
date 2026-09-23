@@ -6443,3 +6443,124 @@ Files: added `src/lib/registerCoreProviders.ts`, `test/lib/registerCoreProviders
 `src/routes/BaseMessageRawContentRoute.ts`, `test/config.defaults.test.ts`, `test/routes/BaseMessageRawContentRoute.test.ts`, `test/Server.mongo.test.ts`, `test/Server.sql.test.ts` (comments only),
 `RELEASE_NOTES.md`; deleted the two orphaned `.yarn/patches/*` files. `yarn lint` clean. `yarn build` clean. `yarn test`: 553/583 passing, 22 skipped, 8 failing - all 8 in the four Redis-dependent files
 above, confirmed pre-existing (see environment note).
+
+### 2026-09-23 - Round 3 review: purge-hook orphaned npm installs, sync FS walk blocking the event loop, uncached legal-hold scan, missing rate limit, unbounded npm-error growth in Redis; plus the react-shared 0.14.0 security bump
+
+Six confirmed findings from a third adversarial review round, fixed in one pass, then two more items the coordinator folded in mid-task (the react-shared bump and its own orphaned patch). All commit `0e6bed8`'s prior fixes stayed in place; this is additive.
+
+- **`InstallingPurgeHookRunner.run()`'s install step now actually gets killed by its own timeout.** It raced a
+  freshly-constructed, never-connected `AbortController` against `withTimeout()` - `controller.abort()` fired but
+  nothing downstream ever read `controller.signal`, so the real `npm install` child process (started by
+  `PluginInstaller`'s `runNpm()`, itself bounded only by the much longer `system:plugins:npm_timeout_ms`, default
+  10 minutes) kept running in the background for up to that long after the outer `system:plugins:purge:hook_timeout_ms`
+  (default 60s) gave up and reported failure. Since `scratchDir(pluginName)` is deterministic per plugin (not
+  per-attempt), `PluginPurger`'s 30s retry loop could then launch a *second* `npm install` into the same directory
+  while the first was still running - contention over the install target, and an orphaned npm process accumulating
+  every retry cycle. Fixed by threading a real signal all the way to the child process: `runNpm()` and
+  `PluginInstaller.install()` now take an optional `AbortSignal`, passed to `execFile()`'s own `signal` option (kills
+  the process the same way `.kill()` would, surfaces as `signal?.aborted` in the callback rather than being
+  misread as an ordinary failure), and `PluginPurgeHook.ts` threads its own controller's signal into the install call
+  the same way the hook-function call below it already did. Tests: `PluginInstaller.test.ts` (forwards a given
+  signal to `runNpm`; a real `execFile` call is actually killed on abort - the existing "real npm" tests in this file
+  already exercise the genuine `execFile` path, not a mock, so this one does too, via a scoped `vi.mock("child_process")`
+  wrapper that calls through except when a single test overrides it once); `PluginPurgeHook.test.ts` (the install
+  mock now records the signal it was given and asserts it's aborted once the outer timeout fires).
+- **`PluginPurgeFiles.ts`'s file deletion no longer blocks the event loop.** `findLink()`/`removeContained()` (and
+  `deletePluginFiles()`'s own `readdirSync`/`readFileSync` calls around them) walked with `fs.*Sync`, unbounded and
+  with no yielding, on every purge attempt (retried every `checkIntervalMs` on failure) - for the one target that
+  actually matters here, a plugin's full `node_modules` (routinely thousands of files), that stalls the whole
+  process - which also serves live HTTP/mail traffic - for the walk's entire duration. Added `removeContainedAsync()`
+  (same refuse-outside-root/never-through-a-link contract as `removeContained()`, walked with `fs.promises` instead)
+  and made `deletePluginFiles()` async throughout; its one caller (`PluginPurger.ts`'s "files" purge step) already
+  ran inside an `async` step, so this was a one-line `await`. Left `removeContained()`/`findLink()` themselves
+  synchronous and in place - still used by `PluginPurgeHook.ts`'s scratch-install cleanup, a single plugin's own
+  small scratch directory, not the large tree the review flagged. Tests: `PluginPurgeFiles.test.ts` gained a full
+  `removeContainedAsync` describe block mirroring every `removeContained` security case (link at the target, link on
+  the way down, link the target resolves through, dangling link, real-path escape) plus a "large tree" case; the
+  existing `deletePluginFiles` tests were converted to `async`/`await`/`.rejects.toThrow()`.
+- **Draft autosave no longer forces a full `Matter` collection scan on every save.** `BaseMailComposeRoute.storeBody()`
+  asked `isHeldForBodyReplacement()` → `hasActiveLegalHold()` (a full, unbounded, keyset-paged scan of every
+  `Matter`) on every single assemble/autosave call, not only when a hold is actually active - at the "authenticated"
+  rate-limit tier (~33 req/s sustained), one user autosaving rapidly could force repeated full-table scans purely
+  through their own normal use. Added a per-mailbox, short-TTL cache (`mail:compose:legal_hold_cache_ms`, default
+  10s via the new `DEFAULT_LEGAL_HOLD_CACHE_MS`, wired into both `config.mongo.ts`/`config.sql.ts`'s `compose:` block
+  the same way `max_attachment_bytes` already is) inside `isHeldForBodyReplacement()` - a lookup failure is cached
+  too (still fail-safe as "held"), so a lookup that's down doesn't turn into a scan-per-save storm either. `
+  hasActiveLegalHold()` itself is untouched (still the real, uncached scan; `protected`, in case a subclass needs
+  it). Tests: three new cases in `BaseMailComposeRoute.test.ts` - a second save right after the first reuses the
+  cached answer (`matterRepo.find` called once, not twice); a `legal_hold_cache_ms: 0` config forces a re-scan every
+  time; a lookup failure is cached too.
+- **`GET mail/messages/:id/raw` now has its own rate limit.** It fell to the default "authenticated" tier
+  (~10k req/300s) despite loading a whole raw MIME blob into memory per request (up to
+  `mail:compose:max_attachment_bytes`, 25MB default, for a composed message; unbounded for inbound mail) - unlike
+  `BaseGiphySearchRoute`, which already added its own tighter cap for exactly this reason. Added
+  `@RateLimit({ perUser: true, maxAttempts: 300, windowSeconds: 60 })`, mirroring Giphy's own numbers. Test:
+  `BaseMessageRawContentRoute.test.ts` asserts the route's `Reflect.getMetadata("rrst:route", ...)` carries the same
+  `rateLimit` shape, same pattern as `BaseGiphySearchRoute.test.ts`'s own check.
+- **A failed plugin install's npm output is now capped before it's kept anywhere.** `PluginInstaller`'s `runNpm()`
+  error message embeds npm's own stderr/stdout verbatim - up to `execFile`'s 16MB `maxBuffer` - and that message is
+  duplicated into `PluginInstallResult.errors[]` for *every* plugin the failure affects, which `PluginHost.ts` folds
+  straight into the status `PluginWatcher` `JSON.stringify`s into the shared `plugins:status` Redis key on every
+  heartbeat (`system:plugins:watch:interval_ms`, default 30s) for as long as the failure persists - unbounded,
+  repeatedly-written bloat relative to how verbose npm's own error happened to be. Added `truncateNpmOutput()`
+  (`NPM_ERROR_MESSAGE_MAX_CHARS`, 4000) applied at the one place the text originates (`runNpm()`'s own error
+  message), so every downstream consumer inherits the cap for free. Tests: `truncateNpmOutput()` unit-tested
+  directly (under/at/over the cap); a real `execFile` call spied via the same `vi.mock("child_process")` wrapper as
+  the abort-signal test above, proving the truncation happens end to end through the real `runNpm()`, not just in
+  the pure helper.
+- **Added a disk-usage ceiling on a freshly-installed `node_modules`** (`system:plugins:max_install_bytes`, default
+  500MB via `DEFAULT_MAX_INSTALL_BYTES`, `0` disables it) as defense in depth against a malicious or compromised
+  registry package pulling down an excessive amount of data - `--ignore-scripts` already stops an install script
+  from running, so this only bounds disk exhaustion, not code execution. Measured once, right after a successful
+  `npm install`, with a new async `directorySizeBytes()` walker (same `fs.promises`-not-`*Sync` rationale as
+  `removeContainedAsync()` above - summing a deliberately bloated tree shouldn't block the event loop either). An
+  install over the cap reuses the exact same `npmFailure` machinery an unreachable registry already goes through
+  (whole batch refused, `node_modules` removed, `installFailurePermanent: true` since retrying an oversized package
+  won't shrink it) rather than adding a second, parallel failure path. Wired into `PluginHost.ts`'s
+  `installerOptions` and both `config.mongo.ts`/`config.sql.ts`. Tests: exceeds a tiny configured cap (whole install
+  refused, `node_modules` gone, permanent failure); `0` disables the check; an ordinary small install stays under the
+  real 500MB default.
+- **DoH MX/SRV answers with a malformed priority/weight/port are now refused instead of silently becoming `NaN`.**
+  `DohDnssecDnsResolver`'s `parseMxRecord()`/`parseSrvRecord()` used bare `Number.parseInt()` on each numeric field
+  with no validation - a non-numeric, fractional, negative or (for `port`) out-of-range value silently produced
+  `NaN`/an invalid value instead of an error, which would then propagate into whatever sorts or compares MX
+  preference or SRV priority with no indication the resolver answer itself was the problem. Added
+  `parsedNonNegativeInt()` (`Number.isInteger` + `>= 0`, returning `undefined` on anything else) and both parsers now
+  throw `Malformed MX/SRV record data: "..."` when a field fails validation or a required field/target is missing.
+  Tests: both `resolveMx()`/`resolveSrv()` reject on a table of malformed answers (non-numeric, missing space,
+  missing field, negative, fractional, and - SRV only - an out-of-range port).
+- **Confirmed intentional, no change**: `WwwRoute.fetchProps()` (`src/{mongo,sql}/routes/wwwRoute.ts`) includes
+  `pluginNav: getPluginNav()` - plugin navigation *metadata* (settings-section/admin-nav/app-rail labels, hrefs,
+  icons; never plugin data) - in the SSR page shell's props unconditionally, before any auth check. This is the
+  `@Route("/")` page shell every visitor's first request renders (`ReactRoute`'s own SSR, `hydrate: true`), so the
+  nav/app rail can render correctly on the very first byte instead of flashing in after hydration once the client
+  knows what's loaded - same reasoning as `branding`/`appearance` being fetched unconditionally right above it in
+  the same method. Nothing here is mailbox data, a secret, or gated by role; a plugin's actual pages and API routes
+  still enforce their own auth independently. Left as-is per the review's own read of it.
+- **Skipped** (per the review's own instruction, not a quick addition): a length cap on compose `to`/`cc`/`bcc`
+  recipient arrays - bounded today by an unconfirmed upstream body-size limit; flagged for whoever picks it up next
+  to actually confirm that bound before adding a redundant one here.
+- **`@rapidmx/react-shared` bumped to `^0.14.0`** (from `^0.13.0`, coordinator-flagged mid-task): 0.14.0 carries two
+  real security fixes (session keys no longer extractable; an SVG/MathML sanitizer gap closed) that could never have
+  auto-resolved here - pre-1.0, caret semantics pin the minor exactly, confirmed by `yarn.lock` still resolving to
+  precisely 0.13.0 before this. `yarn install` after the bump pulled `0.14.0` cleanly with no peer-dependency
+  surprises beyond two pre-existing, unrelated warnings (`@rapidrest/react`'s `service-core` peer range, an eslint
+  major-version mismatch - both present before this change too).
+- **Deleted the third orphaned Yarn patch**: `.yarn/patches/@rapidmx-react-shared-npm-0.6.0-77e24a4355.patch`
+  (1124 lines, `composeQuoting`/`conversationsApi`/`directoryApi`/`flaggedMessages`/`mailApi`/
+  `messageBodySanitizer`) and its `resolutions` entry (`@rapidmx/react-shared@npm:^0.6.0`) - the selector could never
+  match the real dependency range (`^0.13.0`, now `^0.14.0`) regardless of the bump, so it was already dead weight.
+  Verified every symbol the patch added (`buildComposeBodyHtml`, `QuotedBody`, `recipientDisplayName`,
+  `MAX_REPLY_REFERENCES`, `buildReplyThreading`, `RecipientSuggestion`, `sanitizeQuotedHtml`, `stripRemoteCssUrls`,
+  a dozen more) is already present in the installed 0.13.0 `dist` before even reaching 0.14.0 - the fix landed
+  upstream long ago. No other reference to the patch filename anywhere in the repo.
+
+Files: changed `src/plugins/PluginInstaller.ts`, `src/plugins/PluginPurgeHook.ts`, `src/plugins/PluginPurgeFiles.ts`,
+`src/plugins/PluginPurger.ts`, `src/plugins/PluginHost.ts`, `src/routes/BaseMailComposeRoute.ts`,
+`src/routes/BaseMessageRawContentRoute.ts`, `src/dns/DohDnssecDnsResolver.ts`, `src/config.defaults.ts`,
+`src/config.mongo.ts`, `src/config.sql.ts`, `package.json`, `yarn.lock`; corresponding test files under `test/`;
+deleted `.yarn/patches/@rapidmx-react-shared-npm-0.6.0-77e24a4355.patch`; `RELEASE_NOTES.md`. `yarn lint` clean.
+`yarn build` clean. `yarn test`: 573/603 passing, 22 skipped, 8 failing - the same four Redis-dependent files as
+every prior round this session (`Server.mongo.test.ts`, `Server.sql.test.ts`, `PluginRoute.mongo.test.ts`,
+`StaticAssetRoute.test.ts`), confirmed pre-existing and environmental (no Redis binary in this sandbox), not a
+regression from this batch.

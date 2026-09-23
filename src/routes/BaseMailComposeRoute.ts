@@ -30,7 +30,7 @@ import {
     RecipientType,
     withRetainedBodyBlobKey,
 } from "@rapidmx/restapi";
-import { DEFAULT_MAX_COMPOSE_ATTACHMENT_BYTES } from "../config.defaults.js";
+import { DEFAULT_LEGAL_HOLD_CACHE_MS, DEFAULT_MAX_COMPOSE_ATTACHMENT_BYTES } from "../config.defaults.js";
 const { Config, Inject } = ObjectDecorators;
 const { Description, Returns, Summary } = DocDecorators;
 const { Auth, Param, Post, User: AuthUser } = RouteDecorators;
@@ -399,6 +399,9 @@ export abstract class BaseMailComposeRoute<M extends Message, A extends Attachme
     @Config()
     private config?: { get(key: string): unknown };
 
+    /** `isHeldForBodyReplacement()`'s per-mailbox cache - see `DEFAULT_LEGAL_HOLD_CACHE_MS`'s own doc comment. */
+    private legalHoldCache = new Map<string, { held: boolean; expiresAt: number }>();
+
     private async init(): Promise<void> {
         if (!this.messageRepo) {
             this.messageRepo = await this._objectFactory!.newInstance(RepoUtils, {
@@ -608,16 +611,41 @@ export abstract class BaseMailComposeRoute<M extends Message, A extends Attachme
      * Whether a replaced draft body must be kept for a legal hold on `mailboxUid`. A failing lookup counts as held: the
      * body is then kept and recorded, which retention enforcement undoes once it finds no hold, whereas deleting it
      * could lose discoverable content.
+     *
+     * Reuses the mailbox's last answer for `mail:compose:legal_hold_cache_ms` (`DEFAULT_LEGAL_HOLD_CACHE_MS` when
+     * unset) instead of asking `hasActiveLegalHold()` - a full, keyset-paged scan of the entire `Matter` collection -
+     * fresh on every call: this is asked once per draft save, and a mailbox autosaving rapidly would otherwise force
+     * a full collection scan on every one. A failed lookup is cached too (as held, the same fail-safe default),
+     * briefly - so a lookup that's down doesn't turn into a scan-per-save storm either, but also doesn't wedge the
+     * mailbox in the fail-safe state for longer than one more window once the lookup recovers.
      */
     private async isHeldForBodyReplacement(mailboxUid: string): Promise<boolean> {
+        const cached = this.legalHoldCache.get(mailboxUid);
+        const now = Date.now();
+        if (cached && cached.expiresAt > now) {
+            return cached.held;
+        }
+        let held: boolean;
         try {
-            return await this.hasActiveLegalHold(mailboxUid);
+            held = await this.hasActiveLegalHold(mailboxUid);
         } catch (err: any) {
             (this._objectFactory as any)?.logger?.warn?.(
                 `Legal hold lookup for mailbox ${mailboxUid} failed; keeping the replaced draft body: ${err?.message ?? err}`,
             );
-            return true;
+            held = true;
         }
+        const ttlMs = (this.config?.get("mail:compose:legal_hold_cache_ms") as number | undefined) ?? DEFAULT_LEGAL_HOLD_CACHE_MS;
+        // Opportunistic cleanup so a long-lived process with many distinct mailboxes saving over time doesn't grow
+        // this map forever - only when it's gotten large enough to matter, not on every call.
+        if (this.legalHoldCache.size > 1000) {
+            for (const [key, entry] of this.legalHoldCache) {
+                if (entry.expiresAt <= now) {
+                    this.legalHoldCache.delete(key);
+                }
+            }
+        }
+        this.legalHoldCache.set(mailboxUid, { held, expiresAt: now + ttlMs });
+        return held;
     }
 
     /**

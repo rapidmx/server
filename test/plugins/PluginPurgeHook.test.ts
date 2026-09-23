@@ -154,9 +154,20 @@ describe("InstallingPurgeHookRunner", () => {
         expect(fs.existsSync(runner.scratchDir(PLUGIN.name))).toBe(false);
     });
 
-    it("stops an install that takes too long", async () => {
-        const runner = new InstallingPurgeHookRunner(() => ({ install: () => new Promise<any>(() => undefined) }), root);
+    it("stops an install that takes too long, and threads its own AbortSignal into the install call so the underlying npm process is actually killed rather than merely abandoned", async () => {
+        let signal: AbortSignal | undefined;
+        const runner = new InstallingPurgeHookRunner(
+            () => ({
+                install: (_desired, sig) => {
+                    signal = sig;
+                    return new Promise<any>(() => undefined);
+                },
+            }),
+            root,
+        );
         await expect(runner.run(PLUGIN, context, 30)).rejects.toThrow(/Installing @rapidmx\/notes-plugin@1\.2\.3 to run its purge hook took longer than/);
+        expect(signal).toBeInstanceOf(AbortSignal);
+        expect(signal!.aborted).toBe(true);
     });
 
     it("imports a real hook module from the installed package", async () => {
