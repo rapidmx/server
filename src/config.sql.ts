@@ -94,6 +94,7 @@ conf.defaults({
                 { name: "@rapidmx/autodiscover-plugin", version: "latest", enabled: true },
                 { name: "@rapidmx/booking-plugin", version: "latest", enabled: true },
                 { name: "@rapidmx/mapi-plugin", version: "latest", enabled: true },
+                { name: "@rapidmx/meet-plugin", version: "latest", enabled: true },
             ],
             // The npm registry plugins are downloaded from, and an optional auth token for a private one.
             registry: "https://registry.npmjs.org",
