@@ -12,6 +12,7 @@ export {
     AttachmentMongo,
     AuditLogEntryMongo,
     BrandingMongo,
+    CalendarEventAttendeeLinkMongo,
     CalendarEventMongo,
     CalendarShareLinkMongo,
     ContactListMongo,

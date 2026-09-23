@@ -12,6 +12,7 @@ export {
     AttachmentSQL,
     AuditLogEntrySQL,
     BrandingSQL,
+    CalendarEventAttendeeLinkSQL,
     CalendarEventSQL,
     CalendarShareLinkSQL,
     ContactListSQL,
