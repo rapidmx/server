@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.15] - 2026-09-24
+
+### Changed
+- Bump the bundled auth-server chart to 1.0.0-beta.21, which restores the client build's entries for the sign-in, sign-up, authorize, elevate and admin detail pages that answered 500 in auth-server 1.0.0-beta.18 through 1.0.0-beta.20, and refresh Chart.lock
+- Document the bump in the release notes
+
 ## [1.0.0-beta.14] - 2026-09-24
 
 ### Changed
@@ -901,7 +907,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed test from .dockerignore, fixing yarn build's lint step failing outright when the build context is missing the test directory its tsconfig.eslint.json requires
 - Removed docker-compose.mail.yml's partial server: service block, since include: only supports merging resources that don't already exist in the including file and hard-errors ("services.server conflicts with imported resource") on a Compose version newer than whatever this had only ever been tested against locally
 
-[Unreleased]: https://github.com/rapidmx/server/compare/v1.0.0-beta.14...HEAD
+[Unreleased]: https://github.com/rapidmx/server/compare/v1.0.0-beta.15...HEAD
+[1.0.0-beta.15]: https://github.com/rapidmx/server/compare/v1.0.0-beta.14...v1.0.0-beta.15
 [1.0.0-beta.14]: https://github.com/rapidmx/server/compare/v1.0.0-beta.13...v1.0.0-beta.14
 [1.0.0-beta.13]: https://github.com/rapidmx/server/compare/v1.0.0-beta.12...v1.0.0-beta.13
 [1.0.0-beta.12]: https://github.com/rapidmx/server/compare/v1.0.0-beta.11...v1.0.0-beta.12

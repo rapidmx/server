@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v1.0.0-beta.15
+
 ### Fixed
 
 - **Bumped the bundled `auth-server` chart to `1.0.0-beta.21`, which fixes the sign-in page (and the sign-up, authorize, elevate and admin detail pages) answering 500.** Auth-server `1.0.0-beta.18` through `1.0.0-beta.20` shipped a client build with no entry for any nested non-index page, because a dependency update had moved `@rapidrest/react` back to 1.x. Nobody could sign in to a deployment running those versions.
