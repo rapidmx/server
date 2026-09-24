@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v1.0.0-beta.13
+
 ### Security
 
 - **The dev-only mock impersonation "stop" endpoint now matches the real one's CSRF-hardened contract.**

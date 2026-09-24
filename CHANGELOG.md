@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.13] - 2026-09-24
+
+### Added
+- Added missing imports
+- Added regression tests for each of the above and document the findings in NOTES.md
+- Added a per-user rate limit to GET mail/messages/:id/raw, matching BaseGiphySearchRoute's own cap for another route that loads a large blob into memory per request
+- Added a system:plugins:max_install_bytes ceiling (default 500MB) on a freshly-installed node_modules as defense in depth against a malicious or compromised registry package
+- Added regression tests for each of the above and document the findings in NOTES.md
+- Added a metadata-level regression test asserting the route is registered as POST, not GET
+
+### Changed
+- Narrow the production-secrets guard to skip only dev/development, no longer treating NODE_ENV=test as a safe default-secrets environment
+- Extract worker.ts/worker.mongo.ts/worker.sql.ts's triplicated DI-token registration into a single registerCoreProviders() so a newly-added provider can no longer be silently forgotten in just one of the three files
+- Send X-Content-Type-Options: nosniff from BaseMessageRawContentRoute.raw(), matching every other file-serving route
+- Delete the orphaned @rapidmx/restapi and @rapidmx/web-client yarn patches, whose fixes already landed in the installed 0.19.0/0.13.0 versions and which no resolutions entry ever wired up
+- Thread a real AbortSignal from InstallingPurgeHookRunner's own timeout into PluginInstaller.install()/runNpm(), so an outer purge-hook timeout actually kills the underlying npm child process instead of abandoning it in the background where a retried purge could launch a second install into the same scratch directory
+- Convert PluginPurgeFiles.ts's file deletion to fs.promises throughout, adding removeContainedAsync(), so purging a plugin's full node_modules tree no longer blocks the event loop of a process also serving live HTTP/mail traffic
+- Cache BaseMailComposeRoute's per-mailbox legal-hold lookup for mail:compose:legal_hold_cache_ms (default 10s), so rapid draft autosaves no longer force a fresh full scan of the entire Matter collection on every save
+- Truncate a failed plugin install's npm error output to NPM_ERROR_MESSAGE_MAX_CHARS before it can be duplicated per-plugin and repeatedly written into the shared plugins:status Redis key
+- Reject a malformed DoH MX/SRV answer's priority/weight/port instead of silently producing NaN in DohDnssecDnsResolver
+- Document that WwwRoute's pre-auth pluginNav exposure is intentional layout metadata, not a gap
+- Bump @rapidmx/react-shared to ^0.14.0 for its non-extractable-session-key and SVG/MathML sanitizer fixes, which the previous ^0.13.0 pin could never have auto-resolved to
+- Delete the now-orphaned @rapidmx/react-shared 0.6.0 yarn patch and resolutions entry, whose fixes already landed in the versions this repo depends on
+- Change DevImpersonationRoute's dev-only /impersonate/stop from GET to POST, matching @rapidrest/auth's real BaseImpersonationRoute fix from a cross-repo CSRF hardening pass - a state-changing GET is exploitable via a bare navigation, bypassing CSRF defenses entirely
+- Document the changes in the CHANGELOG, release notes and NOTES
+- Updated helm and node.js deps
+- Enforce GET mail/messages/:id/raw's per-user rate limit by hand in raw() via the injected RateLimiter, because @RateLimit keyed the bucket on the route with :id substituted so every message id got a fresh bucket and nothing was ever limited
+- Correct DEFAULT_MAX_INSTALL_BYTES's doc comment, which claimed already-installed plugins keep loading after an over-size refusal when the whole node_modules is removed
+- Replace the metadata-only rate limit and cache tests with behavioral tests using the real TieredRateLimiter and a hold placed between saves
+- Correct the release notes and NOTES.md for the above
+
+### Fixed
+- Fixed the stale dev/development/test comment above assertProductionSecretsAreSet() in worker.ts/worker.mongo.ts/worker.sql.ts, left over from narrowing the secrets guard to dev/development only in 8b353c6
+- Fixed PluginPurgeFiles/PluginPurger tests cleaning up test symlinks with fs.rmdirSync, which is ENOTDIR on Linux, by using fs.unlinkSync so CI passes on Linux as well as Windows
+
+### Removed
+- Removed BaseMailComposeRoute's mail:compose:legal_hold_cache_ms cache, since a stale "not held" answer let an autosave permanently delete a draft body a just-placed legal hold should have preserved
+
 ### Changed
 - Changed the dev-only DevImpersonationRoute's `/impersonate/stop` from GET to POST, matching @rapidrest/auth's real BaseImpersonationRoute fix (part of a cross-repo CSRF hardening pass) - a state-changing GET is exploitable via a bare navigation, bypassing CSRF defenses entirely
 - Add regression tests for the above
@@ -154,7 +192,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed the shared-gateway block that re-applied the Gateway without its HTTPS listeners and the wait for port 443 on its Service, which only exists once the certificates that are issued through that Service do
 - Removed the letsencrypt-prod ClusterIssuer from deploy/aws/bootstrap.sh now the chart issues its certificates from its own Issuer, passing it RAPIDMX_ACME_EMAIL and waiting for cert-manager's webhook with a server-side dry run of an Issuer instead
 
-
 ## [1.0.0-beta.4] - 2026-09-17
 
 ### Added
@@ -192,7 +229,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Check both of them in the restapi route surface test
 - Upgraded all rapidmx deps
 - Updated helm deps
-
 
 ## [1.0.0-beta.3] - 2026-09-15
 
@@ -514,7 +550,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed the mail/branding alias so the branding API is served only at system/branding
 - Removed localhost:9999 from Mongo defaults, fix the documented env var names, and run server tests on free ports
 - Removed the public booking pages, BookRoute, the BookingRoute and BookingTypeRoute API routes and the booking models from the server on MongoDB and SQL, now that they come from @rapidmx/booking-plugin, keeping PublicPageRoute as the public plugin host base
-
 
 ### Removed
 - Removed src/mta-bridge (TcpTableServer, MtaIngestClient, SmtpDeliveryServer) and its tests, the postfix/mta-bridge/postfix-tls-init Docker Compose services, and the postfix/mta-bridge/mail-tls-certs/mail-tls-policy Helm templates - this functionality now lives in the standalone [postfix-bridge](https://github.com/rapidmx/postfix-bridge) repo, deployed alongside this one instead of built into its image
@@ -853,7 +888,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed test from .dockerignore, fixing yarn build's lint step failing outright when the build context is missing the test directory its tsconfig.eslint.json requires
 - Removed docker-compose.mail.yml's partial server: service block, since include: only supports merging resources that don't already exist in the including file and hard-errors ("services.server conflicts with imported resource") on a Compose version newer than whatever this had only ever been tested against locally
 
-[Unreleased]: https://github.com/rapidmx/server/compare/v1.0.0-beta.12...HEAD
+[Unreleased]: https://github.com/rapidmx/server/compare/v1.0.0-beta.13...HEAD
+[1.0.0-beta.13]: https://github.com/rapidmx/server/compare/v1.0.0-beta.12...v1.0.0-beta.13
 [1.0.0-beta.12]: https://github.com/rapidmx/server/compare/v1.0.0-beta.11...v1.0.0-beta.12
 [1.0.0-beta.11]: https://github.com/rapidmx/server/compare/v1.0.0-beta.10...v1.0.0-beta.11
 [1.0.0-beta.10]: https://github.com/rapidmx/server/compare/v1.0.0-beta.9...v1.0.0-beta.10

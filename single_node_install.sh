@@ -8,7 +8,7 @@ DOMAIN="cluster.local"
 MAIL_HOST=${MAIL_HOST:-mail}
 AUTH_HOST=${AUTH_HOST:-auth}
 TLS=true
-VERSION="1.0.0-beta.12"
+VERSION="1.0.0-beta.13"
 NAMESPACE="rapidmx"
 # How the release is exposed through Envoy Gateway. "shared": this script creates one Gateway ($GATEWAY_NAME in
 # $GATEWAY_NAMESPACE) with a listener per host and the chart's routes attach to it. "chart": the chart creates its own
