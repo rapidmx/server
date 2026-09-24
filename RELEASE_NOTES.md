@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Changed
+
+- **The Helm chart no longer sets any resource limits - only minimum requests.** Limits throttle a pod's CPU or kill it on memory even when the node has plenty to spare; on the live test host MongoDB's liveness probe was timing out at its 750m CPU cap and restarting the pod (9 restarts in 4 days). MongoDB and Redis (this chart's and the bundled auth-server chart's) now set Bitnami's `resourcesPreset: none` with the same requests the preset used to give them, and the postfix-bridge subchart's default Postfix and bridge memory limits are removed. `single_node_install.sh`'s OpenBao unsealer sidecar no longer carries a memory limit either. Every request is unchanged, so scheduling is unaffected. `helm template` prints two harmless "cannot overwrite table with non table" warnings for the postfix-bridge overrides until that chart drops its own defaults.
+
+- **MongoDB's Deployment now uses the `Recreate` update strategy** (this chart's and the bundled auth-server chart's). With `RollingUpdate` the replacement pod could not start while the old one still held the data directory's lock (it exited with code 100), and because the old pod is only retired once the new one is Ready, any change to MongoDB's pod spec deadlocked the whole `helm upgrade` and left the release `failed`. Found while validating the resource-limit change on the live test host.
+
 ## v1.0.0-beta.13
 
 ### Security
