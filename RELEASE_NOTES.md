@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v1.0.0-beta.14
+
 ### Changed
 
 - **Bumped the bundled `auth-server` chart to `1.0.0-beta.20`,** which carries the same no-resource-limits and MongoDB `Recreate` fixes as this chart. This chart's own `authserver.mongodb`/`authserver.redis` overrides for them are removed, since the subchart now provides them itself.

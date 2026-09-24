@@ -53,7 +53,7 @@ trying RapidMX out, builds from a checkout of this repository (`git clone https:
 | ------------ | :-------------------: |
 | Registry     | ghcr.io |
 | Repository   | /rapidmx/server |
-| Tag          | 1.0.0-beta.13 |
+| Tag          | 1.0.0-beta.14 |
 
 Pick the way that fits you. Each one is a short list of steps, and they all finish in the same place: [Set up your server](#set-up-your-server).
 
@@ -264,7 +264,7 @@ Best when you already run a Kubernetes cluster. One Helm chart installs everythi
 
    ```bash
    helm upgrade --install --create-namespace --namespace rapidmx rapidmx \
-     oci://ghcr.io/rapidmx/charts/server --version 1.0.0-beta.13 \
+     oci://ghcr.io/rapidmx/charts/server --version 1.0.0-beta.14 \
      --set global.domain=example.com \
      --set global.jwt.secret="$(openssl rand -hex 32)" \
      --set global.mailIngestSecret="$(openssl rand -hex 32)"

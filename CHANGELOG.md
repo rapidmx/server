@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.14] - 2026-09-24
+
+### Changed
+- Switch MongoDB's Deployment to the Recreate update strategy, because with RollingUpdate on a single-writer PVC the replacement pod exits with code 100 while the old one holds the data lock and any change to MongoDB's pod spec deadlocks the helm upgrade
+- Document both changes in the release notes
+- Bump the bundled auth-server chart to 1.0.0-beta.20, which carries the same no-resource-limits and MongoDB Recreate fixes, and refresh Chart.lock
+- Document the bump in the release notes
+
+### Removed
+- Removed every resource limit from the Helm chart, leaving only minimum requests: turn off Bitnami's resourcesPreset for MongoDB and Redis (this chart's and the bundled auth-server chart's) while keeping the requests the preset gave, and null out the postfix-bridge subchart's default Postfix and bridge memory limits, because MongoDB's liveness probe was timing out at its 750m CPU cap and restarting the pod
+- Removed the memory limit from single_node_install.sh's OpenBao unsealer sidecar
+- Removed the now-redundant authserver.mongodb and authserver.redis resource and update-strategy overrides from values.yaml, since the subchart provides them itself
+
 ## [1.0.0-beta.13] - 2026-09-24
 
 ### Added
@@ -888,7 +901,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed test from .dockerignore, fixing yarn build's lint step failing outright when the build context is missing the test directory its tsconfig.eslint.json requires
 - Removed docker-compose.mail.yml's partial server: service block, since include: only supports merging resources that don't already exist in the including file and hard-errors ("services.server conflicts with imported resource") on a Compose version newer than whatever this had only ever been tested against locally
 
-[Unreleased]: https://github.com/rapidmx/server/compare/v1.0.0-beta.13...HEAD
+[Unreleased]: https://github.com/rapidmx/server/compare/v1.0.0-beta.14...HEAD
+[1.0.0-beta.14]: https://github.com/rapidmx/server/compare/v1.0.0-beta.13...v1.0.0-beta.14
 [1.0.0-beta.13]: https://github.com/rapidmx/server/compare/v1.0.0-beta.12...v1.0.0-beta.13
 [1.0.0-beta.12]: https://github.com/rapidmx/server/compare/v1.0.0-beta.11...v1.0.0-beta.12
 [1.0.0-beta.11]: https://github.com/rapidmx/server/compare/v1.0.0-beta.10...v1.0.0-beta.11
