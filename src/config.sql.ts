@@ -202,6 +202,24 @@ conf.defaults({
     // unauthenticated visitor here to sign in, then back with a valid session.
     mail: {
         auth_server_url: "http://localhost:3001",
+        // Outlook (MAPI/HTTP) and Exchange ActiveSync clients can only send HTTP Basic credentials, so on `paths` (and under
+        // them) a username and an app password (created on the auth-server account page) are accepted as well as a JWT: the
+        // credentials are checked by auth-server (`GET /api/auth/password`), whose rules for two-factor sign-in still apply, and
+        // it answers with an ordinary access token. A username that is a mailbox address is checked as the mailbox's owner.
+        // Nowhere else accepts Basic - an app password skips the second factor and is meant for exactly these clients. A 401 on
+        // these paths carries `WWW-Authenticate: Basic realm="<realm>"`, which is what makes a client ask for credentials.
+        // A successful login is remembered for `cache_ttl_ms` (never past the token's expiry) because these clients send their
+        // credentials with every request; `failure_limit` failed logins within `failure_window_ms`, per client address or per
+        // username, get a 429 until the window passes. Needs `mail:auth_server_url`. See lib/BasicAuthJWTStrategy.ts.
+        basic_auth: {
+            enabled: true,
+            paths: ["/mapi", "/Microsoft-Server-ActiveSync"],
+            realm: "RapidMX",
+            cache_ttl_ms: 300_000,
+            cache_max_entries: 5000,
+            failure_limit: 10,
+            failure_window_ms: 900_000,
+        },
         // `default_quota_bytes` and `auto_provision.enabled`/`quota_bytes` seed the admin-editable mailbox policy
         // (system/mailbox-policy) the first time it's read, and stay its fallback for anything it leaves unset.
         default_quota_bytes: 5_000_000_000,

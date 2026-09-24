@@ -20,13 +20,14 @@ import {
 } from "./dev/enableDevAutoLogin.js";
 import { DevLocalDeliveryTransportMongo } from "./dev/DevLocalDeliveryTransportMongo.js";
 import { registerCoreProviders } from "./lib/registerCoreProviders.js";
+import { enableBasicAuthIfApplicable } from "./lib/enableBasicAuth.js";
 
 import * as fs from "fs";
 import { readFile } from "fs/promises";
 import { assertProductionSecretsAreSet, DEVELOPMENT_ENVIRONMENTS, trustedAuthservIdWarning } from "./config.defaults.js";
 import { configMs, DEFAULT_RELEASE_TIMEOUT_MS, drainAndStop, withTimeout } from "./lib/gracefulShutdown.js";
 import { startTelemetryToken } from "./lib/telemetryToken.js";
-import { PluginMongo } from "@rapidmx/restapi/mongo";
+import { PluginMongo, MailboxMongo } from "@rapidmx/restapi/mongo";
 import { PluginHost } from "./plugins/PluginHost.js";
 import { MONGO_PLUGIN_PURGE, MONGO_PLUGIN_UI_HOSTS } from "./plugins/hosts/mongo.js";
 import { notifyListening, restartWorker } from "./plugins/supervisor.js";
@@ -95,6 +96,8 @@ const start = async function (config: any, logger: any) {
 
     // DEV-ONLY (see enableDevAutoLogin.ts) — both a no-op outside of `yarn dev`.
     await enableDevAutoLoginIfApplicable(objectFactory, logger);
+    // Outlook and ActiveSync sign in with HTTP Basic (an app password), checked by auth-server - see lib/BasicAuthJWTStrategy.ts.
+    await enableBasicAuthIfApplicable(objectFactory, config, logger, MailboxMongo);
     configureDevAutoProvisioningIfApplicable(config, logger);
 
     // Create and start the server

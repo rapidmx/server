@@ -20,6 +20,7 @@ import {
 } from "./dev/enableDevAutoLogin.js";
 import { DevLocalDeliveryTransportSQL } from "./dev/DevLocalDeliveryTransportSQL.js";
 import { registerCoreProviders } from "./lib/registerCoreProviders.js";
+import { enableBasicAuthIfApplicable } from "./lib/enableBasicAuth.js";
 
 import * as fs from "fs";
 import { readFile } from "fs/promises";
@@ -27,7 +28,7 @@ import { assertProductionSecretsAreSet, DEVELOPMENT_ENVIRONMENTS, trustedAuthser
 import { configMs, DEFAULT_RELEASE_TIMEOUT_MS, drainAndStop, withTimeout } from "./lib/gracefulShutdown.js";
 import { startTelemetryToken } from "./lib/telemetryToken.js";
 import { applySqlColumnTypes } from "./lib/sqlColumnTypes.js";
-import { PluginSQL } from "@rapidmx/restapi/sql";
+import { PluginSQL, MailboxSQL } from "@rapidmx/restapi/sql";
 import { PluginHost } from "./plugins/PluginHost.js";
 import { SQL_PLUGIN_PURGE, SQL_PLUGIN_UI_HOSTS } from "./plugins/hosts/sql.js";
 import { notifyListening, restartWorker } from "./plugins/supervisor.js";
@@ -96,6 +97,8 @@ const start = async function (config: any, logger: any) {
 
     // DEV-ONLY (see enableDevAutoLogin.ts) — both a no-op outside of `yarn dev`.
     await enableDevAutoLoginIfApplicable(objectFactory, logger);
+    // Outlook and ActiveSync sign in with HTTP Basic (an app password), checked by auth-server - see lib/BasicAuthJWTStrategy.ts.
+    await enableBasicAuthIfApplicable(objectFactory, config, logger, MailboxSQL);
     configureDevAutoProvisioningIfApplicable(config, logger);
 
     // Create and start the server

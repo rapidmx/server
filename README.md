@@ -622,6 +622,20 @@ The chart runs one replica by default, because its message, DKIM and PKI volumes
 use `mail.blob.backend: s3` (or `ReadWriteMany` storage) and `ReadWriteMany` for `mail.dkim.storage` and
 `mail.pki.storage`.
 
+### Signing in from Outlook and phones
+
+Outlook (MAPI over HTTP) and Exchange ActiveSync clients can only send HTTP Basic credentials. On `/mapi` and
+`/Microsoft-Server-ActiveSync` the server therefore accepts a username and an **app password** - created by the user on the
+auth-server's account page, which is how an account with two-factor sign-in on can use such a client - as well as a JWT. The
+server does not check the password itself: it asks the auth-server (`GET /api/auth/password`, so the auth-server URL the
+chart already sets as `mail:auth_server_url` must be reachable from the server pod) and verifies the access token it returns like
+any other. A username that is a mailbox address is checked as that mailbox's owner. Nothing else on the server accepts Basic.
+
+`mail.basicAuth` has `enabled`, the `realm` a 401 names, how long a sign-in is remembered (`cacheTtlMs`, default 5 minutes)
+and how many failed sign-ins per client address or per username in 15 minutes (`failureLimit`, default 10) are allowed before
+a 429. The paths, the cache size and the window are `mail:basic_auth:*` in the server's configuration. The bundled
+auth-server has `auth__app_password__enabled: true`, which this depends on.
+
 ### Signing certificates
 
 `mail.signingEnrollment` chooses how mailboxes get the S/MIME certificate their digital-signature key needs

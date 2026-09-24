@@ -157,6 +157,10 @@ service:
     metrics: true
     releaseNotes: true
     mail__auth_server_url: '{{ include "rapidmx.authServerURL" . }}'
+    mail__basic_auth__enabled: '{{ .Values.mail.basicAuth.enabled }}'
+    mail__basic_auth__realm: '{{ .Values.mail.basicAuth.realm }}'
+    mail__basic_auth__cache_ttl_ms: '{{ .Values.mail.basicAuth.cacheTtlMs }}'
+    mail__basic_auth__failure_limit: '{{ .Values.mail.basicAuth.failureLimit }}'
     mail__security__trusted_authserv_id: '{{ include "rapidmx.trustedAuthservId" . }}'
     mail__dns__mx_hostname: >-
       {{ .Values.mail.mxHostname | default (include "rrst.render" (dict "value"
@@ -201,6 +205,9 @@ authserver:
     config:
       auth__allowRegistration: false
       auth__requireMFA: false
+      # Outlook and ActiveSync sign in with an app password, which the server checks through this service's /api/auth/password
+      # (mail.basicAuth). Creating one is on the account page; turning this off ends that sign-in for everyone.
+      auth__app_password__enabled: true
       auth__cookie__access__domain: '.{{ .Values.global.domain }}'
       auth__cookie__refresh__domain: '.{{ .Values.global.domain }}'
       smtp_config__host: '{{ .Values.global.smtp.host }}'
@@ -263,6 +270,19 @@ mail:
       service.beta.kubernetes.io/aws-load-balancer-internal: 'true'
     loadBalancerSourceRanges: []
   mxHostname: ''
+  # Outlook (MAPI/HTTP) and Exchange ActiveSync clients can only send HTTP Basic credentials: on /mapi and
+  # /Microsoft-Server-ActiveSync the server accepts a username and an app password (created on the auth-server account page,
+  # which is how a user with two-factor sign-in on signs in) as well as a JWT, checking them with the auth-server. Nothing
+  # else accepts Basic. `mail:basic_auth:*` in the server's configuration has the rest (the paths, the cache size, the window).
+  basicAuth:
+    enabled: true
+    # The realm a 401 on those paths names in WWW-Authenticate: Basic (some clients show it in their sign-in prompt).
+    realm: RapidMX
+    # How long a successful sign-in is remembered, in ms - these clients send their credentials with every request, and each
+    # sign-in is a session in the auth-server.
+    cacheTtlMs: 300000
+    # Failed sign-ins per client address or per username, within 15 minutes, before further attempts get a 429.
+    failureLimit: 10
   trustedAuthservId: ''
   relay:
     host: postfix

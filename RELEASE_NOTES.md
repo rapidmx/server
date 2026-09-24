@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+- **Outlook and ActiveSync can sign in with a username and an app password.** Those clients can only send HTTP Basic credentials, and the server accepted only a JWT, so they could never authenticate. On `/mapi` and `/Microsoft-Server-ActiveSync` (`mail:basic_auth:paths`) a `Basic` header is now checked by the auth-server (`GET /api/auth/password`, whose rules for two-factor accounts still apply - an account that requires MFA can only use an app password) and answered with an ordinary access token that the existing JWT check verifies. A username that is a mailbox address is checked as the mailbox's owner. A 401 on those paths carries `WWW-Authenticate: Basic realm="RapidMX"`, which is what makes a client ask for credentials. Basic is accepted nowhere else - an app password skips the second factor and is for exactly these clients. A successful sign-in is remembered for 5 minutes (`cache_ttl_ms`, never past the token's expiry) because these clients send their credentials with every request; 10 failed sign-ins per client address or per username in 15 minutes get a 429 until the window passes, so a guessing client is stopped before it reaches the auth-server. Helm: `mail.basicAuth.{enabled,realm,cacheTtlMs,failureLimit}` render as `mail__basic_auth__*`, and `auth__app_password__enabled: true` is now set on the bundled auth-server explicitly. Not verified against a real Outlook client.
+
 ### Changed
 
 - **Plugins whose settings name this server's host work as installed.** A setting whose default is `https://<host>/meet` (video-conferencing's join page) or `https://<host>` (Autodiscover's public server URL) is saved with the real host when the plugin is installed - the address the admin console was reached at, or, for the default plugins seeded at first start, `mail:dns:mx_hostname` (the chart sets it) - so calendar invites carry join links and Autodiscover answers without a visit to the plugin's settings. Needs `@rapidmx/restapi` with `<host>` defaults.
