@@ -85,7 +85,7 @@ It runs on the node's own network, so on the node it lands on{{ with .Values.cot
   - TCP and UDP {{ .Values.coturn.port }}{{ if .Values.coturn.tls.enabled }}, TCP {{ .Values.coturn.tls.port }} (TLS){{ end }}, and UDP {{ .Values.coturn.relayPorts.min }}-{{ .Values.coturn.relayPorts.max }}, must be open to the internet in every firewall and security group.
 {{- if .Values.coturn.tls.enabled }}
   - the certificate in the "{{ include "rapidmx.coturnTLSSecretName" . }}" Secret must cover {{ include "rapidmx.coturnHost" . }}; coturn stays pending until that Secret exists.
-  - the Video Conferencing plugin must be version 0.3.2 or later, which reads two TURN addresses in one setting.
+  - the Video Conferencing plugin must be version 0.4.0 or later, which reads two TURN addresses in one setting.
 {{- end }}
 {{- if eq (include "rapidmx.coturnAuthMode" .) "secret" }}
   Secret: kubectl -n {{ .Release.Namespace }} get secret {{ include "rapidmx.coturnSecretName" . }} -o jsonpath='{.data.mail__videoconf__turn__shared_secret}' | base64 -d

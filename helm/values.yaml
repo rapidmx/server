@@ -392,7 +392,7 @@ coturn:
     existingSecret: ''
   # TURN over TLS (turns:), for a participant whose network blocks everything but TLS to a public host. With it on, the plugin is
   # given both addresses, turn:<hostname>:<port> and turns:<hostname>:<tls.port>, as one comma-separated setting - which needs a
-  # Video Conferencing plugin of version 0.3.2 or later (an older one takes it for a single, invalid URL and no call connects).
+  # Video Conferencing plugin of version 0.4.0 or later (an older one takes it for a single, invalid URL and no call connects).
   # coturn needs a certificate for coturn.hostname: with none set here, the one this chart issues for its own host
   # (<host>-tls-cert), which is only valid when coturn.hostname is empty or is that host. Any other hostname needs
   # existingSecret. coturn picks up a renewed certificate without restarting.

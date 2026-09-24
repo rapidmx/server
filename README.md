@@ -663,7 +663,7 @@ calls work as installed.
   - `coturn.externalIp` may name the node's public address; left empty, coturn asks an external service for it when it starts.
 - **TURN over TLS** (`coturn.tls.enabled`, off by default) adds a `turns:` address for a participant whose network blocks everything but TLS.
   The plugin is given both addresses in its one TURN URL setting, separated by a comma, which needs a Video Conferencing plugin of version
-  0.3.2 or later - an older one takes the pair for one invalid address and no call connects, which is why this is opt-in. coturn needs a
+  0.4.0 or later - an older one takes the pair for one invalid address and no call connects, which is why this is opt-in. coturn needs a
   certificate for `coturn.hostname`: by default the one the chart issues for `host` (`<host>-tls-cert`), so `hostname` must be empty or be
   `host`; for any other name, or when the chart issues none (`global.gateway.tls` off, a local domain), set `coturn.tls.existingSecret` to a
   `kubernetes.io/tls` Secret. A renewed certificate is picked up without a restart: a small container beside coturn checks it every five
