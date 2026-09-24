@@ -165,6 +165,9 @@ service:
     mail__dns__mx_hostname: >-
       {{ .Values.mail.mxHostname | default (include "rrst.render" (dict "value"
       .Values.postfixBridge.hostname "context" .)) }}
+    # The bundled coturn (coturn.create). Only the address is here: the user name and password come from the coturn Secret,
+    # which the server pod loads alongside this ConfigMap as mail__videoconf__turn__username and __credential.
+    mail__videoconf__turn__url: '{{ include "rapidmx.coturnURL" . }}'
     mail__scan__spam__rspamd__url: http://rspamd:11333
     mail__scan__av__clamav__host: clamav
     mail__scan__av__clamav__port: 3310
@@ -341,3 +344,86 @@ mail:
       requests:
         cpu: 200m
         memory: 1Gi
+# A TURN server (coturn) for the Video Conferencing plugin. Calls go directly between participants when they can, and through a
+# TURN server when a firewall or NAT stops that; without one, a participant behind such a network can't join. The plugin's
+# TURN settings (mail:videoconf:turn:*) are filled in from this section, so the plugin works as installed. A value an
+# administrator saves in the plugin's settings in the admin console wins over these.
+#
+# TURN can't go through the Gateway (it is UDP), so coturn runs with hostNetwork: it listens on the node's own address. That
+# needs, on the node it runs on:
+#   - coturn.hostname (default: this chart's host) resolving to the node's public address,
+#   - the listening port (TCP and UDP) and the relay ports (UDP) - and the TLS port (TCP) with tls.enabled - open to the
+#     internet in every firewall and security group (the single-node installer opens them),
+#   - nothing else already listening on them.
+# One replica: a TURN allocation lives in one process. On a cluster with several nodes, pin it with nodeSelector.
+coturn:
+  create: true
+  image:
+    registry: docker.io
+    repository: coturn/coturn
+    tag: 4.18.0
+  # The name browsers reach coturn at (turn:<hostname>:<port>). Empty: this chart's host.
+  hostname: ''
+  port: 3478
+  # The address coturn tells clients to send relayed media to: the node's public IPv4 address. Empty: coturn asks an
+  # external service what its address is when it starts, which needs the pod to reach the internet; set it to skip that.
+  externalIp: ''
+  # UDP ports coturn relays media on: each relayed connection takes one, so this is about how many participants can be
+  # relayed at once (a few per participant in a mesh call). Keep it in step with the firewall.
+  relayPorts:
+    min: 49152
+    max: 49252
+  auth:
+    # secret: every participant gets their own credential when they join a call, which expires an hour later, made from a
+    #   secret that only the server and coturn know (coturn's "TURN REST" mechanism; the plugin's mail:videoconf:turn:shared_secret).
+    #   Nothing a participant is handed can be used after their call, or to work out anyone else's.
+    # credential: one pre-set user name and password (mail:videoconf:turn:username and :credential), the same for everyone and
+    #   good until you change it - every participant is handed it, so anyone who has joined a call can keep using the relay.
+    mode: secret
+    # secret mode: the shared secret. Generated once and kept across upgrades; set it to choose your own.
+    # Letters, digits and . _ ~ - only.
+    sharedSecret: ''
+    # credential mode: the user name and password (generated once and kept, like the secret). Same characters.
+    username: rapidmx
+    password: ''
+    # Read the secret, or the user name and password, from a Secret you manage instead. Its keys are
+    # mail__videoconf__turn__shared_secret (secret mode), or mail__videoconf__turn__username and
+    # mail__videoconf__turn__credential (credential mode).
+    existingSecret: ''
+  # TURN over TLS (turns:), for a participant whose network blocks everything but TLS to a public host. With it on, the plugin is
+  # given both addresses, turn:<hostname>:<port> and turns:<hostname>:<tls.port>, as one comma-separated setting - which needs a
+  # Video Conferencing plugin of version 0.3.2 or later (an older one takes it for a single, invalid URL and no call connects).
+  # coturn needs a certificate for coturn.hostname: with none set here, the one this chart issues for its own host
+  # (<host>-tls-cert), which is only valid when coturn.hostname is empty or is that host. Any other hostname needs
+  # existingSecret. coturn picks up a renewed certificate without restarting.
+  tls:
+    enabled: false
+    port: 5349
+    # A kubernetes.io/tls Secret (keys tls.crt and tls.key) in this namespace whose certificate covers coturn.hostname.
+    existingSecret: ''
+  # coturn refuses to relay to these addresses, so it can't be used to reach anything on the node's or the cluster's own
+  # network (cloud metadata at 169.254.169.254, the cluster's pods and services, the node itself). Participants reach each
+  # other through public addresses, so there is normally nothing to change - remove a range only to relay between hosts on
+  # a private network.
+  deniedPeerIps:
+    - 0.0.0.0-0.255.255.255
+    - 10.0.0.0-10.255.255.255
+    - 100.64.0.0-100.127.255.255
+    - 127.0.0.0-127.255.255.255
+    - 169.254.0.0-169.254.255.255
+    - 172.16.0.0-172.31.255.255
+    - 192.0.0.0-192.0.0.255
+    - 192.168.0.0-192.168.255.255
+    - 198.18.0.0-198.19.255.255
+    - 240.0.0.0-255.255.255.255
+    - ::1
+    - fc00::-fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff
+    - fe80::-febf:ffff:ffff:ffff:ffff:ffff:ffff:ffff
+  # More turnserver arguments, as they are on its command line.
+  extraArgs: []
+  nodeSelector: {}
+  tolerations: []
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi

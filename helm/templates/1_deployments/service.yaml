@@ -70,7 +70,7 @@ spec:
         prometheus.io/port: "3000"
         # Roll the pods when their configuration or secrets change - they're only read at startup.
         checksum/config: {{ include (print $.Template.BasePath "/0_config/service-config.yaml") . | sha256sum }}
-        checksum/secrets: {{ print (include (print $.Template.BasePath "/0_config/jwt-auth.yaml") .) (include (print $.Template.BasePath "/0_config/service-secrets.yaml") .) (include (print $.Template.BasePath "/0_config/datastores.yaml") .) | sha256sum }}
+        checksum/secrets: {{ print (include (print $.Template.BasePath "/0_config/jwt-auth.yaml") .) (include (print $.Template.BasePath "/0_config/service-secrets.yaml") .) (include (print $.Template.BasePath "/0_config/datastores.yaml") .) (include (print $.Template.BasePath "/0_config/coturn-secret.yaml") .) | sha256sum }}
     spec:
       {{- with include "rrst.serviceAccountName" $ }}
       # Only when one is configured (values.yaml's serviceAccount): an AWS IAM role through IRSA, for SES and the S3
@@ -130,6 +130,12 @@ spec:
                 name: {{ include "rrst.fullname" . }}-service-secrets
             - secretRef:
                 name: {{ include "rrst.fullname" . }}-mail-ingest-secret
+            {{- if eq (include "rapidmx.coturnEnabled" .) "true" }}
+            # The bundled coturn's user name and password (mail__videoconf__turn__username and __credential), which the Video
+            # Conferencing plugin hands to participants; its address is in the ConfigMap.
+            - secretRef:
+                name: {{ include "rapidmx.coturnSecretName" . }}
+            {{- end }}
             {{- if and (.Values.global.openbao.enabled) .Values.openbao.pki.enabled (include "rrst.render" (dict "value" .Values.openbao.pki.tokenSecret "context" .)) }}
             # The vault's PKI token (mail__pki__openbao__token), written by the install scripts or by you; the rest of
             # those settings come from the ConfigMap.

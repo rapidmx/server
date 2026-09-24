@@ -847,6 +847,9 @@ if [[ "$OPENBAO" = "true" ]]; then
     --set openbao.pki.role="$OPENBAO_PKI_ROLE"
     --set openbao.pki.tokenSecret="$OPENBAO_PKI_SECRET")
 fi
+# The chart's bundled coturn (a TURN server for video calls) is left off here: it has to listen on the node's own address,
+# which needs UDP open to the internet on an address that doesn't change, and this instance's public address is not fixed and
+# the load balancer in front of the site can't carry UDP. See the README's "Video calls".
 helm upgrade --install --create-namespace --namespace "$NAMESPACE" "$NAMESPACE" "$CHART" "${VERSION_ARGS[@]}" \
   --set global.domain="$DOMAIN" --set host="$SERVER_HOST" --set authserver.host="$AUTH_HOST" \
   --set-json "global.corsHosts=[\"$SERVER_HOST\",\"$AUTH_HOST\"]" \
@@ -854,6 +857,7 @@ helm upgrade --install --create-namespace --namespace "$NAMESPACE" "$NAMESPACE" 
   "${OPENBAO_ARGS[@]}" \
   --set global.gateway.tls="$GATEWAY_TLS" --set global.gateway.hsts=true \
   --set global.gateway.name="$GATEWAY_NAME" --set global.gateway.namespace="$GATEWAY_NAMESPACE" \
+  --set coturn.create=false \
   -f "$VALUES_FILE" || fail "the RapidMX server chart failed to install."
 rm -f "$VALUES_FILE"
 VALUES_FILE=""

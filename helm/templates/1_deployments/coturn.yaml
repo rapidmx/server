@@ -1,0 +1,198 @@
+{{- if eq (include "rapidmx.coturnEnabled" .) "true" }}
+{{- include "rapidmx.assertCoturn" . }}
+{{- $c := .Values.coturn }}
+{{- $name := printf "%s-coturn" (include "rrst.fullname" .) }}
+{{- $secret := include "rapidmx.coturnSecretName" . }}
+{{- $mode := include "rapidmx.coturnAuthMode" . }}
+{{- $image := printf "%s/%s:%s" $c.image.registry $c.image.repository (toString $c.image.tag) }}
+{{- $pullPolicy := ternary "Always" "IfNotPresent" (eq (toString $c.image.tag) "latest") }}
+{{- $tlsDir := "/etc/coturn-tls" }}
+{{- $containerSecurityContext := dict "allowPrivilegeEscalation" false "capabilities" (dict "drop" (list "ALL") "add" (list "NET_BIND_SERVICE")) }}
+---
+# A TURN server for the Video Conferencing plugin - see values.yaml's coturn. It runs on the node's own network (hostNetwork):
+# TURN is UDP, which the Gateway can't carry, and relayed media has to leave from an address a browser can reach. So there is no
+# Service - nothing in the cluster talks to it - and the node's firewall must allow coturn.port (TCP and UDP), coturn.relayPorts
+# (UDP) and, with coturn.tls.enabled, coturn.tls.port (TCP).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    app: {{ $name }}
+    app.kubernetes.io/instance: {{ $name }}
+spec:
+  replicas: 1
+  # The old pod holds the node's ports until it stops, so a replacement can't start beside it.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: {{ $name }}
+  template:
+    metadata:
+      labels:
+        app: {{ $name }}
+        app.kubernetes.io/instance: {{ $name }}
+      annotations:
+        # Roll the pod when the secret changes - coturn only reads it at startup.
+        checksum/secret: {{ include (print $.Template.BasePath "/0_config/coturn-secret.yaml") . | sha256sum }}
+    spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 10
+      {{- if $c.tls.enabled }}
+      # The certificate reloader below signals coturn, which needs to see its process.
+      shareProcessNamespace: true
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      {{- with $c.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $c.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if $c.tls.enabled }}
+      volumes:
+        - name: tls
+          secret:
+            secretName: {{ include "rapidmx.coturnTLSSecretName" . }}
+      {{- end }}
+      containers:
+        - name: coturn
+          image: {{ $image }}
+          imagePullPolicy: {{ $pullPolicy }}
+          securityContext:
+            {{- /* The image's turnserver carries the file capability CAP_NET_BIND_SERVICE; with every capability dropped the kernel refuses to run it at all. */}}
+            {{- toYaml $containerSecurityContext | nindent 12 }}
+          env:
+            {{- if eq $mode "secret" }}
+            - name: TURN_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: mail__videoconf__turn__shared_secret
+            {{- else }}
+            - name: TURN_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: mail__videoconf__turn__username
+            - name: TURN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: mail__videoconf__turn__credential
+            {{- end }}
+          # Only args, never command: the image's entrypoint adds turnserver and expands command substitutions in them.
+          # Kubernetes fills in $(TURN_SECRET), $(TURN_USERNAME) and $(TURN_PASSWORD) from the env above; $(detect-external-ip)
+          # is not one of its variables, so it reaches the entrypoint as written.
+          args:
+            - --log-file=stdout
+            {{- if $c.externalIp }}
+            - --external-ip={{ $c.externalIp }}
+            {{- else }}
+            - --external-ip=$(detect-external-ip)
+            {{- end }}
+            - --listening-port={{ int $c.port }}
+            - --min-port={{ int $c.relayPorts.min }}
+            - --max-port={{ int $c.relayPorts.max }}
+            - --realm={{ include "rapidmx.coturnHost" . }}
+            {{- if eq $mode "secret" }}
+            # Also switches on long-term credentials: the user name a client sends is "<expiry>:<anything>", and its password is
+            # an HMAC of that with this secret, so each is good until its expiry and no longer.
+            - --static-auth-secret=$(TURN_SECRET)
+            {{- else }}
+            - --lt-cred-mech
+            - --user=$(TURN_USERNAME):$(TURN_PASSWORD)
+            {{- end }}
+            - --fingerprint
+            {{- if $c.tls.enabled }}
+            - --tls-listening-port={{ int $c.tls.port }}
+            - --cert={{ $tlsDir }}/tls.crt
+            - --pkey={{ $tlsDir }}/tls.key
+            {{- else }}
+            - --no-tls
+            {{- end }}
+            - --no-tcp-relay
+            - --no-multicast-peers
+            {{- range $c.deniedPeerIps }}
+            - --denied-peer-ip={{ . }}
+            {{- end }}
+            {{- range $c.extraArgs }}
+            - {{ . | quote }}
+            {{- end }}
+          ports:
+            - name: turn-udp
+              containerPort: {{ int $c.port }}
+              protocol: UDP
+            - name: turn-tcp
+              containerPort: {{ int $c.port }}
+              protocol: TCP
+            {{- if $c.tls.enabled }}
+            - name: turns
+              containerPort: {{ int $c.tls.port }}
+              protocol: TCP
+            {{- end }}
+          {{- if $c.tls.enabled }}
+          volumeMounts:
+            - name: tls
+              mountPath: {{ $tlsDir }}
+              readOnly: true
+          {{- end }}
+          startupProbe:
+            tcpSocket:
+              port: {{ int $c.port }}
+            periodSeconds: 5
+            failureThreshold: 24
+          livenessProbe:
+            tcpSocket:
+              port: {{ int $c.port }}
+            periodSeconds: 30
+            failureThreshold: 3
+          resources:
+            {{- toYaml $c.resources | nindent 12 }}
+        {{- if $c.tls.enabled }}
+        # coturn reads its certificate when it starts, and cert-manager renews the one this chart issues every 60 days; coturn
+        # reloads it on SIGUSR2. This checks the certificate every few minutes and sends that signal when it has changed (the
+        # Secret's files are updated in place a minute or so after a renewal).
+        - name: certificate-reloader
+          image: {{ $image }}
+          imagePullPolicy: {{ $pullPolicy }}
+          securityContext:
+            {{- toYaml $containerSecurityContext | nindent 12 }}
+          command:
+            - /bin/sh
+            - -c
+            - |
+              last=""
+              while true; do
+                now="$(cksum {{ $tlsDir }}/tls.crt {{ $tlsDir }}/tls.key)"
+                if [ -n "$last" ] && [ "$now" != "$last" ]; then
+                  for proc in /proc/[0-9]*; do
+                    if [ "$(cat "$proc/comm" 2>/dev/null)" = "turnserver" ]; then
+                      echo "Certificate changed: reloading coturn ($proc)"
+                      kill -USR2 "${proc#/proc/}"
+                    fi
+                  done
+                fi
+                last="$now"
+                sleep 300
+              done
+          volumeMounts:
+            - name: tls
+              mountPath: {{ $tlsDir }}
+              readOnly: true
+          resources:
+            requests:
+              cpu: 5m
+              memory: 8Mi
+        {{- end }}
+{{- end }}

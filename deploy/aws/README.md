@@ -64,6 +64,14 @@ Manager. The stack only reports success once the whole install finished, so a fa
   must be a verified SES identity). Without them its e-mail stays unconfigured and the summary says so. The stack has no
   parameter for them, so that a password isn't kept in the instance's user data: re-run `bootstrap.sh` on the instance with
   them set (see below).
+- **Video calls:** the chart's bundled TURN server (coturn, which relays a call's media for a participant behind a strict
+  firewall) is switched off here. It listens on the node's own address and needs UDP open to the internet on an address that
+  doesn't change; this instance's public address is not fixed, and the load balancer in front of the site carries only TCP.
+  Calls still connect directly between participants and through public STUN servers, which covers most networks. To add
+  TURN, give the instance an Elastic IP, open TCP and UDP 3478 and UDP 49152-49252 to it in the security group, and
+  re-run `bootstrap.sh`'s `helm upgrade` with `--set coturn.create=true --set coturn.hostname=<that address>
+  --set coturn.externalIp=<that address>`, or run your own TURN server and set the Video Conferencing plugin's TURN
+  settings in the admin console.
 - **One instance, no HA:** a single k3s node with `ReadWriteOnce` EBS volumes. Back up the database before upgrading —
   the server creates and updates its schema at startup, with no migrations.
 

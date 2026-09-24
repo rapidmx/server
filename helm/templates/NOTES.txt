@@ -76,3 +76,22 @@ Signing certificates (S/MIME, mailboxes' digital-signature keys):
   Certificates admin page (mail.signingEnrollment.backend is "manual", or "auto" resolved to it because {{ tpl (toString .Values.global.domain) . }}
   isn't a real domain a public CA can issue for).
 {{- end }}
+{{- if eq (include "rapidmx.coturnEnabled" .) "true" }}
+
+Video call relay: coturn, a TURN server, is installed with this release for the Video Conferencing plugin, which is given
+{{ include "rapidmx.coturnURL" . }}{{ if eq (include "rapidmx.coturnAuthMode" .) "secret" }} and, from the secret below, a credential of its own for each participant that joins a call, good for an hour{{ else }} and the user name and password below{{ end }}.
+It runs on the node's own network, so on the node it lands on{{ with .Values.coturn.nodeSelector }} (coturn.nodeSelector: {{ toJson . }}){{ end }}:
+  - {{ include "rapidmx.coturnHost" . }} must resolve to the node's public address;
+  - TCP and UDP {{ .Values.coturn.port }}{{ if .Values.coturn.tls.enabled }}, TCP {{ .Values.coturn.tls.port }} (TLS){{ end }}, and UDP {{ .Values.coturn.relayPorts.min }}-{{ .Values.coturn.relayPorts.max }}, must be open to the internet in every firewall and security group.
+{{- if .Values.coturn.tls.enabled }}
+  - the certificate in the "{{ include "rapidmx.coturnTLSSecretName" . }}" Secret must cover {{ include "rapidmx.coturnHost" . }}; coturn stays pending until that Secret exists.
+  - the Video Conferencing plugin must be version 0.3.2 or later, which reads two TURN addresses in one setting.
+{{- end }}
+{{- if eq (include "rapidmx.coturnAuthMode" .) "secret" }}
+  Secret: kubectl -n {{ .Release.Namespace }} get secret {{ include "rapidmx.coturnSecretName" . }} -o jsonpath='{.data.mail__videoconf__turn__shared_secret}' | base64 -d
+{{- else }}
+  User name: {{ .Values.coturn.auth.username }}
+  Password: kubectl -n {{ .Release.Namespace }} get secret {{ include "rapidmx.coturnSecretName" . }} -o jsonpath='{.data.mail__videoconf__turn__credential}' | base64 -d
+{{- end }}
+Without those, calls still connect directly and through public STUN servers; only a participant behind a strict firewall can't.
+{{- end }}

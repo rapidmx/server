@@ -272,6 +272,19 @@ describe("PluginHost", () => {
 
     const installed = (name: string) => ({ name, version: "1.0.0", manifest: MANIFEST, entryUrl: "file:///nope.js" });
 
+    it("leaves the deployment's own configuration alone for a saved setting that is empty", async () => {
+        // The manifest's "" defaults are saved when a plugin is installed; they must not shadow config set another way.
+        const rows = [row("@rapidmx/meet", { settings: { "mail:videoconf:turn:url": "", "mail:videoconf:turn:username": "", "mail:videoconf:public_url": "https://mail.example.com/meet" } })];
+        const installer: any = { install: vi.fn(async () => ({ installed: [installed("@rapidmx/meet")], errors: [] })) };
+        const config = configWith({ mail: { videoconf: { turn: { url: "turn:mail.example.com:3478" } } } });
+        // configWith() stands in for nconf's layers: set() is the top one, so an empty value written there would win.
+        await PluginHost.prepare({ config, logger, datastore: "mongo", pluginClass: class {}, appRoot: process.cwd(), store: new MemoryStore(rows), installer });
+
+        expect(config.get("mail:videoconf:turn:url")).toBe("turn:mail.example.com:3478");
+        expect(config.get("mail:videoconf:turn:username")).toBeUndefined();
+        expect(config.get("mail:videoconf:public_url")).toBe("https://mail.example.com/meet");
+    });
+
     it("installs enabled plugins, applies the settings of installed ones and records their errors", async () => {
         const rows = [
             row("@rapidmx/activesync", { settings: { "mail:eas:sync_window_size": 42 } }),

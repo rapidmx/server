@@ -217,7 +217,12 @@ export class PluginHost {
         const installedNames: Set<string> = new Set(installed.map((plugin) => plugin.name));
         for (const row of enabled.filter((plugin) => installedNames.has(plugin.name))) {
             for (const [key, value] of Object.entries(row.settings ?? {})) {
-                config.set(key, value);
+                // An empty value means "not set": a plugin's manifest may declare "" as a default, which is saved when the
+                // plugin is installed, and applying it would override the deployment's own configuration for the same key
+                // (the Helm chart's bundled coturn sets mail:videoconf:turn:* through the environment, for one).
+                if (value !== "") {
+                    config.set(key, value);
+                }
             }
         }
         PluginRegistry.setLoaded(installed.map((plugin) => ({ name: plugin.name, version: plugin.version })));

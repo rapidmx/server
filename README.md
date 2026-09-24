@@ -636,6 +636,43 @@ and how many failed sign-ins per client address or per username in 15 minutes (`
 a 429. The paths, the cache size and the window are `mail:basic_auth:*` in the server's configuration. The bundled
 auth-server has `auth__app_password__enabled: true`, which this depends on.
 
+### Video calls: the TURN server
+
+The Video Conferencing plugin connects participants directly to each other. A participant behind a strict firewall or NAT can't be
+reached that way and needs a **TURN server** to relay the call's media, so the chart installs one, [coturn](https://github.com/coturn/coturn)
+(`coturn.create`, on by default), and fills in the plugin's TURN settings (`mail:videoconf:turn:*`) through the server's environment, so
+calls work as installed.
+
+- **Credentials** (`coturn.auth.mode`):
+  - `secret` (the default): every participant gets a credential of their own when they join a call, made from a secret only the server and
+    coturn know and good for an hour. Nothing a participant is handed can be used after their call, or to work out anyone else's. The secret
+    is generated once and kept across upgrades in the `<release>-coturn` Secret, which coturn and the server pod both read, so the two always
+    agree; set `coturn.auth.sharedSecret` to choose it.
+  - `credential`: one pre-set user name (`coturn.auth.username`, default `rapidmx`) and password (`coturn.auth.password`, generated once
+    and kept), the same for everyone. Every participant is handed it, so anyone who has joined a call can keep using the relay until you change it.
+  - `coturn.auth.existingSecret` reads them from a Secret you manage instead (keys `mail__videoconf__turn__shared_secret`, or
+    `mail__videoconf__turn__username` and `mail__videoconf__turn__credential`). Render the chart without cluster access (`helm template`,
+    GitOps) and it asks for the secret rather than generate a new one on every render.
+  - Either way, coturn refuses to relay to private, loopback and link-local addresses (`coturn.deniedPeerIps`), so it can't be used to reach
+    the node's or the cluster's own network.
+- **It runs on the node's own network** (`hostNetwork`), because TURN is UDP, which the Gateway can't carry, and relayed media must leave
+  from an address a browser can reach. On the node it lands on (pin it with `coturn.nodeSelector` on a cluster with several):
+  - `coturn.hostname` (default: `host`) must resolve to the node's public address;
+  - TCP and UDP `coturn.port` (3478), UDP `coturn.relayPorts` (49152-49252, about one port per relayed connection) and, with TLS, TCP
+    `coturn.tls.port` (5349) must be open to the internet in every firewall and security group - `single_node_install.sh` opens them;
+  - `coturn.externalIp` may name the node's public address; left empty, coturn asks an external service for it when it starts.
+- **TURN over TLS** (`coturn.tls.enabled`, off by default) adds a `turns:` address for a participant whose network blocks everything but TLS.
+  The plugin is given both addresses in its one TURN URL setting, separated by a comma, which needs a Video Conferencing plugin of version
+  0.3.2 or later - an older one takes the pair for one invalid address and no call connects, which is why this is opt-in. coturn needs a
+  certificate for `coturn.hostname`: by default the one the chart issues for `host` (`<host>-tls-cert`), so `hostname` must be empty or be
+  `host`; for any other name, or when the chart issues none (`global.gateway.tls` off, a local domain), set `coturn.tls.existingSecret` to a
+  `kubernetes.io/tls` Secret. A renewed certificate is picked up without a restart: a small container beside coturn checks it every five
+  minutes and signals coturn when it has changed. coturn starts once the Secret exists, so a first install waits for the certificate.
+- **An administrator's own setting wins.** What is saved in the plugin's settings in the admin console overrides these; an empty setting
+  falls through to them, so the console's empty TURN fields don't hide what the chart set.
+- **Turn it off** with `coturn.create=false` (a local install with no public address has no use for it, and the AWS template leaves it off - see
+  its README), then set the plugin's TURN settings yourself if you want a relay.
+
 ### Signing certificates
 
 `mail.signingEnrollment` chooses how mailboxes get the S/MIME certificate their digital-signature key needs

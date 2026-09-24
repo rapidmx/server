@@ -171,15 +171,17 @@ read; only when that finds nothing (e.g. `--create-namespace`, which renders bef
 cluster-scoped "default" Namespace tried. lookup fails the render on Forbidden, so the cluster-scoped probe must not come
 first.
 Usage: include "rrst.assertStableSecrets" (dict "missing" (list "cookies.secret" ...) "context" $)
+"always" checks even with global.secrets.existingSecret, for a secret that Secret doesn't cover.
 */}}
 {{- define "rrst.assertStableSecrets" -}}
-{{-   if and .missing (not .context.Values.global.secrets.existingSecret) -}}
+{{-   if and .missing (or .always (not .context.Values.global.secrets.existingSecret)) -}}
 {{-     $clusterAccess := lookup "v1" "ConfigMap" .context.Release.Namespace "kube-root-ca.crt" -}}
 {{-     if not $clusterAccess -}}
 {{-       $clusterAccess = lookup "v1" "Namespace" "" "default" -}}
 {{-     end -}}
 {{-     if not $clusterAccess -}}
-{{-       required (printf "Rendering without cluster access (helm template, GitOps, --dry-run), so generated secrets would change on every render. Set %s explicitly, or global.secrets.existingSecret to a Secret you manage." (join ", " .missing)) "" -}}
+{{-       $instead := ternary "" ", or global.secrets.existingSecret to a Secret you manage" (.always | default false) -}}
+{{-       required (printf "Rendering without cluster access (helm template, GitOps, --dry-run), so generated secrets would change on every render. Set %s explicitly%s." (join ", " .missing) $instead) "" -}}
 {{-     end -}}
 {{-   end -}}
 {{- end -}}
@@ -426,5 +428,104 @@ Usage: include "rapidmx.pvcStorageClass" (dict "name" $claimName "value" .Values
 storageClassName: {{ $existingClass | quote }}
 {{-   else if and $class (ne $class "default") -}}
 storageClassName: {{ $class | quote }}
+{{-   end -}}
+{{- end -}}
+
+{{/*********************************** COTURN ***********************************/}}
+
+{{/* "true" when the bundled coturn is on (coturn.create). Usage: include "rapidmx.coturnEnabled" . */}}
+{{- define "rapidmx.coturnEnabled" -}}
+{{-   if and .Values.coturn .Values.coturn.create -}}
+true
+{{-   end -}}
+{{- end -}}
+
+{{/* The name browsers reach coturn at: coturn.hostname, else this chart's host. */}}
+{{- define "rapidmx.coturnHost" -}}
+{{-   include "rrst.render" (dict "value" (.Values.coturn.hostname | default .Values.host) "context" .) -}}
+{{- end -}}
+
+{{/*
+The TURN URL the Video Conferencing plugin hands to browsers (mail:videoconf:turn:url), or empty when coturn is off: the UDP/TCP
+address, and with coturn.tls.enabled the TLS one after it, separated by a comma. Usage: include "rapidmx.coturnURL" .
+*/}}
+{{- define "rapidmx.coturnURL" -}}
+{{-   if eq (include "rapidmx.coturnEnabled" .) "true" -}}
+{{-     $host := include "rapidmx.coturnHost" . -}}
+{{-     if .Values.coturn.tls.enabled -}}
+{{-       printf "turn:%s:%d,turns:%s:%d" $host (int .Values.coturn.port) $host (int .Values.coturn.tls.port) -}}
+{{-     else -}}
+{{-       printf "turn:%s:%d" $host (int .Values.coturn.port) -}}
+{{-     end -}}
+{{-   end -}}
+{{- end -}}
+
+{{/* The Secret holding coturn's credentials: coturn.auth.existingSecret, else the one this chart renders. */}}
+{{- define "rapidmx.coturnSecretName" -}}
+{{-   .Values.coturn.auth.existingSecret | default (printf "%s-coturn" (include "rrst.fullname" .)) -}}
+{{- end -}}
+
+{{/* How coturn authenticates its users: "secret" (a credential per join) or "credential" (one user name and password). */}}
+{{- define "rapidmx.coturnAuthMode" -}}
+{{-   $mode := toString .Values.coturn.auth.mode -}}
+{{-   if not (has $mode (list "secret" "credential")) -}}
+{{-     fail (printf "coturn.auth.mode is %q - it must be \"secret\" or \"credential\"." $mode) -}}
+{{-   end -}}
+{{-   $mode -}}
+{{- end -}}
+
+{{/*
+The kubernetes.io/tls Secret coturn's TLS listener reads its certificate and key from: coturn.tls.existingSecret, else the
+one cert-manager keeps for this chart's own host (tls-certs.yaml).
+*/}}
+{{- define "rapidmx.coturnTLSSecretName" -}}
+{{-   .Values.coturn.tls.existingSecret | default (printf "%s-tls-cert" (include "rrst.render" (dict "value" .Values.host "context" .))) -}}
+{{- end -}}
+
+{{/*
+Fails the render on a coturn setting that would leave it unable to start or unsafe to run. The secret, user name, password and
+host end up in turnserver's command line, which its entrypoint passes through a shell, so they are limited to characters that
+mean nothing to one. Usage: include "rapidmx.assertCoturn" $
+*/}}
+{{- define "rapidmx.assertCoturn" -}}
+{{-   $c := .Values.coturn -}}
+{{-   $mode := include "rapidmx.coturnAuthMode" . -}}
+{{-   if and (eq $mode "credential") (not (regexMatch "^[A-Za-z0-9._-]+$" (toString $c.auth.username))) -}}
+{{-     fail (printf "coturn.auth.username is %q - it may only contain letters, digits and . _ -" (toString $c.auth.username)) -}}
+{{-   end -}}
+{{-   if and $c.auth.password (not (regexMatch "^[A-Za-z0-9._~-]+$" (toString $c.auth.password))) -}}
+{{-     fail "coturn.auth.password may only contain letters, digits and . _ ~ -" -}}
+{{-   end -}}
+{{-   if and $c.auth.sharedSecret (not (regexMatch "^[A-Za-z0-9._~-]+$" (toString $c.auth.sharedSecret))) -}}
+{{-     fail "coturn.auth.sharedSecret may only contain letters, digits and . _ ~ -" -}}
+{{-   end -}}
+{{-   if not (regexMatch "^[A-Za-z0-9.-]+$" (include "rapidmx.coturnHost" .)) -}}
+{{-     fail (printf "coturn.hostname resolves to %q - it must be a host name (letters, digits, . and -)." (include "rapidmx.coturnHost" .)) -}}
+{{-   end -}}
+{{-   if and $c.externalIp (not (regexMatch "^[0-9A-Fa-f:.]+$" (toString $c.externalIp))) -}}
+{{-     fail (printf "coturn.externalIp is %q - it must be an IP address." (toString $c.externalIp)) -}}
+{{-   end -}}
+{{-   $min := int $c.relayPorts.min -}}
+{{-   $max := int $c.relayPorts.max -}}
+{{-   if or (lt $min 1024) (gt $max 65535) (gt $min $max) -}}
+{{-     fail (printf "coturn.relayPorts is %d-%d - it must be a range of ports between 1024 and 65535, smallest first." $min $max) -}}
+{{-   end -}}
+{{-   $port := int $c.port -}}
+{{-   if or (lt $port 1) (gt $port 65535) (and (ge $port $min) (le $port $max)) -}}
+{{-     fail (printf "coturn.port is %d - it must be a port from 1 to 65535 outside the relay range %d-%d." $port $min $max) -}}
+{{-   end -}}
+{{-   if $c.tls.enabled -}}
+{{-     $tlsPort := int $c.tls.port -}}
+{{-     if or (lt $tlsPort 1) (gt $tlsPort 65535) (eq $tlsPort $port) (and (ge $tlsPort $min) (le $tlsPort $max)) -}}
+{{-       fail (printf "coturn.tls.port is %d - it must be a port from 1 to 65535 that is neither coturn.port nor in the relay range %d-%d." $tlsPort $min $max) -}}
+{{-     end -}}
+{{-     if not $c.tls.existingSecret -}}
+{{-       if ne (include "rapidmx.coturnHost" .) (include "rrst.render" (dict "value" .Values.host "context" .)) -}}
+{{-         fail (printf "coturn.tls.enabled is true and coturn.hostname is %q, which is not this chart's host, so the certificate this chart issues does not cover it. Set coturn.tls.existingSecret to a kubernetes.io/tls Secret whose certificate does." (include "rapidmx.coturnHost" .)) -}}
+{{-       end -}}
+{{-       if ne (include "rrst.certificate" .) "true" -}}
+{{-         fail "coturn.tls.enabled is true, but this chart issues no certificate for its host (global.gateway.tls is off, or the host is localhost or a .local name). Set coturn.tls.existingSecret to a kubernetes.io/tls Secret holding one." -}}
+{{-       end -}}
+{{-     end -}}
 {{-   end -}}
 {{- end -}}

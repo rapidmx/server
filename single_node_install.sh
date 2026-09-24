@@ -368,7 +368,8 @@ function firewallTrustSource() {
   esac
 }
 
-# Opens port $1 (e.g. 80/tcp) in the active firewall, unless already open, recording the rule for --uninstall.
+# Opens port $1 (e.g. 80/tcp, or a range such as 49152-49252/udp) in the active firewall, unless already open, recording the
+# rule for --uninstall. firewalld writes a range with a hyphen and ufw with a colon.
 function firewallOpenPort() {
   case "`activeFirewall`" in
     firewalld)
@@ -381,8 +382,8 @@ function firewallOpenPort() {
       fi
       ;;
     ufw)
-      if ufwAllow "$1"; then
-        recordFirewallRule ufw allow "$1"
+      if ufwAllow "${1/-/:}"; then
+        recordFirewallRule ufw allow "${1/-/:}"
       fi
       ;;
   esac
@@ -1211,13 +1212,20 @@ function configureNginx() {
   fi
 
   if [[ -n "`activeFirewall`" ]]; then
-    echo "Opening SMTP, HTTP${GATEWAY_TLS:+ and HTTPS} in `activeFirewall`..."
+    echo "Opening SMTP, HTTP${GATEWAY_TLS:+, HTTPS} and TURN in `activeFirewall`..."
     # Port 25 reaches Postfix through k3s' ServiceLB (the chart's "postfix" LoadBalancer Service).
     firewallOpenPort 25/tcp
     firewallOpenPort 80/tcp
     if [[ "$GATEWAY_TLS" = "true" ]]; then
       firewallOpenPort 443/tcp
     fi
+    # The chart's bundled coturn (values.yaml's coturn) listens on the host's own network for the Video Conferencing plugin:
+    # coturn.port over TCP and UDP, coturn.relayPorts over UDP, and coturn.tls.port over TCP if TLS is turned on. These are the
+    # chart's defaults.
+    firewallOpenPort 3478/tcp
+    firewallOpenPort 3478/udp
+    firewallOpenPort 5349/tcp
+    firewallOpenPort 49152-49252/udp
   fi
   # SELinux (RHEL/Fedora) only lets nginx connect to other hosts' HTTP ports (the Gateway's ports 80 and 443) with this
   # boolean. Debian's AppArmor has no nginx profile by default, so there's nothing to do there.
