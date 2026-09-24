@@ -197,24 +197,6 @@ service:
     failureThreshold: 22
 authserver:
   create: true
-  # The bundled auth-server chart carries its own MongoDB and Redis: same rule as above, requests only and never limits.
-  mongodb:
-    resourcesPreset: none
-    resources:
-      requests:
-        cpu: 500m
-        memory: 512Mi
-        ephemeral-storage: 50Mi
-    updateStrategy:
-      type: Recreate
-  redis:
-    master:
-      resourcesPreset: none
-      resources:
-        requests:
-          cpu: 100m
-          memory: 128Mi
-          ephemeral-storage: 50Mi
   service:
     config:
       auth__allowRegistration: false
