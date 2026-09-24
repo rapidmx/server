@@ -88,6 +88,27 @@ describe("PluginStateStore", () => {
         expect(logger.warn).toHaveBeenCalledWith(expect.stringMatching(/@rapidmx\/bad: not a plugin/));
     });
 
+    it("seeds a setting whose default names the host with the configured host name, and leaves it unset without one", async () => {
+        const hosted: any = {
+            getVersion: vi.fn(async (name: string) => ({
+                name,
+                version: "1.0.0",
+                integrity: "sha512-x",
+                manifest: { ...MANIFEST, settings: [{ key: "mail:hosted:public_url", label: "URL", type: "string", default: "https://<host>/meet" }] },
+            })),
+        };
+        const configured = new MemoryStore([]);
+        (configured as any).config = { get: (key: string) => (key === "mail:dns:mx_hostname" ? "Mail.Example.com" : undefined) };
+        expect((await configured.loadAndSeed([{ name: "@rapidmx/hosted" }], () => hosted, {}))[0].settings).toEqual({ "mail:hosted:public_url": "https://mail.example.com/meet" });
+
+        for (const value of ["", "not a host", undefined]) {
+            const store = new MemoryStore([]);
+            (store as any).config = { get: () => value };
+            expect((await store.loadAndSeed([{ name: "@rapidmx/hosted" }], () => hosted, {}))[0].settings).toEqual({});
+        }
+        expect((await new MemoryStore([]).loadAndSeed([{ name: "@rapidmx/hosted" }], () => hosted, {}))[0].settings).toEqual({});
+    });
+
     it("seeds a default whose required plugins won't be enabled as disabled, whatever the order of the defaults", async () => {
         const requires: Record<string, Record<string, string>> = {
             "@rapidmx/needs-mapi": { "@rapidmx/mapi": "^1.0.0" },

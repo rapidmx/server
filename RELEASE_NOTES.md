@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Changed
+
+- **Plugins whose settings name this server's host work as installed.** A setting whose default is `https://<host>/meet` (video-conferencing's join page) or `https://<host>` (Autodiscover's public server URL) is saved with the real host when the plugin is installed - the address the admin console was reached at, or, for the default plugins seeded at first start, `mail:dns:mx_hostname` (the chart sets it) - so calendar invites carry join links and Autodiscover answers without a visit to the plugin's settings. Needs `@rapidmx/restapi` with `<host>` defaults.
+
 ## v1.0.0-beta.15
 
 ### Fixed

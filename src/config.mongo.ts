@@ -136,8 +136,10 @@ conf.defaults({
         // - since both the EAS (`/Microsoft-Server-ActiveSync`) and MAPI (`/mapi/emsmdb`) endpoint URLs the
         // plugin advertises to real mail clients are built by appending a path to it. Empty by default:
         // Autodiscover then answers nothing rather than pointing a client at a host that isn't this deployment.
-        // No Helm chart wiring, unlike similar settings - an administrator sets it from the admin console's
-        // Plugins page after install; set mail__autodiscover__public_url otherwise.
+        // Not set here or by the Helm chart: the plugin's setting defaults to `https://<host>`, and when the plugin is
+        // seeded at first start the host is `mail:dns:mx_hostname` (the chart sets it), or the address the admin console
+        // was reached at when an administrator installs it, so it works as installed. Set mail__autodiscover__public_url
+        // to override.
         autodiscover: {
             public_url: "",
         },

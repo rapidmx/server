@@ -8,6 +8,7 @@ import { ConnectionManager, ObjectFactory } from "@rapidrest/service-core";
 import {
     defaultPluginSettings,
     NpmRegistryClient,
+    normalizePluginHost,
     parsePluginManifest,
     pruneUnmetRequirements,
     type Plugin,
@@ -221,7 +222,9 @@ export class PluginStateStore {
             integrity,
             enabled: plugin.enabled ?? true,
             removed: false,
-            settings: defaultPluginSettings(manifest),
+            // A setting whose default names the host (`https://<host>/meet`) gets the host DNS and TLS already point at (the same
+            // `mail:dns:mx_hostname` the Helm chart sets), so a plugin seeded at first start works without a visit to its settings.
+            settings: defaultPluginSettings(manifest, normalizePluginHost(this.config?.get?.("mail:dns:mx_hostname"))),
             manifest,
         };
     }

@@ -6604,3 +6604,11 @@ as part of this pass. Flag it before bumping the `@rapidrest/service-core` depen
 
 Verified: `tsc --noEmit`, and `test/dev/DevImpersonationRoute.test.ts` (10/10, including the new regression
 test). Did not run the full suite for this small, isolated change.
+
+### 2026-09-23 (evening) - plugin settings that name the host are saved on install (`<host>` defaults)
+
+JP: the pre-filled `https://<host>/meet` (meet-plugin) / `https://<host>` (autodiscover-plugin) must be saved and active **on install**, not by saving the settings form, so the plugins work with no further steps. Nothing committed, no version bumps. Companion changes in `restapi` (the resolution), `web-client` (the form still offers it for plugins installed earlier), `meet-plugin`/`autodiscover` (the manifest defaults). Full write-up in `web-client/.claude/NOTES.md`.
+- **Here:** `PluginStateStore.describeDefault()` (the default plugins seeded at first start have no request) passes `normalizePluginHost(config "mail:dns:mx_hostname")` to `defaultPluginSettings()` - the chart already sets `mail__dns__mx_hostname` (`mail.<domain>`), the host DNS/MX and TLS point at. Unset or not a plain host name -> the setting stays unset (the plugin's own `""` default), never the literal `<host>`. An admin-console install/upgrade uses the request's host instead (restapi `installRow()` / `update()`).
+- **Not covered:** a deployment that already has these plugins keeps their stored manifests (default `""`) and rows until their version changes; that path fills an empty value on the `PUT` that changes the version, and the form offers it meanwhile. Also, `mail:dns:mx_hostname` is assumed to be the web host (true for the chart's `mail.<domain>`; a split MX host would need `mail__autodiscover__public_url` set by hand).
+- This checkout's `node_modules/@rapidmx/restapi` is a copy: I overwrote `dist/lib/plugins/PluginUtils.js` and `dist/types/plugins/PluginUtils.d.ts` with the working-tree build to run `tsc` and the suite; `yarn install` against a released restapi replaces them.
+Verified: `tsc --noEmit`, `yarn lint`, `test/plugins` (14 files, 236 tests, incl. the new seeding test).
