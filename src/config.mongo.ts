@@ -13,7 +13,6 @@ import {
     DEFAULT_MAIL_INGEST_SECRET,
     DEFAULT_MAX_BODY_SIZE_BYTES,
     DEFAULT_APPEARANCE_BACKGROUND_MAX_BYTES,
-    DEFAULT_LEGAL_HOLD_CACHE_MS,
     DEFAULT_MAX_COMPOSE_ATTACHMENT_BYTES,
     ensurePushDatastore,
 } from "./config.defaults.js";
@@ -195,10 +194,6 @@ conf.defaults({
             // memory at once to build MIME — see `DEFAULT_MAX_COMPOSE_ATTACHMENT_BYTES` for the fallback used
             // when this is unset.
             max_attachment_bytes: DEFAULT_MAX_COMPOSE_ATTACHMENT_BYTES,
-            // How long a legal-hold lookup for a mailbox may be reused before scanning the Matter collection
-            // again — see `DEFAULT_LEGAL_HOLD_CACHE_MS` for the fallback used when this is unset and the full
-            // rationale (avoids a fresh full scan on every draft autosave).
-            legal_hold_cache_ms: DEFAULT_LEGAL_HOLD_CACHE_MS,
         },
         preferences: {
             // The largest background image a user may upload for the web client (`POST mail/preferences/appearance/background`), in

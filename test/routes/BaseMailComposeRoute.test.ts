@@ -322,37 +322,37 @@ describe("BaseMailComposeRoute replaced body blobs", () => {
         expect(route.blobStore.delete).not.toHaveBeenCalled();
     });
 
-    it("caches a mailbox's legal-hold lookup briefly, so a second save right after the first doesn't re-scan the Matter collection", async () => {
-        const route = buildRoute("bodies/old", { matters: [{ uid: "mt1", custodianMailboxUids: ["mb1"] }] });
+    it("honors a legal hold placed between two saves on the very next save, never acting on an earlier 'no hold' answer", async () => {
+        const route = buildRoute("bodies/old");
 
+        // No hold yet: the replaced body is deleted, as before.
         await route.assemble("m1", htmlInput, user);
-        await route.assemble("m1", htmlInput, user);
+        expect(route.blobStore.delete).toHaveBeenCalledWith("bodies/old");
+        expect(route.messageRepo.update.mock.calls[0][0]).not.toHaveProperty("retainedBodyBlobKeys");
 
-        expect(route.matterRepo.find).toHaveBeenCalledTimes(1);
-        // Both saves still see the mailbox as held (the cached answer), not just the first.
-        expect(route.messageRepo.update.mock.calls[0][0]).toHaveProperty("retainedBodyBlobKeys");
-        expect(route.messageRepo.update.mock.calls[1][0]).toHaveProperty("retainedBodyBlobKeys");
-    });
-
-    it("scans again once the legal-hold cache entry has expired", async () => {
-        const route = buildRoute("bodies/old", { matters: [{ uid: "mt1", custodianMailboxUids: ["mb1"] }] });
-        route.config = { get: (key: string) => (key === "mail:compose:legal_hold_cache_ms" ? 0 : undefined) };
-
-        await route.assemble("m1", htmlInput, user);
+        // A matter now holds the mailbox. Deleting on a stale answer here would destroy discoverable content.
+        route.blobStore.delete.mockClear();
+        route.matterRepo.find.mockResolvedValue([{ uid: "mt1", custodianMailboxUids: ["mb1"] }]);
         await route.assemble("m1", htmlInput, user);
 
         expect(route.matterRepo.find).toHaveBeenCalledTimes(2);
+        expect(route.messageRepo.update.mock.calls[1][0]).toHaveProperty("retainedBodyBlobKeys");
+        expect(route.blobStore.delete).not.toHaveBeenCalled();
     });
 
-    it("caches a legal-hold lookup failure too, rather than re-scanning on every save while the lookup stays down", async () => {
+    it("keeps the body while the legal-hold lookup is failing, and goes back to normal on the very next save once it recovers", async () => {
         const route = buildRoute("bodies/old");
-        route.matterRepo.find.mockRejectedValue(new Error("db down"));
+        route.matterRepo.find.mockRejectedValueOnce(new Error("db down"));
 
         await route.assemble("m1", htmlInput, user);
-        await route.assemble("m1", htmlInput, user);
+        expect(route.messageRepo.update.mock.calls[0][0]).toHaveProperty("retainedBodyBlobKeys");
+        expect(route.blobStore.delete).not.toHaveBeenCalled();
 
-        expect(route.matterRepo.find).toHaveBeenCalledTimes(1);
-        expect(route.messageRepo.update.mock.calls[1][0]).toHaveProperty("retainedBodyBlobKeys");
+        // The lookup answers again (no hold): nothing left over from the outage is reused.
+        await route.assemble("m1", htmlInput, user);
+        expect(route.matterRepo.find).toHaveBeenCalledTimes(2);
+        expect(route.messageRepo.update.mock.calls[1][0]).not.toHaveProperty("retainedBodyBlobKeys");
+        expect(route.blobStore.delete).toHaveBeenCalledWith("bodies/old");
     });
 
     it("refuses the save with 409, writing nothing, once a held draft retains MAX_RETAINED_BODY_BLOB_KEYS bodies", async () => {

@@ -2,11 +2,40 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 ///////////////////////////////////////////////////////////////////////////////
 import { ApiError, ObjectDecorators, type JWTUser } from "@rapidrest/core";
-import { ACLAction, ACLUtils, ApiErrorMessages, ApiErrors, DocDecorators, HttpResponse, ObjectFactory, RepoUtils, RouteDecorators } from "@rapidrest/service-core";
+import {
+    ACLAction,
+    ACLUtils,
+    ApiErrorMessages,
+    ApiErrors,
+    DocDecorators,
+    HttpRequest,
+    HttpResponse,
+    ObjectFactory,
+    RateLimiter,
+    RepoUtils,
+    RouteDecorators,
+} from "@rapidrest/service-core";
 import { AuditAction, BlobStore, hasMailAccess, isNonOwnerAccess, Mailbox, Message, recordAuditLog } from "@rapidmx/restapi";
 const { Config, Inject, Logger } = ObjectDecorators;
 const { Description, Summary } = DocDecorators;
-const { Auth, Get, Param, RateLimit, Response, User: AuthUser } = RouteDecorators;
+const { Auth, Get, Param, Request, Response, User: AuthUser } = RouteDecorators;
+
+/**
+ * Per-user limit on `GET /:id/raw`. A real user fetches this a handful of times per message they actually
+ * decrypt/verify, not per page view, so this is generous headroom over real usage while bounding a mass-download of
+ * many messages' full raw MIME (each read into memory whole, up to `mail:compose:max_attachment_bytes` for a composed
+ * message and unbounded for inbound mail).
+ *
+ * Enforced by hand in `raw()` (see `RAW_CONTENT_RATE_LIMIT_KEY`) rather than with `@RateLimit()`, because the
+ * decorator can't express what's wanted here: its identifier includes the matched route pattern *with its params
+ * substituted*, so on a `/:id/raw` route every message id gets its own fresh bucket - a caller pulling thousands of
+ * different messages would never come close to any limit - and giving it a fixed `id` instead makes it one bucket
+ * shared by every user on the server.
+ */
+export const RAW_CONTENT_RATE_LIMIT = { maxAttempts: 300, windowSeconds: 60 };
+
+/** The rate limit counter for one user's raw-content reads: keyed on the user alone, never on which message. */
+const rawContentRateLimitKey = (userUid: string): string => `${userUid}|mail-message-raw`;
 
 /**
  * Serves a message's raw RFC 5322 MIME source, byte-for-byte — the one thing `@rapidmx/restapi`'s own
@@ -54,6 +83,9 @@ export abstract class BaseMessageRawContentRoute<M extends Message> {
     @Inject(ACLUtils)
     private aclUtils?: ACLUtils;
 
+    @Inject(RateLimiter)
+    private rateLimiter?: RateLimiter;
+
     /** `trusted_roles`: never a grant on a mailbox - see `hasMailAccess()` in `@rapidmx/restapi`. */
     @Config("trusted_roles", ["admin"])
     private trustedRoles: string[] = ["admin"];
@@ -80,16 +112,19 @@ export abstract class BaseMessageRawContentRoute<M extends Message> {
             "directly (see GET /:id/content for the sanitized HTML every other view uses).",
     )
     @Auth(["jwt"])
-    // Unlike most routes, which fall to the generous "authenticated" tier (~10k req/300s), this one loads a whole raw
-    // MIME blob into memory per request - up to mail:compose:max_attachment_bytes (25MB default) for a composed
-    // message, and unbounded for inbound mail. A real user fetches this a handful of times per message they actually
-    // decrypt/verify, not per page view, so 300/min (matching BaseGiphySearchRoute's own per-user cap for its other
-    // expensive, per-request-cost route) is generous headroom over real usage while bounding a mass-download abuse case.
-    @RateLimit({ perUser: true, maxAttempts: 300, windowSeconds: 60 })
     @Get("/:id/raw")
-    public async raw(@Param("id") id: string, @Response res: HttpResponse, @AuthUser user?: JWTUser): Promise<void> {
+    public async raw(
+        @Param("id") id: string,
+        @Response res: HttpResponse,
+        @AuthUser user?: JWTUser,
+        @Request req?: HttpRequest,
+    ): Promise<void> {
         if (!this.blobStore || !this.aclUtils) {
             throw new ApiError(ApiErrors.INTERNAL_ERROR, 500, ApiErrorMessages.INTERNAL_ERROR);
+        }
+        // Before any lookup or blob read, so a throttled caller costs nothing. Throws a 429 once exceeded.
+        if (user?.uid) {
+            await this.rateLimiter?.checkAndIncrement(rawContentRateLimitKey(user.uid), RAW_CONTENT_RATE_LIMIT, req);
         }
         await this.init();
 

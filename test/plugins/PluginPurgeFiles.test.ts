@@ -23,11 +23,11 @@ const write = (file: string, content: string = "x"): string => {
     return file;
 };
 
-/** Makes a directory link (a junction on Windows) and returns a function that removes just the link. */
+/** Makes a directory link (a junction on Windows, a symlink elsewhere) and returns a function that removes just the link (unlink, not rmdir: rmdir on a symlink is ENOTDIR on Linux). */
 function link(target: string, at: string): () => void {
     fs.mkdirSync(path.dirname(at), { recursive: true });
     fs.symlinkSync(target, at, "junction");
-    return () => fs.rmdirSync(at);
+    return () => fs.unlinkSync(at);
 }
 
 describe("isContained", () => {

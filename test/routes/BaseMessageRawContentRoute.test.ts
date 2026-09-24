@@ -6,10 +6,12 @@
 // "assembleRaw() Tests (mocked collaborators)" block: `init()` only builds a repo when one isn't
 // already set, so pre-populating the route's private fields before calling a route method bypasses
 // real DI entirely while still running every real ACL/validation branch this route has.
+import nconf from "nconf";
 import config from "../../src/config.mongo.js";
-import { ObjectFactory } from "@rapidrest/service-core";
+import { ObjectFactory, RateLimiter } from "@rapidrest/service-core";
 import { Logger } from "@rapidrest/core";
-import { BaseMessageRawContentRoute } from "../../src/routes/BaseMessageRawContentRoute.js";
+import { BaseMessageRawContentRoute, RAW_CONTENT_RATE_LIMIT } from "../../src/routes/BaseMessageRawContentRoute.js";
+import { TieredRateLimiter } from "../../src/lib/TieredRateLimiter.js";
 
 class TestMessageRawContentRoute extends BaseMessageRawContentRoute<any> {
     protected messageClass: any = class {};
@@ -22,11 +24,6 @@ describe("BaseMessageRawContentRoute Tests (dependency guard clause only)", () =
 
     afterEach(() => {
         vi.restoreAllMocks();
-    });
-
-    it("declares a per-user rate limit on raw(), unlike the generous default 'authenticated' tier - it loads a whole raw MIME blob into memory per request.", () => {
-        const route = Reflect.getMetadata("rrst:route", BaseMessageRawContentRoute.prototype, "raw");
-        expect(route.rateLimit).toMatchObject({ perUser: true, maxAttempts: 300, windowSeconds: 60 });
     });
 
     it("raw() throws INTERNAL_ERROR when blobStore/aclUtils are not set.", async () => {
@@ -144,5 +141,73 @@ describe("BaseMessageRawContentRoute.raw() Tests (mocked collaborators)", () => 
         await expect(route.raw("m1", fakeResponse() as any, user)).rejects.toThrow(/no resource could be found/i);
         expect(route.mailboxRepo.findOne).not.toHaveBeenCalled();
         expect(route.auditRepo.create).not.toHaveBeenCalled();
+    });
+
+    describe("rate limit (the real TieredRateLimiter, with the shipped limits)", () => {
+        let objectFactory: ObjectFactory;
+
+        afterEach(async () => {
+            await objectFactory?.destroy();
+        });
+
+        async function realLimiter(): Promise<RateLimiter> {
+            const limits = new nconf.Provider();
+            limits.use("memory");
+            limits.defaults({ rateLimit: (config as any).get("rateLimit"), trusted_proxies: [] });
+            objectFactory = new ObjectFactory(limits, new Logger());
+            objectFactory.register(TieredRateLimiter, "RateLimiter");
+            return objectFactory.newInstance(RateLimiter, { name: "default" });
+        }
+
+        const requestFor = (uid: string) => ({ headers: {}, socket: { remoteAddress: "10.0.0.1" }, user: { uid } }) as any;
+
+        it("stops a user pulling many DIFFERENT messages, not just repeat reads of one - the limit counts per user, never per message id", async () => {
+            const route: any = buildRoute({ rateLimiter: await realLimiter() });
+            const req = requestFor("u1");
+
+            // A fresh message id every time: were the counter keyed on the matched route with its :id substituted (as
+            // @RateLimit() does), each of these would get its own untouched bucket and none would ever be refused.
+            for (let i = 0; i < RAW_CONTENT_RATE_LIMIT.maxAttempts; i++) {
+                await route.raw(`msg-${i}`, fakeResponse() as any, user, req);
+            }
+            expect(route.blobStore.get).toHaveBeenCalledTimes(RAW_CONTENT_RATE_LIMIT.maxAttempts);
+
+            await expect(route.raw("msg-next", fakeResponse() as any, user, req)).rejects.toMatchObject({ status: 429 });
+            // Refused before any lookup or blob read, so a throttled caller costs nothing.
+            expect(route.blobStore.get).toHaveBeenCalledTimes(RAW_CONTENT_RATE_LIMIT.maxAttempts);
+            expect(route.messageRepo.findOne).toHaveBeenCalledTimes(RAW_CONTENT_RATE_LIMIT.maxAttempts);
+        });
+
+        it("counts each user separately - one user hitting the limit doesn't lock everyone else out", async () => {
+            const route: any = buildRoute({ rateLimiter: await realLimiter() });
+            const req = requestFor("u1");
+            for (let i = 0; i < RAW_CONTENT_RATE_LIMIT.maxAttempts; i++) {
+                await route.raw(`msg-${i}`, fakeResponse() as any, user, req);
+            }
+            await expect(route.raw("msg-next", fakeResponse() as any, user, req)).rejects.toMatchObject({ status: 429 });
+
+            const other = { uid: "u2" } as any;
+            route.mailboxRepo.findOne.mockResolvedValue({ uid: "mb1", ownerUserUid: "u2" });
+            const res = fakeResponse();
+            await route.raw("msg-0", res as any, other, requestFor("u2"));
+            expect(res.send).toHaveBeenCalled();
+        });
+
+        it("checks the limiter with a per-user key that never names the message, and the route's limits", async () => {
+            const checkAndIncrement = vi.fn().mockResolvedValue(undefined);
+            const route: any = buildRoute({ rateLimiter: { checkAndIncrement } });
+            const req = requestFor("u1");
+
+            await route.raw("m1", fakeResponse() as any, user, req);
+            await route.raw("m2", fakeResponse() as any, user, req);
+
+            expect(checkAndIncrement).toHaveBeenNthCalledWith(1, "u1|mail-message-raw", RAW_CONTENT_RATE_LIMIT, req);
+            expect(checkAndIncrement).toHaveBeenNthCalledWith(2, "u1|mail-message-raw", RAW_CONTENT_RATE_LIMIT, req);
+        });
+
+        it("doesn't use @RateLimit(), whose per-route key includes the :id param and so can't bound this", () => {
+            const route = Reflect.getMetadata("rrst:route", BaseMessageRawContentRoute.prototype, "raw");
+            expect(route.rateLimit).toBeUndefined();
+        });
     });
 });

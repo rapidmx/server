@@ -99,9 +99,10 @@ export function truncateNpmOutput(text: string): string {
  * malicious or compromised registry package could pull onto disk before anything ever runs it. `--ignore-scripts`
  * already stops an install script from running, so this is defense in depth against disk exhaustion, not code
  * execution. The size is only known once npm has already fetched everything - this can't prevent the download
- * itself, only refuse to keep and load the result, the same way an install that fails outright is refused: the whole
- * batch's `node_modules` is removed and every plugin in it reports the same error, an already-installed plugin that
- * still matches what's wanted keeps loading (see the `npmFailure` handling this reuses), and it counts toward
+ * itself, only refuse to keep and load the result: the whole `node_modules` is removed and every plugin in it reports
+ * the same error. Unlike an install that fails outright in npm (which leaves an earlier install's files in place for
+ * the plugins that still match what's wanted), nothing survives this refusal - npm has already merged the oversized
+ * result over the previous tree, so there is no intact earlier install to fall back on. It counts toward
  * `installFailures` like any other install failure - except it is always `installFailurePermanent`, since a package
  * that's too big now will still be too big on the next retry.
  */

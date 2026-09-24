@@ -555,7 +555,7 @@ describe("PluginPurger: a step that fails, the hook, and retrying", () => {
             await purger().check();
         } finally {
             // Removes the link itself, never anything it points at.
-            fs.rmdirSync(link);
+            fs.unlinkSync(link);
         }
         const record = (await ledger.get(PLUGIN))!;
         expect(record.steps.find((step) => step.step === "settings")).toEqual({ step: "settings", ok: false, error: "row locked" });

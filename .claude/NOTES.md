@@ -6478,25 +6478,38 @@ Six confirmed findings from a third adversarial review round, fixed in one pass,
   `removeContainedAsync` describe block mirroring every `removeContained` security case (link at the target, link on
   the way down, link the target resolves through, dangling link, real-path escape) plus a "large tree" case; the
   existing `deletePluginFiles` tests were converted to `async`/`await`/`.rejects.toThrow()`.
-- **Draft autosave no longer forces a full `Matter` collection scan on every save.** `BaseMailComposeRoute.storeBody()`
-  asked `isHeldForBodyReplacement()` → `hasActiveLegalHold()` (a full, unbounded, keyset-paged scan of every
-  `Matter`) on every single assemble/autosave call, not only when a hold is actually active - at the "authenticated"
-  rate-limit tier (~33 req/s sustained), one user autosaving rapidly could force repeated full-table scans purely
-  through their own normal use. Added a per-mailbox, short-TTL cache (`mail:compose:legal_hold_cache_ms`, default
-  10s via the new `DEFAULT_LEGAL_HOLD_CACHE_MS`, wired into both `config.mongo.ts`/`config.sql.ts`'s `compose:` block
-  the same way `max_attachment_bytes` already is) inside `isHeldForBodyReplacement()` - a lookup failure is cached
-  too (still fail-safe as "held"), so a lookup that's down doesn't turn into a scan-per-save storm either. `
-  hasActiveLegalHold()` itself is untouched (still the real, uncached scan; `protected`, in case a subclass needs
-  it). Tests: three new cases in `BaseMailComposeRoute.test.ts` - a second save right after the first reuses the
-  cached answer (`matterRepo.find` called once, not twice); a `legal_hold_cache_ms: 0` config forces a re-scan every
-  time; a lookup failure is cached too.
-- **`GET mail/messages/:id/raw` now has its own rate limit.** It fell to the default "authenticated" tier
-  (~10k req/300s) despite loading a whole raw MIME blob into memory per request (up to
-  `mail:compose:max_attachment_bytes`, 25MB default, for a composed message; unbounded for inbound mail) - unlike
-  `BaseGiphySearchRoute`, which already added its own tighter cap for exactly this reason. Added
-  `@RateLimit({ perUser: true, maxAttempts: 300, windowSeconds: 60 })`, mirroring Giphy's own numbers. Test:
-  `BaseMessageRawContentRoute.test.ts` asserts the route's `Reflect.getMetadata("rrst:route", ...)` carries the same
-  `rateLimit` shape, same pattern as `BaseGiphySearchRoute.test.ts`'s own check.
+- **Legal-hold lookup on draft autosave is deliberately NOT cached (a cache was added, then reverted after review).**
+  `BaseMailComposeRoute.storeBody()` asks `isHeldForBodyReplacement()` → `hasActiveLegalHold()` (a keyset-paged scan
+  of `Matter`) on each save that replaces a draft body. A short-TTL per-mailbox cache
+  (`mail:compose:legal_hold_cache_ms`) had been added to cut that cost, but it was unsafe: a cached "not held" answer
+  outlives a hold placed a moment later, and the save then deletes the replaced body blob - the discoverable
+  evidence a hold exists to preserve, irreversibly. (A stale "held" would be harmless - the retention job cleans the
+  blob up later - but a stale "not held" is not, and a TTL cache can't tell them apart.) Removed the cache, the
+  config key and `DEFAULT_LEGAL_HOLD_CACHE_MS`; a lookup failure still fails safe as "held" (never cached, so the next
+  save recovers). The scan cost is the price of correctness; if it ever needs bounding, do it with an indexed
+  "mailbox has an active hold" query or invalidation on hold placement, never a TTL. Tests: a hold placed between two
+  saves is honored on the second (`matterRepo.find` called twice, blob not deleted); a lookup failure keeps the body
+  and the next save recovers.
+- **`GET mail/messages/:id/raw` has its own per-user rate limit, enforced by hand in `raw()`.** It loads a whole raw
+  MIME blob into memory per request (up to `mail:compose:max_attachment_bytes`, 25MB default, for a composed message;
+  unbounded for inbound mail). The first attempt used `@RateLimit({ perUser: true, ... })`, mirroring
+  `BaseGiphySearchRoute`, and only asserted the decorator's metadata - but the decorator's bucket key includes the
+  matched route pattern *with its `:params` substituted*, so on `/:id/raw` every message id got its own fresh bucket
+  and a caller pulling thousands of different messages never hit any limit (giving it a fixed `id` instead makes one
+  bucket shared by all users). `raw()` now calls the injected `RateLimiter.checkAndIncrement("<uid>|mail-message-raw",
+  RAW_CONTENT_RATE_LIMIT, req)` (300/60s) before any lookup or blob read. Tests use the real `TieredRateLimiter` with
+  the shipped config: 300 reads of *distinct* ids succeed and the 301st is a 429 with no further repo/blob reads;
+  users are counted separately; and the route no longer carries `@RateLimit` metadata. (`BaseGiphySearchRoute` has
+  no `:id` param, so its decorator is fine.)
+- **CI failures were Linux-only test bugs, not product bugs (8 tests).** `PluginPurgeFiles.test.ts`/`PluginPurger.test.ts`
+  cleaned up their test symlinks with `fs.rmdirSync(link)`, which only works on a Windows junction; on Linux it is
+  `ENOTDIR` (a symlink isn't a directory), so every "refuses a link" test failed in its own cleanup. Now
+  `fs.unlinkSync` (works for both). The production link-refusal code was correct and untouched. Reproduce CI locally in
+  WSL (Node 24, `yarn install --frozen-lockfile`, `yarn build`, `yarn lint`, `yarn test`) - Windows-only runs hide
+  this class of bug. The `SqliteError: near "EXISTS"` / `Failed to instantiate dependency ... SearchProvider` lines
+  logged during `Server.sql.test.ts` are pre-existing debug noise on every platform, not a failure. Also corrected
+  `DEFAULT_MAX_INSTALL_BYTES`'s doc comment, which claimed an already-installed plugin keeps loading after an
+  over-size refusal - it can't, the whole `node_modules` is removed.
 - **A failed plugin install's npm output is now capped before it's kept anywhere.** `PluginInstaller`'s `runNpm()`
   error message embeds npm's own stderr/stdout verbatim - up to `execFile`'s 16MB `maxBuffer` - and that message is
   duplicated into `PluginInstallResult.errors[]` for *every* plugin the failure affects, which `PluginHost.ts` folds

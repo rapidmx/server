@@ -41,19 +41,6 @@ export const DEFAULT_GIPHY_API_KEY = "ChangeMeGiphyApiKey";
  */
 export const DEFAULT_MAX_COMPOSE_ATTACHMENT_BYTES = 25_000_000;
 /**
- * Default duration, in milliseconds, `BaseMailComposeRoute.isHeldForBodyReplacement()` may reuse a mailbox's last
- * legal-hold lookup before scanning again (`mail:compose:legal_hold_cache_ms`) — 10s. Without this, every draft
- * autosave/assemble call forced a fresh full, keyset-paged scan of the entire `Matter` collection (`hasActiveLegalHold()`)
- * to decide whether a replaced body blob must be kept a little longer, even though almost every save finds nothing
- * changed since the last one; a user autosaving rapidly (the client debounces, but multiple tabs/devices don't
- * coordinate) could force repeated full scans purely by their own normal use. A hold placed or lifted mid-window is
- * only as stale as this cache - acceptable since it only backs that "keep the old blob a little longer" safety net,
- * not the legal hold determination itself (the Matter/eDiscovery admin surfaces and retention enforcement always read
- * the real, uncached state). Shared here so both `config.mongo.ts`/`config.sql.ts` (the default value) and
- * `BaseMailComposeRoute` (the fallback when unset) agree on it.
- */
-export const DEFAULT_LEGAL_HOLD_CACHE_MS = 10_000;
-/**
  * Default cap, in bytes, on a background image a user uploads for the web client (`mail:preferences:background_max_bytes`,
  * `POST mail/preferences/appearance/background`) - 8MB, plenty for a photo at screen resolution. Shared here so both
  * `config.mongo.ts`/`config.sql.ts` (the default value) and `BaseAppearanceRoute` (the fallback when unset) agree on it. The

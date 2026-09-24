@@ -17,9 +17,9 @@
   secrets. The test suite itself runs under `NODE_ENV=test` but never exercises this guard as a side effect (see `config.defaults.ts`'s `SECRETS_GUARD_SKIP_ENVIRONMENTS`), so nothing else changes.
 - **Bumped `@rapidmx/react-shared` to `^0.14.0`**, which carries two real security fixes: session keys are no longer extractable, and a gap in the SVG/MathML sanitizer is closed. The dependency was
   still pinned to `^0.13.0`; being pre-1.0, caret semantics meant that could never auto-resolve to 0.14.0 on its own.
-- **`GET mail/messages/:id/raw` now has its own tighter rate limit** (`perUser: true, maxAttempts: 300, windowSeconds: 60`, matching `BaseGiphySearchRoute`'s own per-request-cost cap), instead of
-  falling to the generous default "authenticated" tier. It loads a whole raw MIME blob into memory per request - up to the compose attachment cap (25MB default) for a composed message, unbounded for
-  inbound mail.
+- **`GET mail/messages/:id/raw` now has its own tighter per-user rate limit** (300 requests per 60 seconds, counted per user across *all* messages), instead of falling to the generous default
+  "authenticated" tier. It loads a whole raw MIME blob into memory per request - up to the compose attachment cap (25MB default) for a composed message, unbounded for inbound mail. It is enforced
+  in the route itself rather than with `@RateLimit()`, whose per-route counter would have given every message id its own fresh bucket.
 - **A purge hook's scratch install can no longer outlive its own timeout.** `InstallingPurgeHookRunner.run()` raced a fresh, never-connected `AbortController` against the install step, so nothing
   actually stopped the underlying `npm` child process when the outer `system:plugins:purge:hook_timeout_ms` (default 60s) fired - it kept running for up to `system:plugins:npm_timeout_ms` (default
   10 minutes) in the background while the purge reported failure and moved on, and since the scratch directory is deterministic per plugin name, a retried purge could launch a second `npm install` into
@@ -47,8 +47,8 @@
 - **Plugin purge no longer blocks the event loop walking a large `node_modules` tree.** `PluginPurgeFiles.ts`'s file deletion (routinely thousands of files for a plugin's full dependency tree, retried
   on every purge attempt) now walks and removes with `fs.promises` (`removeContainedAsync()`) instead of the fully-synchronous `*Sync` calls, so a large or slow delete no longer stalls the whole process
   - which also serves live HTTP/mail traffic - for its entire duration.
-- **Draft autosave no longer re-scans the entire `Matter` collection on every save.** `BaseMailComposeRoute`'s legal-hold check (deciding whether a replaced draft body must be kept) is now cached per
-  mailbox for `mail:compose:legal_hold_cache_ms` (default 10s), so a mailbox saving rapidly reuses the last answer instead of forcing a fresh, full, keyset-paged scan on every autosave.
+- **Draft autosave always checks for a legal hold before deleting a replaced draft body.** A short-lived per-mailbox cache of that check was tried and removed: a hold placed just after a cached
+  "not held" answer would have let the next autosave permanently delete a body the hold should have preserved.
 - **A failed plugin install's own npm output is now truncated before it's kept.** Previously, npm's full stderr/stdout (up to `execFile`'s 16MB `maxBuffer`) became every affected plugin's error message
   and was folded into the status `JSON.stringify`'d into the shared `plugins:status` Redis key on every heartbeat for as long as the failure persisted. It's now capped at a few KB
   (`NPM_ERROR_MESSAGE_MAX_CHARS`).
