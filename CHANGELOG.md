@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.16] - 2026-09-25
+
+### Added
+- Added mail:basic_auth defaults to the configuration and mail.basicAuth to the Helm chart, and set auth__app_password__enabled on the bundled auth-server explicitly
+- Added a bundled coturn TURN server to the Helm chart for the Video Conferencing plugin, running on the node's own network, and fill in the plugin's TURN settings from it so calls use it as installed
+- Added a credential per participant that joins a call, made from a secret only the server and coturn know, as the default, with one pre-set user name and password as an alternative
+- Added TURN over TLS as an opt-in that reuses the certificate the chart issues for its host or a Secret you supply, and reloads it when it is renewed
+- Added checks that fail the render on a setting coturn could not start or run safely with
+
+### Changed
+- Seed the default plugins' settings that name the host (https://<host>/meet, https://<host>) with mail:dns:mx_hostname at first start, so the video-conferencing and Autodiscover plugins work as installed
+- Update the autodiscover config comments to say the URL is filled in on install instead of set in the admin console afterwards
+- Test the seeding with and without a configured host
+- Document the change in the release notes and NOTES
+- Let Outlook and ActiveSync sign in with a username and an app password: on /mapi and /Microsoft-Server-ActiveSync a Basic header is checked by the auth-server's /api/auth/password and answered with an access token the existing JWT check verifies, resolving a mailbox address to its owner
+- Answer a 401 on those paths with WWW-Authenticate: Basic so a client asks for credentials, remember a successful sign-in for a few minutes, and throttle repeated failures per client address and per username
+- Put the strategy in front of jwt from each worker entry point, so no plugin needs to change
+- Test the strategy and a real server signing in against a fake auth-server
+- Document the change in the README, the release notes and NOTES
+- Open TURN's ports in the single-node installer, and leave coturn off in the AWS bootstrap because its instance address is not fixed and its load balancer carries no UDP
+- Test that an empty saved plugin setting leaves configuration alone
+- Document the change in the README, the release notes and NOTES
+- Bump @rapidmx/restapi to 0.21.1, @rapidmx/react-shared to 0.16.0 and @rapidmx/web-client to 0.15.1 and refresh the lockfile, bringing in meeting invitations answered from a message and the message list, event descriptions, visibility and guest permissions, Find a time, the Task and Appointment tabs and the read-only event view
+- Document the bump in the release notes
+
+### Fixed
+- Fixed a plugin's empty saved settings overriding the deployment's own configuration for the same key, which would have hidden the TURN settings the chart sets
+- Fixed the Video Conferencing plugin version that TURN over TLS needs, from a guessed 0.3.2 to the released 0.4.0, in the chart's values and notes, the README, the release notes and NOTES
+
 ## [1.0.0-beta.15] - 2026-09-24
 
 ### Changed
@@ -907,7 +936,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed test from .dockerignore, fixing yarn build's lint step failing outright when the build context is missing the test directory its tsconfig.eslint.json requires
 - Removed docker-compose.mail.yml's partial server: service block, since include: only supports merging resources that don't already exist in the including file and hard-errors ("services.server conflicts with imported resource") on a Compose version newer than whatever this had only ever been tested against locally
 
-[Unreleased]: https://github.com/rapidmx/server/compare/v1.0.0-beta.15...HEAD
+[Unreleased]: https://github.com/rapidmx/server/compare/v1.0.0-beta.16...HEAD
+[1.0.0-beta.16]: https://github.com/rapidmx/server/compare/v1.0.0-beta.15...v1.0.0-beta.16
 [1.0.0-beta.15]: https://github.com/rapidmx/server/compare/v1.0.0-beta.14...v1.0.0-beta.15
 [1.0.0-beta.14]: https://github.com/rapidmx/server/compare/v1.0.0-beta.13...v1.0.0-beta.14
 [1.0.0-beta.13]: https://github.com/rapidmx/server/compare/v1.0.0-beta.12...v1.0.0-beta.13

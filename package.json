@@ -1,6 +1,6 @@
 {
   "name": "server",
-  "version": "1.0.0-beta.15",
+  "version": "1.0.0-beta.16",
   "description": "The RapidMX mail server: webmail, calendar, contacts, Exchange ActiveSync and MAPI, and end-to-end encryption.",
   "type": "module",
   "repository": "https://github.com/rapidmx/server",

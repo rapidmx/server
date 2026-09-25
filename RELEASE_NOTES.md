@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v1.0.0-beta.16
+
 ### Added
 
 - **The Helm chart installs a TURN server (coturn) for video calls, and wires the Video Conferencing plugin to it.** A participant behind a strict firewall or NAT can't be connected directly and needs a relay; without one they couldn't join. `coturn.create` (on by default) runs coturn on the node's own network (TURN is UDP, which the Gateway can't carry). By default every participant is given a credential of their own when they join a call, made from a secret only the server and coturn know and good for an hour (`coturn.auth.mode: secret`); `credential` mode uses one pre-set user name and password instead. The secret is generated once and kept across upgrades in a Secret that both coturn and the server pod read, and the server gets `mail:videoconf:turn:url` and `:shared_secret` (or `:username` and `:credential`) from it, so calls use it as installed; a setting saved in the plugin's admin console still wins. `coturn.tls.enabled` adds TURN over TLS (`turns:`) for networks that block everything but TLS, using the certificate the chart already issues for its host (or a Secret you supply) and picking up its renewals without a restart; it needs a Video Conferencing plugin of version 0.4.0 or later. coturn refuses to relay to private, loopback and link-local addresses, so it can't be used to reach the node's or the cluster's own network. It needs `coturn.hostname` (default: the server's host) to resolve to the node's public address, and TCP and UDP 3478, TCP 5349 (with TLS) and UDP 49152-49252 open to the internet: `single_node_install.sh` opens them; the AWS template leaves coturn off (its instance address isn't fixed and its load balancer carries no UDP). Turn it off with `coturn.create=false`.
