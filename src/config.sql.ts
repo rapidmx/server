@@ -458,6 +458,12 @@ conf.defaults({
                 // the next process - it is never relayed twice).
                 drain_ms: 15_000,
             },
+            meeting_scheduling: {
+                // How often MeetingSchedulingJob mails invitations, updates and cancellations to a meeting's guests, cron syntax
+                // (seconds field included): every 10 seconds, so guests hear of a meeting that was deleted or cancelled within
+                // moments rather than at the next 5-minute run. Each run is a few indexed queries.
+                schedule: "*/10 * * * * *",
+            },
             acme_enrollment_driver: {
                 // Every 5 minutes, cron syntax (seconds field included).
                 schedule: "0 */5 * * * *",

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Changed
+
+- **Deleting or cancelling a meeting now mails its guests within about 10 seconds, not after up to 5 minutes.** `mail:jobs:meeting_scheduling:schedule` is `*/10 * * * * *` in the server's configuration (`config.mongo.ts` and `config.sql.ts`); deleting a meeting only marks it, and that job is what sends the cancellation (and any invitation or update). `@rapidmx/restapi`'s own default moves to the same, so this holds without the setting once it is published. Set `mail__jobs__meeting_scheduling__schedule` to change it.
+- **Bookings made through the Booking pages plugin show their location and details on the calendar, carry a 15 minute reminder (the booker's invitation too) and put a notification in the host's Inbox** - see `@rapidmx/booking-plugin`'s release notes (next release after 0.5.1; the bundled plugin is `latest`).
+
+
 ### Fixed
 
 - **The bundled auth-server's account page now has a working "Return to App" button, because the chart sets its `app_url` to this server's address.** The auth-server sends a signed-in user back to the application named by `app_url` from a Return to App button on `/account`, and hides the button when it is unset; the chart never set it, so a fresh install had no way back to the mail app from the account page (or from the page where an app password is created for Outlook). `authserver.service.config.app_url` is now `https://<host>` - `http://` when `global.gateway.tls` is off, the same rule as the server's `mail:auth_server_url` - so a default install of `global.domain=powerlevel.gg` gets `https://mail.powerlevel.gg`. The auth-server subchart renders its own values and cannot see the top-level `host` (`host` there is `authserver.host`), so the address is built from a new `global.serverHost` (empty: `mail.<global.domain>`, `host`'s own default) and `single_node_install.sh` and `deploy/aws/bootstrap.sh` set it beside `host`; a render where `host` and `global.serverHost` name different hosts fails with a message saying so, rather than link the button to a host this release doesn't serve, unless you set `authserver.service.config.app_url` yourself. Only an absolute `http(s)` URL is accepted by the auth-server, and the ConfigMap change rolls its pod.
