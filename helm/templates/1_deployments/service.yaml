@@ -13,6 +13,7 @@ than leaving extra pods stuck in ContainerCreating on a Multi-Attach error.
 {{- include "rapidmx.assertSuppliedSecrets" $ }}
 {{- include "rapidmx.assertPostfixBridge" $ }}
 {{- include "rapidmx.assertSigningEnrollment" $ }}
+{{- include "rapidmx.assertServerHost" $ }}
 {{- $podTLS := eq (include "rrst.podTLS" $) "true" }}
 {{- if ne $.Values.mail.pki.storage.accessMode "ReadWriteMany" }}
 {{- $rwoVolumes = append $rwoVolumes "mail.pki.storage" }}

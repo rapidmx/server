@@ -414,6 +414,32 @@ Usage: include "rapidmx.authServerURL" .
 {{- end -}}
 
 {{/*
+The address browsers reach this server at, e.g. https://mail.example.com: `host`, with https:// unless global.gateway.tls is off
+(the same rule as rapidmx.authServerURL). No trailing slash. The public URLs of the plugins whose pages this server serves
+(Autodiscover, Booking pages, Video Conferencing) are built on it.
+
+Usage: include "rapidmx.serverURL" .
+*/}}
+{{- define "rapidmx.serverURL" -}}
+{{-   printf "%s://%s" (ternary "https" "http" (.Values.global.gateway.tls | default false)) (include "rrst.render" (dict "value" .Values.host "context" .)) -}}
+{{- end -}}
+
+{{/*
+Fails the render when `host` and `global.serverHost` name different hosts while the bundled auth-server's app_url is still the
+one values.yaml derives from global.serverHost. The auth-server subchart renders its own values and can't see the top-level
+`host` (`host` there is authserver.host), so it is given the server's host as a global; left to default, the auth-server's
+"Return to App" button would point at mail.<global.domain> rather than the host this release serves. Usage:
+include "rapidmx.assertServerHost" $
+*/}}
+{{- define "rapidmx.assertServerHost" -}}
+{{-   $host := include "rrst.render" (dict "value" .Values.host "context" .) -}}
+{{-   $shared := tpl (toString (.Values.global.serverHost | default (printf "mail.%s" (tpl (toString .Values.global.domain) .)))) . -}}
+{{-   if and .Values.authserver.create (ne $host $shared) (contains "global.serverHost" (toString (dig "service" "config" "app_url" "" .Values.authserver))) -}}
+{{-     fail (printf "host is %q but global.serverHost resolves to %q, and the bundled auth-server's app_url (the Return to App button on its account page) is built from global.serverHost. Set global.serverHost=%s alongside host (single_node_install.sh does), or set authserver.service.config.app_url yourself." $host $shared $host) -}}
+{{-   end -}}
+{{- end -}}
+
+{{/*
 The storageClassName a PersistentVolumeClaim renders with. storageClassName is immutable, so once the claim exists its
 live value wins (including one the cluster's default storage class filled in, or the "default" earlier chart versions
 wrote): changing common.storageClass or the per-volume value only applies to new claims. Otherwise the value, omitted

@@ -234,10 +234,11 @@ conf.defaults({
         // - since both the EAS (`/Microsoft-Server-ActiveSync`) and MAPI (`/mapi/emsmdb`) endpoint URLs the
         // plugin advertises to real mail clients are built by appending a path to it. Empty by default:
         // Autodiscover then answers nothing rather than pointing a client at a host that isn't this deployment.
-        // Not set here or by the Helm chart: the plugin's setting defaults to `https://<host>`, and when the plugin is
-        // seeded at first start the host is `mail:dns:mx_hostname` (the chart sets it), or the address the admin console
-        // was reached at when an administrator installs it, so it works as installed. Set mail__autodiscover__public_url
-        // to override.
+        // Not set here. A plugin version whose setting defaults to `https://<host>` gets the host when it is seeded at first
+        // start (`mail:dns:mx_hostname`, which the chart sets), or the address the admin console was reached at when an
+        // administrator installs it. The Helm chart also sets mail__autodiscover__public_url to `https://<host>` (its `host`),
+        // which covers a plugin version whose default is empty and a plugin added before this was set: an empty saved setting
+        // doesn't override configuration. Set mail__autodiscover__public_url to override.
         autodiscover: {
             public_url: "",
         },
@@ -286,7 +287,7 @@ conf.defaults({
             // it's the same externally-reachable base URL as `cluster_url` below with `/book` (the plugin's mount)
             // appended. Empty by default: booking emails then leave out the manage link rather than pointing at a host
             // that isn't this deployment. The Helm chart sets it from its `host` value; set `mail__booking__public_url`
-            // otherwise. An environment variable wins over the value saved in the admin console.
+            // otherwise. A non-empty value saved in the admin console wins over the environment variable; an empty one doesn't.
             public_url: "",
         },
         compose: {

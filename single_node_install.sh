@@ -1449,7 +1449,7 @@ if [[ "$OPENBAO" = "true" ]]; then
     --set openbao.pki.tokenSecret="$OPENBAO_PKI_SECRET")
 fi
 if ! helm upgrade --install --create-namespace --namespace "$NAMESPACE" "$NAMESPACE" "$CHART" "${CHART_VERSION_ARGS[@]}" \
-  --set global.domain="$DOMAIN" --set host="$SERVER_HOST" \
+  --set global.domain="$DOMAIN" --set host="$SERVER_HOST" --set global.serverHost="$SERVER_HOST" \
   "${OPENBAO_ARGS[@]}" \
   --set global.gateway.tls="$GATEWAY_TLS" --set global.gateway.hsts=true "${GATEWAY_ARGS[@]}" \
   --set authserver.host="$AUTH_HOST" \

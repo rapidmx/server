@@ -561,6 +561,16 @@ SMTP account's `smtp_config__auth__user` / `smtp_config__auth__pass` from a Secr
 at `host` (`mail.<domain>` by default), the auth-server at `authserver.host` (`auth.<domain>` by default), and the JWT audience
 and issuer are the domain and that auth host on both sides. Postfix's MX name and sender domains follow the same value.
 
+The auth-server's account page has a **Return to App** button that sends a signed-in user back to this server: the chart sets the
+auth-server's `app_url` to `https://<host>` (`http://` with `global.gateway.tls` off). The auth-server subchart can't see the top-level
+`host`, so it is built from `global.serverHost` (empty: `mail.<domain>`, `host`'s own default). If you change `host`, set
+`global.serverHost` to the same name (`single_node_install.sh` and `deploy/aws` do) - the render fails when the two differ - or set
+`authserver.service.config.app_url` yourself. The chart likewise sets the public URLs of the plugins whose pages it serves on `host`:
+`mail:autodiscover:public_url` (`https://<host>`), `mail:booking:public_url` (`https://<host>/book`) and `mail:videoconf:public_url`
+(`https://<host>/meet`), so Autodiscover answers, booking emails carry their manage link and calls get join links as installed. The
+plugin's settings form in the admin console shows only what is saved there, so it can read empty for a value that is in effect; a value
+saved there wins, and an empty one doesn't override these.
+
 #### Secrets and OpenBao
 
 With `global.openbao.enabled` this release keeps its secrets in [OpenBao](https://openbao.org): the JWT signing secret

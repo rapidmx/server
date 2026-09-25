@@ -851,7 +851,7 @@ fi
 # which needs UDP open to the internet on an address that doesn't change, and this instance's public address is not fixed and
 # the load balancer in front of the site can't carry UDP. See the README's "Video calls".
 helm upgrade --install --create-namespace --namespace "$NAMESPACE" "$NAMESPACE" "$CHART" "${VERSION_ARGS[@]}" \
-  --set global.domain="$DOMAIN" --set host="$SERVER_HOST" --set authserver.host="$AUTH_HOST" \
+  --set global.domain="$DOMAIN" --set host="$SERVER_HOST" --set global.serverHost="$SERVER_HOST" --set authserver.host="$AUTH_HOST" \
   --set-json "global.corsHosts=[\"$SERVER_HOST\",\"$AUTH_HOST\"]" \
   --set global.certmanager.email="$ACME_EMAIL" \
   "${OPENBAO_ARGS[@]}" \
