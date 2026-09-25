@@ -10,6 +10,7 @@
 
 ### Changed
 
+- **Meeting invitations can be answered from the message and the message list, events have descriptions, visibility, guest permissions and a Find a time tab, and the calendar's New event popover has Task and Appointment schedule tabs.** Bundles `@rapidmx/restapi` 0.21.1, `@rapidmx/react-shared` 0.16.0 and `@rapidmx/web-client` 0.15.1: Accept, Tentative, Decline and Propose new time on an invitation, an RSVP chip in the message list, a read-only event view before editing, a Google-style quick-create popover, a rich-text event description, private and confidential events shown as Busy on shared calendars, hidden guest lists and guests' change requests, a free/busy lookup with a per-mailbox visibility setting (Profile page), and the fix for an event saved from a clicked time slot crashing the calendar page. The bundled plugins (`latest`) pick up meet-plugin 0.4.1, which writes the per-guest join links a video meeting's invitation needs, and booking-plugin 0.5.1.
 - **Plugins whose settings name this server's host work as installed.** A setting whose default is `https://<host>/meet` (video-conferencing's join page) or `https://<host>` (Autodiscover's public server URL) is saved with the real host when the plugin is installed - the address the admin console was reached at, or, for the default plugins seeded at first start, `mail:dns:mx_hostname` (the chart sets it) - so calendar invites carry join links and Autodiscover answers without a visit to the plugin's settings. Needs `@rapidmx/restapi` with `<host>` defaults.
 
 ## v1.0.0-beta.15
