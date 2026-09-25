@@ -228,11 +228,12 @@ authserver:
       # (https://<host>, or http:// with global.gateway.tls off; the rapidmx.serverURL helper's rule), built from
       # global.serverHost because this is rendered by the subchart, which can't see the top-level `host`. Only an absolute
       # http(s) URL is accepted, and empty hides the button.
-      app_url: >-
-        {{ ternary "https" "http" (.Values.global.gateway.tls | default false) }}://{{ tpl (toString
-        (.Values.global.serverHost | default (printf "mail.%s" (tpl (toString .Values.global.domain) .)))) . }}
+      app_url: '{{ include "rrst.appURL" . }}'
       auth__cookie__access__domain: '.{{ .Values.global.domain }}'
       auth__cookie__refresh__domain: '.{{ .Values.global.domain }}'
+      site_settings__iconUrl: '{{ include "rrst.appURL" . }}/images/logo.png'
+      site_settings__logoUrl: '{{ include "rrst.appURL" . }}/images/wordmark.png'
+      site_settings__siteTitle: "RapidMX"
       smtp_config__host: '{{ .Values.global.smtp.host }}'
       smtp_config__port: '{{ .Values.global.smtp.port }}'
       smtp_config__secure: '{{ .Values.global.smtp.secure }}'

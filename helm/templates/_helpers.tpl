@@ -1,6 +1,14 @@
 {{/******************************** GENERAL ********************************/}}
 
 {{/*
+The full URL to the deployed app.
+*/}}
+{{- define "rrst.appURL" -}}
+{{ ternary "https" "http" (.Values.global.gateway.tls | default false) }}://{{ tpl (toString
+        (.Values.global.serverHost | default (printf "mail.%s" (tpl (toString .Values.global.domain) .)))) . }}
+{{- end -}}
+
+{{/*
 Create chart name and version as used by the chart label.
 */}}
 {{- define "rrst.chart" -}}
