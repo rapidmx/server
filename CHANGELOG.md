@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.17] - 2026-09-25
+
+### Added
+- Added RapidMX branding customization to auth-server in helm chart
+
+### Changed
+- Set the bundled auth-server's app_url to https://<host> (http when TLS is off) from a new global.serverHost, so its account page shows Return to App, and pass global.serverHost from single_node_install.sh and deploy/aws/bootstrap.sh
+- Fail the chart render when host is changed without global.serverHost while app_url is still the default, naming the missing value, instead of rendering a wrong link
+- Set the Autodiscover, booking and video conferencing plugins' public URLs from the host in the chart (https://<host>, https://<host>/book and https://<host>/meet), so a fresh install works whatever plugin version is published, and correct the comments in config.mongo.ts and config.sql.ts that said the chart already did
+- Document the change in the release notes, the README and NOTES
+- Run MeetingSchedulingJob every 10 seconds in the server's configuration, so the guests of a deleted or cancelled meeting are mailed within seconds instead of up to 5 minutes
+- Document the change, and the booking plugin's event details, reminders and Inbox notification, in the release notes and NOTES
+- Document that a downstream package's release bump level follows its upstream dependency's, minor for minor, patch for patch and major for major, in NOTES
+- Document that a downstream package's release bump level follows its upstream dependency's, minor for minor, patch for patch and major for major, in NOTES
+- Upgraded rapidmx deps
+- Upgraded auth-server helm dep
+
 ## [1.0.0-beta.16] - 2026-09-25
 
 ### Added
@@ -936,7 +953,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed test from .dockerignore, fixing yarn build's lint step failing outright when the build context is missing the test directory its tsconfig.eslint.json requires
 - Removed docker-compose.mail.yml's partial server: service block, since include: only supports merging resources that don't already exist in the including file and hard-errors ("services.server conflicts with imported resource") on a Compose version newer than whatever this had only ever been tested against locally
 
-[Unreleased]: https://github.com/rapidmx/server/compare/v1.0.0-beta.16...HEAD
+[Unreleased]: https://github.com/rapidmx/server/compare/v1.0.0-beta.17...HEAD
+[1.0.0-beta.17]: https://github.com/rapidmx/server/compare/v1.0.0-beta.16...v1.0.0-beta.17
 [1.0.0-beta.16]: https://github.com/rapidmx/server/compare/v1.0.0-beta.15...v1.0.0-beta.16
 [1.0.0-beta.15]: https://github.com/rapidmx/server/compare/v1.0.0-beta.14...v1.0.0-beta.15
 [1.0.0-beta.14]: https://github.com/rapidmx/server/compare/v1.0.0-beta.13...v1.0.0-beta.14

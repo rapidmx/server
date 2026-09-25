@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v1.0.0-beta.17
+
 ### Changed
 
 - **Deleting or cancelling a meeting now mails its guests within about 10 seconds, not after up to 5 minutes.** `mail:jobs:meeting_scheduling:schedule` is `*/10 * * * * *` in the server's configuration (`config.mongo.ts` and `config.sql.ts`); deleting a meeting only marks it, and that job is what sends the cancellation (and any invitation or update). `@rapidmx/restapi`'s own default moves to the same, so this holds without the setting once it is published. Set `mail__jobs__meeting_scheduling__schedule` to change it.
