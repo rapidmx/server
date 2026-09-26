@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.19] - 2026-09-26
+
+### Added
+- Added GET /api/admin/diagnostics/versions, /runtime and /metrics (trusted role and an elevated token) for the admin console's Diagnostics page: server and package versions, the other containers' versions and health from their pods, the Kubernetes version and nodes, and live host, pod and volume usage
+- Added a namespaced Role and RoleBinding for the Diagnostics page to the helm chart, with no ClusterRole, switched by global.diagnostics.rbac.create, the same global the auth-server chart reads
+- Added diagnostics:namespace and diagnostics:timeout_ms to config.mongo.ts and config.sql.ts
+
+### Changed
+- Put the settings saved on plugins in the admin console in the first configuration layer, so they win over the environment and the defaults instead of losing to the environment
+- Skip a saved plugin setting that is null as well as one that is empty, so the environment or the default applies
+- Correct the comments in config.mongo.ts, config.sql.ts and values.yaml, and the README, about a saved setting and the environment, and say the settings dialog shows the chart's values and has a Reset
+- Test that a saved plugin setting beats the environment and the defaults through the real layers, that an empty or null one does not, and applyPluginSetting
+- Document the change in the release notes and NOTES, including that the earlier notes had which of the two wins backwards
+- Use @rapidmx/restapi 0.24.0, @rapidmx/react-shared 0.20.0 and @rapidmx/web-client 0.19.0, and auth-server 1.0.0-beta.25 in the helm chart
+- Read Kubernetes with the pod's own service account inside its namespace only, through a minimal client without a new dependency, and report each part that is unavailable with its reason instead of failing the request
+- Create the server's and the auth-server's ServiceAccount by default so each pod runs as its own instead of the namespace's default and the Roles have a subject, which the chart's global.serviceAccount.create of false had overridden for the auth-server
+- Classify DiagnosticsRoute as an admin route in the mail access test
+- Test the Diagnostics collectors, Kubernetes client, metrics, route and its access control
+- Document the Diagnostics page, the RBAC and the ServiceAccount change in the release notes, the README and NOTES
+
 ## [1.0.0-beta.18] - 2026-09-26
 
 ### Changed
@@ -971,7 +991,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed test from .dockerignore, fixing yarn build's lint step failing outright when the build context is missing the test directory its tsconfig.eslint.json requires
 - Removed docker-compose.mail.yml's partial server: service block, since include: only supports merging resources that don't already exist in the including file and hard-errors ("services.server conflicts with imported resource") on a Compose version newer than whatever this had only ever been tested against locally
 
-[Unreleased]: https://github.com/rapidmx/server/compare/v1.0.0-beta.18...HEAD
+[Unreleased]: https://github.com/rapidmx/server/compare/v1.0.0-beta.19...HEAD
+[1.0.0-beta.19]: https://github.com/rapidmx/server/compare/v1.0.0-beta.18...v1.0.0-beta.19
 [1.0.0-beta.18]: https://github.com/rapidmx/server/compare/v1.0.0-beta.17...v1.0.0-beta.18
 [1.0.0-beta.17]: https://github.com/rapidmx/server/compare/v1.0.0-beta.16...v1.0.0-beta.17
 [1.0.0-beta.16]: https://github.com/rapidmx/server/compare/v1.0.0-beta.15...v1.0.0-beta.16
