@@ -129,7 +129,41 @@ export interface DiagnosticsHostMetrics {
     memoryTotalBytes: number;
     memoryUsedBytes: number;
     loadAverage: [number, number, number];
+    /**
+     * Memory the hypervisor holds in the machine's memory balloon. It counts in `memoryUsedBytes` (a guest sees ballooned memory
+     * as used) though no process holds it. Absent where no balloon has ever taken memory.
+     */
+    balloon?: DiagnosticsBalloonMetrics;
+    /** How long tasks stall waiting for memory, disk and CPU (Linux pressure stall information). Absent without kernel support. */
+    pressure?: DiagnosticsPressureMetrics;
     disks: DiagnosticsDiskMetrics[];
+}
+
+export interface DiagnosticsBalloonMetrics {
+    /** Taken by the balloon and not given back. */
+    heldBytes: number;
+    /** Taken since the machine booted, however often it was given back: how much the balloon has been moving. */
+    inflatedTotalBytes: number;
+}
+
+/** The share (0-100) of the last 10, 60 and 300 seconds that tasks spent stalled. */
+export interface DiagnosticsStall {
+    avg10: number;
+    avg60: number;
+    avg300: number;
+}
+
+export interface DiagnosticsPressure {
+    /** At least one task was waiting. */
+    some: DiagnosticsStall;
+    /** Every task was waiting, so the machine did nothing useful. Absent for CPU. */
+    full?: DiagnosticsStall;
+}
+
+export interface DiagnosticsPressureMetrics {
+    memory?: DiagnosticsPressure;
+    io?: DiagnosticsPressure;
+    cpu?: DiagnosticsPressure;
 }
 
 export interface DiagnosticsPodMetrics {
@@ -145,12 +179,27 @@ export interface DiagnosticsPvcMetrics {
     phase: string;
     storageClass?: string;
     requestedBytes?: number;
-    /** The volume's size: the PVC's provisioned capacity, else what it requested. */
+    /** The volume's allocation: the PVC's provisioned capacity, else what it requested. */
     capacityBytes?: number;
-    /** Only for a PVC mounted in the server pod (`mountedByServer`): a Role can't ask the kubelet about the others. */
+    /**
+     * What the volume itself holds. Only for a PVC mounted in the server pod (`mountedByServer`): a Role can't ask the kubelet
+     * about the others. `measuredBy` says how it was found.
+     */
     usedBytes?: number;
+    /** Room left on the filesystem the volume is on: the node's disk when `sharesNodeDisk`, which the volume's allocation does not limit. */
     availableBytes?: number;
+    /**
+     * `filesystem`: the volume is a filesystem of its own, so its usage is the filesystem's. `directory`: it shares the node's
+     * disk (`sharesNodeDisk`), so the filesystem's usage would be the whole disk's and its directory was measured instead.
+     */
+    measuredBy?: "filesystem" | "directory";
+    /** The directory could not be measured completely (a very large tree, or something unreadable), so `usedBytes` is a lower bound. */
+    usedPartial?: boolean;
     mountedByServer: boolean;
+    /**
+     * The volume is a directory of the node's disk (a hostPath-style volume such as k3s's default local-path), whose allocation
+     * is not enforced.
+     */
     sharesNodeDisk?: boolean;
 }
 

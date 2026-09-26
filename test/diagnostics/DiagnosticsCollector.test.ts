@@ -110,7 +110,8 @@ describe("DiagnosticsCollector", () => {
 
         it("reports the components, the runtime and the metrics from the namespace", async () => {
             const transport = transportFor(routes);
-            const c = collector(inCluster, transport);
+            const sizeDirectory = vi.fn(async () => ({ bytes: 123, partial: false }));
+            const c = collector(inCluster, transport, { sizeDirectory });
 
             const versions = await c.versions();
             expect(versions.kubernetes).toEqual({ available: true });
@@ -125,7 +126,9 @@ describe("DiagnosticsCollector", () => {
             expect(metrics.kubernetes.available).toBe(true);
             expect(metrics.kubernetes.namespace!.pods.map((p) => p.component)).toEqual(["redis", "server"]);
             const pvc = metrics.kubernetes.pvcs[0];
-            expect(pvc).toMatchObject({ name: "blob-data", mountedByServer: true });
+            expect(pvc).toMatchObject({ name: "blob-data", mountedByServer: true, sharesNodeDisk: true, usedBytes: 123, measuredBy: "directory" });
+            // The directory of the volume was measured, not the disk it is on.
+            expect(sizeDirectory).toHaveBeenCalledWith("/");
             expect(metrics.host.disks.find((d) => d.pvc === "blob-data")!.sharesNodeDisk).toBe(pvc.sharesNodeDisk);
             // Nothing outside the namespace and no node was ever asked about.
             const asked = transport.mock.calls.map(([r]) => r.url.pathname);

@@ -5,14 +5,18 @@ import { readFileSync } from "node:fs";
 import { statfs } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import type { SizeDirectory } from "./directorySize.js";
 import { errorMessage, type ClassifiedPod } from "./kubernetesInfo.js";
 import { KubeError, type KubeClient } from "./KubeClient.js";
 import { parseQuantity } from "./quantity.js";
 import type {
+    DiagnosticsBalloonMetrics,
     DiagnosticsDiskMetrics,
     DiagnosticsHostMetrics,
     DiagnosticsMetrics,
     DiagnosticsPodMetrics,
+    DiagnosticsPressure,
+    DiagnosticsPressureMetrics,
     DiagnosticsProcessMetrics,
     DiagnosticsPvcMetrics,
 } from "./types.js";
@@ -24,6 +28,69 @@ const MIN_CPU_WINDOW_MS = 250;
 const SHARED_DISK_TOLERANCE = 0.1;
 
 export type StatFs = (path: string) => Promise<{ bsize: number; blocks: number; bfree: number; bavail: number }>;
+
+/** Reads a file of the kernel's (`/proc`), or `undefined` where there is none (macOS, Windows) or it may not be read. */
+export type ReadProc = (file: string) => string | undefined;
+
+export function readProcFile(file: string): string | undefined {
+    try {
+        return readFileSync(file, "utf8");
+    } catch {
+        return undefined;
+    }
+}
+
+/** The size of the pages a memory balloon takes and gives back, which the kernel counts in (a 4 KiB page on x86-64). */
+const BALLOON_PAGE_BYTES = 4096;
+
+/**
+ * How much memory the machine's hypervisor holds in the memory balloon, from the kernel's counters of pages the balloon driver
+ * has taken (`balloon_inflate`) and given back (`balloon_deflate`) since boot. A guest counts ballooned memory as used, though no
+ * process holds it, so it is what explains "used" memory that no process accounts for. `undefined` when the kernel has no counters
+ * or no balloon has ever taken anything (bare metal, most containers on a laptop).
+ */
+export function parseBalloon(vmstat: string | undefined): DiagnosticsBalloonMetrics | undefined {
+    const counter = (name: string) => {
+        const match = new RegExp(`^${name} (\\d+)\\s*$`, "m").exec(vmstat ?? "");
+        return match ? Number(match[1]) : undefined;
+    };
+    const inflated = counter("balloon_inflate");
+    const deflated = counter("balloon_deflate");
+    if (inflated === undefined || deflated === undefined || inflated === 0) {
+        return undefined;
+    }
+    return {
+        heldBytes: Math.max(0, inflated - deflated) * BALLOON_PAGE_BYTES,
+        inflatedTotalBytes: inflated * BALLOON_PAGE_BYTES,
+    };
+}
+
+/** One line of a pressure file (`some avg10=1.50 avg60=0.40 avg300=0.10 total=123`): the averages, or `undefined`. */
+function parseStall(line: string): DiagnosticsPressure["some"] | undefined {
+    const fields = new Map(line.trim().split(/\s+/).map((pair) => pair.split("=") as [string, string]));
+    const avg10 = Number(fields.get("avg10"));
+    const avg60 = Number(fields.get("avg60"));
+    const avg300 = Number(fields.get("avg300"));
+    return [avg10, avg60, avg300].every(Number.isFinite) ? { avg10, avg60, avg300 } : undefined;
+}
+
+/**
+ * The share of the last 10, 60 and 300 seconds that tasks spent stalled waiting for a resource, from a `/proc/pressure/*` file:
+ * `some` is time in which at least one task waited, `full` time in which every task did (nothing got done). `undefined` when the
+ * kernel has no pressure information (before 4.20, or not enabled).
+ */
+export function parsePressure(text: string | undefined): DiagnosticsPressure | undefined {
+    let some: DiagnosticsPressure["some"] | undefined;
+    let full: DiagnosticsPressure["full"] | undefined;
+    for (const line of (text ?? "").split(/\r?\n/)) {
+        if (line.startsWith("some ")) {
+            some = parseStall(line);
+        } else if (line.startsWith("full ")) {
+            full = parseStall(line);
+        }
+    }
+    return some ? { some, full } : undefined;
+}
 
 /** The container's own memory use, when the cgroup says (v2, then v1); undefined elsewhere (Windows, macOS). */
 export function readCgroupMemoryUsage(): number | undefined {
@@ -62,7 +129,8 @@ export class ProcessSampler {
 
     constructor(
         private readonly readCgroup: () => number | undefined = readCgroupMemoryUsage,
-        private readonly stat: StatFs = statfs
+        private readonly stat: StatFs = statfs,
+        private readonly readProc: ReadProc = readProcFile
     ) {}
 
     sample(now: number = Date.now()): DiagnosticsProcessMetrics {
@@ -127,12 +195,19 @@ export class ProcessSampler {
             }
         }
         const [one, five, fifteen] = os.loadavg();
+        const pressure: DiagnosticsPressureMetrics = {
+            memory: parsePressure(this.readProc("/proc/pressure/memory")),
+            io: parsePressure(this.readProc("/proc/pressure/io")),
+            cpu: parsePressure(this.readProc("/proc/pressure/cpu")),
+        };
         return {
             cpuPercent: Math.round(percent * 10) / 10,
             cpuCount: os.availableParallelism(),
             memoryTotalBytes: os.totalmem(),
             memoryUsedBytes: os.totalmem() - os.freemem(),
             loadAverage: [one, five, fifteen],
+            balloon: parseBalloon(this.readProc("/proc/vmstat")),
+            pressure: pressure.memory || pressure.io || pressure.cpu ? pressure : undefined,
             disks,
         };
     }
@@ -197,14 +272,17 @@ function podMetricsReason(err: unknown): string {
 /**
  * The Kubernetes side of the System view, all inside the server's own namespace (a Role, no cluster access): the namespace's pods
  * with metrics-server's CPU and memory when it is installed, and its PVCs with their size - and their usage for the ones the
- * server pod has mounted, measured by the caller from inside the container (`ProcessSampler.host`).
+ * server pod has mounted, measured by the caller from inside the container (`ProcessSampler.host`). A mounted volume that
+ * shares the node's disk has the filesystem of the whole disk under it, so `sizeDirectory` measures what its directory holds
+ * instead; without it (or when it cannot) such a volume has no usage figure rather than the disk's.
  */
 export async function collectKubernetesMetrics(
     client: KubeClient,
     namespace: string,
     hostname: string,
     classified: ClassifiedPod[],
-    mountedUsage: Map<string, DiagnosticsDiskMetrics>
+    mountedUsage: Map<string, DiagnosticsDiskMetrics>,
+    sizeDirectory?: SizeDirectory
 ): Promise<DiagnosticsMetrics["kubernetes"]> {
     const errors: string[] = [];
 
@@ -241,24 +319,39 @@ export async function collectKubernetesMetrics(
             memoryUsedBytes: "value" in usage ? measured.reduce((sum, p) => sum + (p.memoryUsedBytes ?? 0), 0) : undefined,
             pods: podList,
         },
-        pvcs: claims
-            .map((pvc): DiagnosticsPvcMetrics => {
-                const name: string = pvc.metadata?.name ?? "";
-                const size = pvcSize(pvc);
-                const disk = mountedUsage.get(name);
-                return {
-                    name,
-                    phase: pvc.status?.phase ?? "Unknown",
-                    storageClass: pvc.spec?.storageClassName,
-                    requestedBytes: parseQuantity(pvc.spec?.resources?.requests?.storage),
-                    capacityBytes: size,
-                    usedBytes: disk?.usedBytes,
-                    availableBytes: disk?.availableBytes,
-                    mountedByServer: disk !== undefined,
-                    sharesNodeDisk: disk ? sharesNodeDisk(disk.capacityBytes, size) : undefined,
-                };
-            })
-            .sort((a, b) => a.name.localeCompare(b.name)),
+        pvcs: (
+            await Promise.all(
+                claims.map(async (pvc): Promise<DiagnosticsPvcMetrics> => {
+                    const name: string = pvc.metadata?.name ?? "";
+                    const size = pvcSize(pvc);
+                    const disk = mountedUsage.get(name);
+                    const shares = disk ? sharesNodeDisk(disk.capacityBytes, size) : undefined;
+                    const result: DiagnosticsPvcMetrics = {
+                        name,
+                        phase: pvc.status?.phase ?? "Unknown",
+                        storageClass: pvc.spec?.storageClassName,
+                        requestedBytes: parseQuantity(pvc.spec?.resources?.requests?.storage),
+                        capacityBytes: size,
+                        availableBytes: disk?.availableBytes,
+                        mountedByServer: disk !== undefined,
+                        sharesNodeDisk: shares,
+                    };
+                    if (disk && !shares) {
+                        result.usedBytes = disk.usedBytes;
+                        result.measuredBy = "filesystem";
+                    } else if (disk && shares) {
+                        // The filesystem here is the node's whole disk, so what the volume holds is what its directory holds.
+                        const measured = await sizeDirectory?.(disk.path);
+                        if (measured) {
+                            result.usedBytes = measured.bytes;
+                            result.measuredBy = "directory";
+                            result.usedPartial = measured.partial || undefined;
+                        }
+                    }
+                    return result;
+                })
+            )
+        ).sort((a, b) => a.name.localeCompare(b.name)),
         errors,
     };
 }

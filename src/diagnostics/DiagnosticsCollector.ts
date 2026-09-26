@@ -3,6 +3,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 import os from "node:os";
 import path from "node:path";
+import { DirectorySizer, type SizeDirectory } from "./directorySize.js";
 import { KubeClient, type KubeTransport } from "./KubeClient.js";
 import { buildComponents, collectRuntime, errorMessage, listPods, type ClassifiedPod } from "./kubernetesInfo.js";
 import { collectKubernetesMetrics, ProcessSampler, serverMounts } from "./metrics.js";
@@ -23,6 +24,8 @@ export interface DiagnosticsCollectorOptions {
     transport?: KubeTransport;
     hostname?: () => string;
     now?: () => Date;
+    /** Measures the directory of a volume that shares the node's disk. Defaults to a bounded walk (`measureDirectory`). */
+    sizeDirectory?: SizeDirectory;
 }
 
 /**
@@ -34,8 +37,11 @@ export class DiagnosticsCollector {
     private kube?: Promise<{ client?: KubeClient; reason?: string }>;
     private packages?: { at: number; value: Promise<DiagnosticsPackage[]> };
     private readonly sampler = new ProcessSampler();
+    private readonly sizer: DirectorySizer;
 
-    constructor(private readonly options: DiagnosticsCollectorOptions = {}) {}
+    constructor(private readonly options: DiagnosticsCollectorOptions = {}) {
+        this.sizer = new DirectorySizer(options.sizeDirectory);
+    }
 
     private get root(): string {
         return this.options.root ?? process.cwd();
@@ -123,7 +129,9 @@ export class DiagnosticsCollector {
         }
         const mounted = new Map(host.disks.filter((d) => d.pvc).map((d) => [d.pvc as string, d]));
         try {
-            const kubernetes = await collectKubernetesMetrics(kube.client, namespace, this.hostname(), pods, mounted);
+            const kubernetes = await collectKubernetesMetrics(kube.client, namespace, this.hostname(), pods, mounted, (dir) =>
+                this.sizer.size(dir)
+            );
             for (const disk of host.disks) {
                 disk.sharesNodeDisk = kubernetes.pvcs.find((p) => p.name === disk.pvc)?.sharesNodeDisk;
             }
