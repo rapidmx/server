@@ -545,7 +545,7 @@ own release instead; the release notes (`helm get notes`) then say how to connec
 
 On AWS, set `mail.transport.provider=ses` with `postfixBridge.create=false` to send through SES instead of Postfix
 (`mail.transport.ses.region`, and inbound mail through [`ses-bridge`](https://github.com/rapidmx/ses-bridge)); the render
-fails if both are on at once. The pod gets its AWS credentials from `serviceAccount.create` with an
+fails if both are on at once. The pod gets its AWS credentials from its ServiceAccount (`global.serviceAccount`, created by default) with an
 `eks.amazonaws.com/role-arn` annotation (IRSA) or from the node's own role, and `mail.ingestService.enabled` adds an
 internal load balancer for `/internal/mta`, which ses-bridge's Lambda calls from inside the VPC - the public Gateway
 still answers 404 for `/internal`. Restrict it with `mail.ingestService.loadBalancerSourceRanges`.

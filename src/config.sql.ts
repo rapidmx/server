@@ -201,6 +201,15 @@ conf.defaults({
             issuer: "api.mydomain.com",
         },
     },
+    // Admin console > Diagnostics (routes/BaseDiagnosticsRoute.ts). Kubernetes is asked with the pod's own service account, which
+    // the Helm chart grants read access to in its own namespace only (global.diagnostics.rbac.create); outside a cluster, or without
+    // it, those parts report they are unavailable.
+    diagnostics: {
+        // The namespace to inspect. Empty is the pod's own.
+        namespace: "",
+        // How long one Kubernetes API request may take before that part reports an error.
+        timeout_ms: 5000,
+    },
     // The externally-deployed auth-server's base URL — the webmail/admin frontends redirect an
     // unauthenticated visitor here to sign in, then back with a valid session.
     mail: {

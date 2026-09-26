@@ -34,6 +34,7 @@ const SERVER_ROUTES: Record<string, string> = {
     AdminRoute: "admin: the framework's admin endpoints (@RequiresTrustedRole)",
     EscrowConsoleRoute: "admin: renders the escrow console page, serves no data",
     GiphySearchRoute: "user: proxies a GIF search, no mailbox data",
+    DiagnosticsRoute: "admin: versions, Kubernetes runtime and resource usage (@RequiresTrustedRole, elevated token)",
     MetricsRoute: "admin: metrics, token-gated",
     OpenAPIRoute: "public: the API description",
     PublicPageRoute: "public: the public web pages",

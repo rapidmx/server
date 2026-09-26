@@ -1,0 +1,36 @@
+{{- if and $.Values.global.diagnostics.rbac.create (include "rrst.serviceAccountName" .) }}
+---
+# Read-only access for the admin console's Diagnostics page, in this namespace only (a Role, not a ClusterRole): the server
+# lists its own pods (for the other containers' versions and health) and PVCs, and reads their metrics-server figures.
+# Nodes, and a kubelet's disk statistics, are cluster-scoped and deliberately not covered. Bound to the chart's own
+# ServiceAccount only (the auth-server subchart has the same Role for its own pod); turn it off with
+# global.diagnostics.rbac.create=false.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "rrst.fullname" . }}-diagnostics
+  labels:
+    {{- include "rrst.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "persistentvolumeclaims"]
+    verbs: ["get", "list"]
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "rrst.fullname" . }}-diagnostics
+  labels:
+    {{- include "rrst.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "rrst.fullname" . }}-diagnostics
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "rrst.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

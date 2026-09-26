@@ -70,8 +70,20 @@ global:
     existingSecret: ''
     cookies: ''
     sessions: ''
+  # The admin console's Diagnostics page (this server's and the auth-server's) reads its own namespace's pods, volume claims
+  # and pod metrics (metrics-server; k3s includes it) from the Kubernetes API. rbac.create adds the read-only Role and
+  # RoleBinding that allows it - namespace-scoped, no ClusterRole, so installing needs no cluster-wide permission - to the
+  # ServiceAccount below, in this chart and in the auth-server subchart (which reads this same global). Off, the pages
+  # report that Kubernetes denied the request and everything else works.
+  diagnostics:
+    rbac:
+      create: true
+  # Each chart creates a ServiceAccount of its own name for its pod (never the namespace's "default", which every other pod
+  # shares); the Diagnostics Role above is bound to it, and it is where an AWS IAM role for IRSA goes (annotations, for SES
+  # and the S3 blob backend). Leave `name` empty: both this chart and the auth-server subchart read it, so one name would
+  # be created twice. `create: false` runs the pods as "default" and skips the Diagnostics Role.
   serviceAccount:
-    create: false
+    create: true
     name: ''
     annotations: {}
   smtp:

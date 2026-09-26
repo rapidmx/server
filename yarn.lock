@@ -1810,9 +1810,9 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@rapidmx/react-shared@npm:^0.19.0":
-  version: 0.19.0
-  resolution: "@rapidmx/react-shared@npm:0.19.0"
+"@rapidmx/react-shared@npm:^0.20.0":
+  version: 0.20.0
+  resolution: "@rapidmx/react-shared@npm:0.20.0"
   dependencies:
     "@emoji-mart/data": "npm:^1.2.1"
     "@peculiar/x509": "npm:^2.1.0"
@@ -1827,13 +1827,13 @@ __metadata:
   peerDependencies:
     react: 19.x
     react-dom: 19.x
-  checksum: 10c0/b2b0a9514b43b6d7a7b2f2cc103e51dcd1140326f57a1671bc50ea37a090d836fb06e49d0e2a90d474aee6cea390b43074932aeb8019f011ad03d2e41a799183
+  checksum: 10c0/c12af3d6b8f4021bea46a56c28d9944e5f4fabebd1b2cf67c6edd361ca967e3c5ce1ab79078c5fb395175efd0a7c7c716505a1fbd17fd82811cf6583a0fdfcbe
   languageName: node
   linkType: hard
 
-"@rapidmx/restapi@npm:^0.23.0":
-  version: 0.23.0
-  resolution: "@rapidmx/restapi@npm:0.23.0"
+"@rapidmx/restapi@npm:^0.24.0":
+  version: 0.24.0
+  resolution: "@rapidmx/restapi@npm:0.24.0"
   dependencies:
     "@peculiar/x509": "npm:^2.1.0"
     acme-client: "npm:^5.4.0"
@@ -1866,18 +1866,18 @@ __metadata:
       optional: true
     pdf-parse:
       optional: true
-  checksum: 10c0/ec167670170d7bd88a47ec1a18041628aa317110a1f5121682545536a30968b756763f217450f423910f9ce7e778641ffdb32956f0bb35992325a4b5b77d490c
+  checksum: 10c0/0d67b34c89ec1f1c26f06c5903748837c1cc73459146c926413ad7811753b248f844607bc7a350dbb04e0780ad631f1c1668976e97a6bb0fa20a08a82bdd2ba0
   languageName: node
   linkType: hard
 
-"@rapidmx/web-client@npm:^0.17.2":
-  version: 0.17.2
-  resolution: "@rapidmx/web-client@npm:0.17.2"
+"@rapidmx/web-client@npm:^0.19.0":
+  version: 0.19.0
+  resolution: "@rapidmx/web-client@npm:0.19.0"
   dependencies:
     "@dnd-kit/core": "npm:^6.3.1"
     "@journeyapps/wa-sqlite": "npm:^2.0.4"
     "@peculiar/x509": "npm:^2.1.0"
-    "@rapidmx/react-shared": "npm:^0.19.0"
+    "@rapidmx/react-shared": "npm:^0.20.0"
     "@tiptap/core": "npm:^3.31.3"
     "@tiptap/extension-highlight": "npm:^3.31.3"
     "@tiptap/extension-image": "npm:^3.31.3"
@@ -1900,7 +1900,7 @@ __metadata:
     "@rapidrest/react": ">=2.1.0 <3"
     react: 19.x
     react-dom: 19.x
-  checksum: 10c0/e228f875784d3402f454602068875bbc7ee2095eadb2a3447d8539d151b4ca0db08811b4c7c33a6c8e1ab8d4260aa3729a3022b44885cb7f407a63edefdd8e56
+  checksum: 10c0/81e5499621179e62f4bf96865a61ffaf38fbe0d5caffa88bb7d5536cc73a7046398e3bd0faf7c65c88ac383249e6d8470a3c79dc293fcd7ceff880474f5f6c74
   languageName: node
   linkType: hard
 
@@ -9906,9 +9906,9 @@ __metadata:
   resolution: "server@workspace:."
   dependencies:
     "@aws-sdk/client-s3": "npm:^3.906.0"
-    "@rapidmx/react-shared": "npm:^0.19.0"
-    "@rapidmx/restapi": "npm:^0.23.0"
-    "@rapidmx/web-client": "npm:^0.17.2"
+    "@rapidmx/react-shared": "npm:^0.20.0"
+    "@rapidmx/restapi": "npm:^0.24.0"
+    "@rapidmx/web-client": "npm:^0.19.0"
     "@rapidrest/cli": "npm:^2.1.0"
     "@rapidrest/core": "npm:^6.0.0"
     "@rapidrest/react": "npm:2.1.0"
