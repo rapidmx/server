@@ -32,11 +32,11 @@ export const ROUTER_APP_DIRS: readonly string[] = [
  * entry is only given what is right for all of them:
  *
  * - `prefetch.idle`: the webmail's four rail pages, whose code is downloaded once the browser is idle after the first load (never
- *   when the user asked to save data), so the likeliest next click is instant. In the admin and escrow entries these URLs are another
- *   app's, which a router never handles, so they do nothing there.
+ * when the user asked to save data), so the likeliest next click is instant. In the admin and escrow entries these URLs are another
+ * app's, which a router never handles, so they do nothing there.
  * - `prefetch.links`: a plain `<a href>` warms its page (code and props) when it is pointed at, pressed or focused, as a `Link` does.
- *   The webmail's own links are plain anchors (the rail, the settings menu, the bottom tab bar, folder lists); the ones that stay on
- *   the page (a folder or an all-mailboxes view, which change only the query) opt out with `data-router-prefetch="false"`.
+ * The webmail's own links are plain anchors (the rail, the settings menu, the bottom tab bar, folder lists); the ones that stay on
+ * the page (a folder or an all-mailboxes view, which change only the query) opt out with `data-router-prefetch="false"`.
  *
  * Focus, scroll and the announcement after a navigation are set by the web client's shell (`useNavigationEffects()`), not here.
  */
