@@ -21,6 +21,7 @@ import {
     type Plugin,
     type PluginNamespace,
 } from "@rapidmx/restapi";
+import { applyPluginSetting } from "../config.defaults.js";
 import { PluginClassLoader, type PluginUiLoadOptions } from "./PluginClassLoader.js";
 import { PluginInstaller, type PluginInstallerOptions, type PluginInstallResult } from "./PluginInstaller.js";
 import { describeModels } from "./PluginOwnedData.js";
@@ -217,11 +218,12 @@ export class PluginHost {
         const installedNames: Set<string> = new Set(installed.map((plugin) => plugin.name));
         for (const row of enabled.filter((plugin) => installedNames.has(plugin.name))) {
             for (const [key, value] of Object.entries(row.settings ?? {})) {
-                // An empty value means "not set": a plugin's manifest may declare "" as a default, which is saved when the
-                // plugin is installed, and applying it would override the deployment's own configuration for the same key
-                // (the Helm chart's bundled coturn sets mail:videoconf:turn:* through the environment, for one).
-                if (value !== "") {
-                    config.set(key, value);
+                // An empty value (or null) means "not set": a plugin's manifest may declare "" as a default, which is saved when
+                // the plugin is installed. It must not be applied, or it would hide the deployment's own configuration for the
+                // same key (the Helm chart's bundled coturn sets mail:videoconf:turn:* through the environment, for one). A
+                // value that is set goes in the top configuration layer, so it wins over the environment and the defaults.
+                if (value !== "" && value !== null && value !== undefined) {
+                    applyPluginSetting(config, key, value);
                 }
             }
         }

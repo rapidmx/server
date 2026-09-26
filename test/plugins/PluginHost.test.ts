@@ -12,6 +12,7 @@ import { ConnectionManager, ObjectFactory } from "@rapidrest/service-core";
 import { installRetryDelayMs, PLUGIN_SAFE_MODE_ENV, PluginHost } from "../../src/plugins/PluginHost.js";
 import { MONGO_PLUGIN_UI_HOSTS } from "../../src/plugins/hosts/mongo.js";
 import { resolvePluginUiApps } from "../../src/plugins/PluginInstaller.js";
+import { PLUGIN_SETTINGS_STORE } from "../../src/config.defaults.js";
 import { findAllPlugins, pluginRepository, PluginStateStore, readTarballPackageJson } from "../../src/plugins/PluginStateStore.js";
 import { SAFE_MODE_ATTEMPT_ENV, SAFE_MODE_BASELINE_ENV } from "../../src/plugins/supervisor.js";
 
@@ -283,6 +284,43 @@ describe("PluginHost", () => {
         expect(config.get("mail:videoconf:turn:url")).toBe("turn:mail.example.com:3478");
         expect(config.get("mail:videoconf:turn:username")).toBeUndefined();
         expect(config.get("mail:videoconf:public_url")).toBe("https://mail.example.com/meet");
+    });
+
+    it("lets a saved setting win over the environment and the defaults, and an empty or null one leave them", async () => {
+        // The layers of src/config.mongo.ts: the saved plugin settings first, then the command line, the environment, memory
+        // and the defaults.
+        process.env.mail__videoconf__public_url = "https://from-env.example.com/meet";
+        process.env.mail__videoconf__turn__url = "turn:from-env.example.com:3478";
+        process.env.mail__videoconf__turn__username = "from-env";
+        try {
+            const config = new nconf.Provider();
+            config.add(PLUGIN_SETTINGS_STORE, { type: "literal", store: {} });
+            config.argv().env({ separator: "__", parseValues: true });
+            config.use("memory");
+            config.defaults({ base_path: "./src/mongo", mail: { videoconf: { turn: { credential: "from-defaults", shared_secret: "from-defaults" } } } });
+            const settings = {
+                "mail:videoconf:public_url": "https://admin.example.com/meet",
+                "mail:videoconf:turn:url": "",
+                "mail:videoconf:turn:username": null,
+                "mail:videoconf:turn:credential": "from-admin",
+            };
+            const rows = [row("@rapidmx/meet", { settings })];
+            const installer: any = { install: vi.fn(async () => ({ installed: [installed("@rapidmx/meet")], errors: [] })) };
+            await PluginHost.prepare({ config, logger, datastore: "mongo", pluginClass: class {}, appRoot: process.cwd(), store: new MemoryStore(rows), installer });
+
+            expect(config.get("mail:videoconf:public_url")).toBe("https://admin.example.com/meet");
+            expect(config.get("mail:videoconf:turn:credential")).toBe("from-admin");
+            expect(config.get("mail:videoconf:turn:url")).toBe("turn:from-env.example.com:3478");
+            expect(config.get("mail:videoconf:turn:username")).toBe("from-env");
+            expect(config.get("mail:videoconf:turn:shared_secret")).toBe("from-defaults");
+            // Anything else set on the configuration stays under the environment, as before.
+            config.set("mail:videoconf:turn:url", "set-elsewhere");
+            expect(config.get("mail:videoconf:turn:url")).toBe("turn:from-env.example.com:3478");
+        } finally {
+            delete process.env.mail__videoconf__public_url;
+            delete process.env.mail__videoconf__turn__url;
+            delete process.env.mail__videoconf__turn__username;
+        }
     });
 
     it("installs enabled plugins, applies the settings of installed ones and records their errors", async () => {

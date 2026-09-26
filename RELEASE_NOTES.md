@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Changed
+
+- **A setting saved on a plugin in the admin console now wins over the environment.** The order is: saved in the console, then the environment (the Helm chart's), then the server's defaults. Before, an environment variable outranked a saved value, so an administrator's edit to a setting the chart provides (the TURN address, the public URLs) was silently ignored. A saved value that is empty is nothing, and lets the environment or default apply. The saved settings are the first layer of the configuration (`PLUGIN_SETTINGS_STORE`, `applyPluginSetting()` in `config.defaults.ts`).
+- **The plugin Settings dialog shows the values the chart and the environment set, and has a Reset button.** The Video Conferencing TURN address and shared secret the chart provides, and the public URLs, no longer read as empty: they show until something is saved (a secret only as set), and Reset drops what is saved. It comes with the next `@rapidmx/restapi`, `@rapidmx/react-shared` and `@rapidmx/web-client`.
+
 ## v1.0.0-beta.18
 
 ### Added

@@ -2,11 +2,13 @@
 // Copyright (C) 2020-2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
 import {
+    applyPluginSetting,
     assertProductionSecretsAreSet,
     DEFAULT_AUTH_SECRET,
     DEFAULT_COOKIE_SECRET,
     DEFAULT_MAIL_INGEST_SECRET,
     ensurePushDatastore,
+    PLUGIN_SETTINGS_STORE,
     SECRETS_GUARD_SKIP_ENVIRONMENTS,
     SecretsConfig,
     trustedAuthservIdWarning,
@@ -147,5 +149,35 @@ describe("ensurePushDatastore", () => {
                 expect(conf.get("datastores:events:url")).toBe("redis://push-host:6390/4");
             });
         }
+    });
+});
+
+describe("applyPluginSetting", () => {
+    it("writes a nested key to the plugin settings layer, which stays read-only for everything else", () => {
+        const store = { readOnly: true, values: {} as Record<string, unknown>, set(key: string, value: unknown) {
+            if (this.readOnly) {
+                return false;
+            }
+            this.values[key] = value;
+            return true;
+        } };
+        const set = vi.fn();
+        applyPluginSetting({ set, stores: { [PLUGIN_SETTINGS_STORE]: store } }, "mail:x:y", "saved");
+        expect(store.values).toEqual({ "mail:x:y": "saved" });
+        expect(store.readOnly).toBe(true);
+        expect(set).not.toHaveBeenCalled();
+    });
+
+    it("locks the layer again when the write throws", () => {
+        const store = { readOnly: true, set: () => { throw new Error("nope"); } };
+        expect(() => applyPluginSetting({ set: vi.fn(), stores: { [PLUGIN_SETTINGS_STORE]: store } }, "a", 1)).toThrow("nope");
+        expect(store.readOnly).toBe(true);
+    });
+
+    it("sets the value like any other when there is no such layer", () => {
+        const set = vi.fn();
+        applyPluginSetting({ set }, "a:b", 2);
+        applyPluginSetting({ set, stores: {} }, "c", 3);
+        expect(set.mock.calls).toEqual([["a:b", 2], ["c", 3]]);
     });
 });

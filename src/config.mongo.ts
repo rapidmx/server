@@ -14,6 +14,7 @@ import {
     DEFAULT_MAX_BODY_SIZE_BYTES,
     DEFAULT_APPEARANCE_BACKGROUND_MAX_BYTES,
     DEFAULT_MAX_COMPOSE_ATTACHMENT_BYTES,
+    PLUGIN_SETTINGS_STORE,
     ensurePushDatastore,
 } from "./config.defaults.js";
 
@@ -22,7 +23,9 @@ const _dirname = dirname(_filename);
 const _require = createRequire(import.meta.url);
 const packageInfo = _require(join(process.cwd(), "package.json"));
 
+// The first layer, so the settings saved on plugins in the admin console win over the environment (config.defaults.ts).
 const conf = nconf
+    .add(PLUGIN_SETTINGS_STORE, { type: "literal", store: {} })
     .argv()
     .env({
         separator: "__",

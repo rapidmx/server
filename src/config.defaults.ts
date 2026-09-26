@@ -146,6 +146,40 @@ export function trustedAuthservIdWarning(config: SecretsConfig): string | undefi
     );
 }
 
+/**
+ * The name of the nconf layer that holds the settings an administrator saved on plugins. It is the first layer, ahead of the
+ * command line, the environment and the defaults, so a setting saved in the admin console always wins - the environment
+ * (the Helm chart's, for one) is what applies until one is saved, and Reset in the console goes back to it.
+ * `@rapidmx/restapi`'s `PLUGIN_SETTINGS_STORE` is the same name: it leaves this layer out when it reports what the
+ * deployment itself configures.
+ */
+export const PLUGIN_SETTINGS_STORE = "plugins";
+
+/** The part of `nconf` `applyPluginSetting()` needs. */
+export interface LayeredConfig {
+    set(key: string, value: unknown): unknown;
+    stores?: Record<string, any>;
+}
+
+/**
+ * Puts a saved plugin setting in the `PLUGIN_SETTINGS_STORE` layer, where it outranks the environment. Without that layer
+ * (a configuration made another way) it is `set()` like any other value.
+ */
+export function applyPluginSetting(config: LayeredConfig, key: string, value: unknown): void {
+    const store = config.stores?.[PLUGIN_SETTINGS_STORE];
+    if (!store) {
+        config.set(key, value);
+        return;
+    }
+    // nconf makes a literal store read-only, which is right for everything but writing this one.
+    store.readOnly = false;
+    try {
+        store.set(key, value);
+    } finally {
+        store.readOnly = true;
+    }
+}
+
 /** The part of `nconf` `ensurePushDatastore()` needs. */
 export interface WritableConfig extends SecretsConfig {
     set(key: string, value: unknown): unknown;

@@ -568,8 +568,8 @@ auth-server's `app_url` to `https://<host>` (`http://` with `global.gateway.tls`
 `authserver.service.config.app_url` yourself. The chart likewise sets the public URLs of the plugins whose pages it serves on `host`:
 `mail:autodiscover:public_url` (`https://<host>`), `mail:booking:public_url` (`https://<host>/book`) and `mail:videoconf:public_url`
 (`https://<host>/meet`), so Autodiscover answers, booking emails carry their manage link and calls get join links as installed. The
-plugin's settings form in the admin console shows only what is saved there, so it can read empty for a value that is in effect; a value
-saved there wins, and an empty one doesn't override these.
+plugin's settings dialog in the admin console shows them until something is saved there (a secret, like the TURN shared secret, only as
+set); a value saved there wins over these, an empty one is nothing, and its Reset button drops what is saved so they apply again.
 
 #### Secrets and OpenBao
 

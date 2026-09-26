@@ -175,9 +175,9 @@ service:
     # The public addresses of the plugins whose pages this server serves, on `host` (rapidmx.serverURL). A plugin version that
     # defaults its own setting to https://<host> (Video Conferencing, Autodiscover 1.1.1+) saves the same value when it is first
     # added; setting them here as well means a plugin whose manifest leaves the setting empty (Booking pages, Autodiscover 1.1.0),
-    # or one added before this was set, still works, because an empty saved setting doesn't override configuration. The plugin's
-    # settings form shows only what is saved, so it can read empty for a value that is in effect here. Empty a value to leave it
-    # to the plugin.
+    # or one added before this was set, still works, because an empty saved setting doesn't override configuration. A value an
+    # administrator saves in the plugin's settings wins over these; the settings dialog shows them until then, and its Reset
+    # drops what is saved. Empty a value to leave it to the plugin.
     mail__autodiscover__public_url: '{{ include "rapidmx.serverURL" . }}'
     mail__booking__public_url: '{{ include "rapidmx.serverURL" . }}/book'
     mail__videoconf__public_url: '{{ include "rapidmx.serverURL" . }}/meet'
