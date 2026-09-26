@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.18] - 2026-09-26
+
+### Changed
+- Expose rspamd's controller on port 11334 inside the cluster behind a generated password stored in a Secret that is kept across upgrades, and set the hashed password and a Redis statistics backend for the Bayes classifier in an init container, so a message reported as junk or not junk teaches the spam filter
+- Pass the server the controller address and password and a switch for learning, and have the dev spam stand-in accept a lesson when there is no rspamd to send it to
+- Fail the chart render for a controller password that is too short or that the server would read as a number
+- Document the change, and the one-time steps for a live host, in the release notes, the README and NOTES
+- Use @rapidrest/react 2.0.0 and turn on its client-side router for the admin and escrow consoles, so they move between their pages without loading a document, while the webmail keeps its own router and plugin apps beneath a console keep hydrating page by page
+- Build the router entries for the admin and escrow apps in both the client build and the plugin UI builder
+- Test the router flags, the router entries, the 404s and the Vary header
+- Document the change, and the breaking changes of @rapidrest/react 2.0.0 that were audited, in the release notes and NOTES
+- Use @rapidrest/react 2.1.0 and turn on its router for the webmail app as well as the admin and escrow consoles
+- Use auth-server 1.0.0-beta.24 in the helm chart and fix the indentation of a comment that failed lint
+- Note the auth-server upgrade in the release notes
+- Record in NOTES that the webmail app joins the router of @rapidrest/react 2.1.0
+- Use @rapidmx/restapi 0.23.0, @rapidmx/react-shared 0.19.0 and @rapidmx/web-client 0.17.2
+- Say in the release notes that the webmail is a router app too
+
 ## [1.0.0-beta.17] - 2026-09-25
 
 ### Added
@@ -953,7 +971,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed test from .dockerignore, fixing yarn build's lint step failing outright when the build context is missing the test directory its tsconfig.eslint.json requires
 - Removed docker-compose.mail.yml's partial server: service block, since include: only supports merging resources that don't already exist in the including file and hard-errors ("services.server conflicts with imported resource") on a Compose version newer than whatever this had only ever been tested against locally
 
-[Unreleased]: https://github.com/rapidmx/server/compare/v1.0.0-beta.17...HEAD
+[Unreleased]: https://github.com/rapidmx/server/compare/v1.0.0-beta.18...HEAD
+[1.0.0-beta.18]: https://github.com/rapidmx/server/compare/v1.0.0-beta.17...v1.0.0-beta.18
 [1.0.0-beta.17]: https://github.com/rapidmx/server/compare/v1.0.0-beta.16...v1.0.0-beta.17
 [1.0.0-beta.16]: https://github.com/rapidmx/server/compare/v1.0.0-beta.15...v1.0.0-beta.16
 [1.0.0-beta.15]: https://github.com/rapidmx/server/compare/v1.0.0-beta.14...v1.0.0-beta.15
