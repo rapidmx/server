@@ -1953,9 +1953,9 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@rapidrest/react@npm:2.0.0-beta.3":
-  version: 2.0.0-beta.3
-  resolution: "@rapidrest/react@npm:2.0.0-beta.3"
+"@rapidrest/react@npm:2.0.0":
+  version: 2.0.0
+  resolution: "@rapidrest/react@npm:2.0.0"
   dependencies:
     cross-spawn: "npm:^7.0.6"
   peerDependencies:
@@ -1978,7 +1978,7 @@ __metadata:
       optional: true
   bin:
     rapidreact: dist/cli/cli.js
-  checksum: 10c0/c2f563f4f04bd1f514aabd5ed64de0f005b2876638d349c5cad32d16118cd7ae381213f97e7be4ec6a0a3c59a7a9d5233e56fd9d9de4cf4eddc152c7050fc217
+  checksum: 10c0/7014003d953f682e58ba7f28c58b63477556ef31c492072cdfb62f2d19110028b61a69e8b80face60d963c53a5ac981c4b9aa8c73fd0f380d3147ed8772e7b72
   languageName: node
   linkType: hard
 
@@ -9910,7 +9910,7 @@ __metadata:
     "@rapidmx/web-client": "npm:^0.16.0"
     "@rapidrest/cli": "npm:^2.1.0"
     "@rapidrest/core": "npm:^6.0.0"
-    "@rapidrest/react": "npm:2.0.0-beta.3"
+    "@rapidrest/react": "npm:2.0.0"
     "@rapidrest/service-core": "npm:^2.3.0"
     "@swc/core": "npm:^1.16.2"
     "@tailwindcss/vite": "npm:^4.3.3"

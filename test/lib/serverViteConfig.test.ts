@@ -3,7 +3,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 import viteConfig from "../../vite.config.js";
 import fs from "fs";
-import { appStylesheetPlugin, CORE_APP_DIRS, createServerViteConfig, webClientSourceAlias } from "../../src/lib/serverViteConfig.js";
+import { appStylesheetPlugin, CORE_APP_DIRS, createServerViteConfig, ROUTER_APP_DIRS, webClientSourceAlias } from "../../src/lib/serverViteConfig.js";
 
 /** The hydration entry inputs a config's `rapidrest-hydration` plugin discovers. */
 function hydrationInputs(config: any): string[] {
@@ -27,6 +27,17 @@ describe("serverViteConfig", () => {
         expect(stylesheets.transform("hydrate();", "\0rapidrest-entry:node_modules/@rapidmx/web-client/apps/www/index.tsx")).toBeUndefined();
         // Booking pages moved to @rapidmx/booking-plugin, so the image builds no repo-local apps.
         expect(inputs.filter((input) => input.startsWith("apps/"))).toEqual([]);
+    });
+
+    it("builds a client router entry for the admin and escrow consoles only", async () => {
+        for (const config of [await viteConfig(), await createServerViteConfig({ extraAppDirs: ["test/fixtures/ui-plugin/apps/hello"] })]) {
+            const routers = hydrationInputs(config).filter((input) => input.endsWith("/__router"));
+            expect(routers.sort()).toEqual([...ROUTER_APP_DIRS].sort().map((dir) => `${dir}/__router`));
+            // Their pages keep an entry of their own as well: the manifest record that says which stylesheets a page needs.
+            expect(hydrationInputs(config)).toContain("node_modules/@rapidmx/web-client/apps/admin/index.tsx");
+        }
+        expect(ROUTER_APP_DIRS.every((dir) => CORE_APP_DIRS.includes(dir))).toBe(true);
+        expect(ROUTER_APP_DIRS.some((dir) => dir.endsWith("/www"))).toBe(false);
     });
 
     it("gives React and the icon set chunks of their own, so the app's other chunks can change without invalidating them", async () => {

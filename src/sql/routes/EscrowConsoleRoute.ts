@@ -23,6 +23,8 @@ const { Config, Inject } = ObjectDecorators;
 export class EscrowConsoleRoute extends ReactRoute {
     protected readonly appDir: string = webClientAppDir("escrow");
     protected readonly hydrate: boolean = true;
+    /** Client-side navigation between this app's pages (`@rapidrest/react`'s router; the client build lists this app's directory in `ROUTER_APP_DIRS`, src/lib/serverViteConfig.ts). */
+    protected readonly router: boolean = true;
 
     @Config("mail:auth_server_url")
     private authServerUrl?: string;

@@ -45,6 +45,9 @@ export function createPluginUiRoute(base: new (...args: any[]) => any, app: Plug
         [className]: class extends base {
             protected readonly appDir: string = hasTsxContext() ? app.sourceDir : app.ssrDir;
             protected readonly hydrate: boolean = true;
+            // Not the host's router: a plugin app has no router entry in the client build (only the core apps do, see
+            // `ROUTER_APP_DIRS`), so an admin or escrow plugin page hydrates on its own and every link to or from it is a page load.
+            protected readonly router: boolean = false;
         },
     }[className];
     Reflect.defineMetadata("rrst:routePaths", [app.mount], clazz.prototype);

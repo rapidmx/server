@@ -15,6 +15,17 @@ export const CORE_APP_DIRS: readonly string[] = [
     "node_modules/@rapidmx/web-client/apps/escrow",
 ];
 
+/**
+ * The core apps that navigate between their pages on the client (`@rapidrest/react`'s router): the admin and escrow consoles.
+ * The build gets a router entry for each, and their routes (`AdminConsoleRoute`, `EscrowConsoleRoute`) set `router = true`.
+ * `www` is deliberately not here: it has its own router, which keeps one app frame mounted across pages (see
+ * `@rapidmx/web-client`'s `apps/shared/navigation/AppRouter.tsx`), and plugin apps hydrate page by page.
+ */
+export const ROUTER_APP_DIRS: readonly string[] = [
+    "node_modules/@rapidmx/web-client/apps/admin",
+    "node_modules/@rapidmx/web-client/apps/escrow",
+];
+
 /** The web client's Tailwind entry point: its design tokens and the `@source` lines for its own and react-shared's classes. */
 export const WEB_CLIENT_APP_CSS = "node_modules/@rapidmx/web-client/apps/shared/styles/app.css";
 
@@ -99,6 +110,7 @@ export async function createServerViteConfig(options: ServerViteConfigOptions = 
     const stylesheets: AppStylesheet[] = options.stylesheets ?? [];
     const config: any = await createViteConfig({
         appDir: [...CORE_APP_DIRS, ...(options.extraAppDirs ?? [])],
+        router: [...ROUTER_APP_DIRS],
         ...(options.outDir ? { outDir: options.outDir } : {}),
         plugins: [appStylesheetPlugin(stylesheets), tailwindcss()],
     });
