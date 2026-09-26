@@ -38,7 +38,7 @@
     "@rapidmx/restapi": "^0.22.1",
     "@rapidmx/web-client": "^0.16.0",
     "@rapidrest/core": "^6.0.0",
-    "@rapidrest/react": "2.0.0",
+    "@rapidrest/react": "2.1.0",
     "@rapidrest/service-core": "^2.3.0",
     "@tailwindcss/vite": "^4.3.3",
     "@types/node": "^26.5.0",

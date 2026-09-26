@@ -1,11 +1,11 @@
 ///////////////////////////////////////////////////////////////////////////////
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 ///////////////////////////////////////////////////////////////////////////////
-// The admin and escrow consoles navigate between their pages on the client with `@rapidrest/react`'s router (`router = true`
-// on their routes, a router entry in the client build; see ReactRouteHydration.test.ts for the build side). This drives the
-// real routes the way a request would, with what needs no page module: a URL that is no page of the app. (Rendering a page
-// imports its TSX source natively, which Vitest can't do; the pages themselves are exercised in a browser.) www is not routed -
-// it has its own router, which keeps one app frame mounted - and neither is a plugin app beneath a console.
+// The webmail (www) and the admin and escrow consoles navigate between their pages on the client with `@rapidrest/react`'s router
+// (`router = true` on their routes, a router entry in the client build; see ReactRouteHydration.test.ts for the build side). The webmail
+// also has an app shell (`apps/www/_shell.tsx`, its persistent frame), which the library finds by itself. This drives the real routes the
+// way a request would, with what needs no page module: a URL that is no page of the app. (Rendering a page imports its TSX source natively,
+// which Vitest can't do; the pages themselves are exercised in a browser.) A plugin app beneath a console or the webmail is not routed.
 import "reflect-metadata";
 import { AdminConsoleRoute as AdminConsoleRouteMongo } from "../../src/mongo/routes/AdminConsoleRoute.js";
 import { EscrowConsoleRoute as EscrowConsoleRouteMongo } from "../../src/mongo/routes/EscrowConsoleRoute.js";
@@ -62,8 +62,9 @@ async function navigate(route: any, path: string): Promise<{ res: FakeResponse; 
     return { res, body: typeof result === "string" ? result : (res.body ?? "") };
 }
 
-describe("The consoles' client-side router", () => {
+describe("The client-side router of the webmail and the consoles", () => {
     const consoles = [
+        { name: "www", prefix: "", page: "calendar", classes: [WwwRouteMongo, WwwRouteSql] },
         { name: "admin", prefix: "/admin", page: "domains", classes: [AdminConsoleRouteMongo, AdminConsoleRouteSql] },
         { name: "escrow", prefix: "/escrow", page: "audit-log", classes: [EscrowConsoleRouteMongo, EscrowConsoleRouteSql] },
     ];
@@ -79,7 +80,7 @@ describe("The consoles' client-side router", () => {
                 // No such page, a wrong-case URL (a 404 on every filesystem since @rapidrest/react 2.0) and a helper file
                 // (`_`-prefixed names are never pages): the router is told with the status alone and lets the browser load the
                 // URL, so the server renders the error page as it always did.
-                for (const missing of [`${prefix}/no-such-page`, `${prefix}/${page.toUpperCase()}`, `${prefix}/_layout`]) {
+                for (const missing of [`${prefix}/no-such-page`, `${prefix}/${page.toUpperCase()}`, `${prefix}/_layout`, `${prefix}/_shell`]) {
                     const navigation = await navigate(route, missing);
                     expect(navigation.res.code, missing).toBe(404);
                     expect(JSON.parse(navigation.body)).toEqual({ status: 404 });
@@ -91,17 +92,9 @@ describe("The consoles' client-side router", () => {
         }
     }
 
-    it("is off for www, which has its own router that keeps one app frame mounted", () => {
-        for (const RouteClass of [WwwRouteMongo, WwwRouteSql]) {
-            const route = routeAt(RouteClass, "");
-            expect(route.router).toBe(false);
-            expect(route.hydrate).toBe(true);
-        }
-    });
-
-    it("is off for a plugin app mounted beneath a console, which has no router entry in the build", () => {
+    it("is off for a plugin app mounted beneath the webmail or a console, which has no router entry in the build (and so no app shell)", () => {
         const app: any = { id: "demo", host: "admin", mount: "/admin/demo", dir: "apps/demo", sourceDir: "apps/demo", ssrDir: "dist/apps/demo" };
-        for (const Base of [AdminConsoleRouteMongo, AdminConsoleRouteSql, EscrowConsoleRouteMongo, EscrowConsoleRouteSql]) {
+        for (const Base of [WwwRouteMongo, WwwRouteSql, AdminConsoleRouteMongo, AdminConsoleRouteSql, EscrowConsoleRouteMongo, EscrowConsoleRouteSql]) {
             const Plugin = createPluginUiRoute(Base, app, "plugins.x.ui.demo");
             expect(new Plugin().router).toBe(false);
             expect(new Plugin().hydrate).toBe(true);

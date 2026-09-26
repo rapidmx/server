@@ -20,15 +20,13 @@ type ManifestEntry = { file: string; name: string; src: string; isEntry: boolean
 const WEB_CLIENT = "node_modules/@rapidmx/web-client";
 
 /** Each route's page sources, and the directory its compiled page modules are imported from in production. */
-const APPS: Array<{ route: string; classes: Array<new () => any>; sourceDir: string; compiledDir: string; appDir: string; router: boolean }> = [
+const APPS: Array<{ route: string; classes: Array<new () => any>; sourceDir: string; compiledDir: string; appDir: string }> = [
     {
         route: "WwwRoute",
         classes: [WwwRouteMongo, WwwRouteSql],
         sourceDir: `${WEB_CLIENT}/apps/www`,
         compiledDir: `${WEB_CLIENT}/dist/apps/www`,
         appDir: `${WEB_CLIENT}/dist/apps/www`,
-        // www has its own client router (apps/shared/navigation), which keeps one app frame mounted across pages.
-        router: false,
     },
     {
         route: "AdminConsoleRoute",
@@ -36,7 +34,6 @@ const APPS: Array<{ route: string; classes: Array<new () => any>; sourceDir: str
         sourceDir: `${WEB_CLIENT}/apps/admin`,
         compiledDir: `${WEB_CLIENT}/dist/apps/admin`,
         appDir: `${WEB_CLIENT}/dist/apps/admin`,
-        router: true,
     },
     {
         route: "EscrowConsoleRoute",
@@ -44,7 +41,6 @@ const APPS: Array<{ route: string; classes: Array<new () => any>; sourceDir: str
         sourceDir: `${WEB_CLIENT}/apps/escrow`,
         compiledDir: `${WEB_CLIENT}/dist/apps/escrow`,
         appDir: `${WEB_CLIENT}/dist/apps/escrow`,
-        router: true,
     },
 ];
 
@@ -128,12 +124,9 @@ describe("ReactRoute production hydration", () => {
                 expect(warn).not.toHaveBeenCalled();
             });
 
-            it(`${app.router ? "navigates between" : "does not route"} the pages of ${app.sourceDir} on the client (${app.route}, ${RouteClass === app.classes[0] ? "mongo" : "sql"})`, () => {
+            it(`navigates between the pages of ${app.sourceDir} on the client (${app.route}, ${RouteClass === app.classes[0] ? "mongo" : "sql"})`, () => {
                 const route = constructForCompiledRuntime(RouteClass);
-                expect(route.router).toBe(app.router);
-                if (!app.router) {
-                    return;
-                }
+                expect(route.router).toBe(true);
                 route.logger = { warn: vi.fn(), debug: vi.fn(), error: vi.fn(), info: vi.fn() };
                 route.manifest = manifest;
                 process.env.NODE_ENV = "production";

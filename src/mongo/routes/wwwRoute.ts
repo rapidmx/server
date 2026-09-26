@@ -17,6 +17,14 @@ const { Config, Inject, Logger } = ObjectDecorators;
 export class WwwRoute extends ReactRoute {
     protected readonly appDir: string = webClientAppDir("www");
     protected readonly hydrate: boolean = true;
+    /**
+     * Client-side navigation between the webmail's pages (`@rapidrest/react`'s router; the client build lists this app's
+     * directory in `ROUTER_APP_DIRS`, src/lib/serverViteConfig.ts). The web client's `apps/www/_shell.tsx` is the persistent
+     * app frame rendered around every page (see `@rapidrest/react`'s persistent shell): it stays mounted - compose windows,
+     * the unlock prompt, the idle-key timer, the mail connection - while only the page inside it is swapped. Every navigation
+     * asks this route's `fetchProps()` for the next page's props (the shell gets them), so keep it cheap.
+     */
+    protected readonly router: boolean = true;
 
     @Config("mail:auth_server_url")
     private authServerUrl?: string;

@@ -17,6 +17,8 @@ const { Config, Inject, Logger } = ObjectDecorators;
 export class AppRoute extends ReactRoute {
     protected readonly appDir: string = webClientAppDir("www");
     protected readonly hydrate: boolean = true;
+    /** Client-side navigation with a persistent app shell - see `src/mongo/routes/wwwRoute.ts`. */
+    protected readonly router: boolean = true;
 
     @Config("mail:auth_server_url")
     private authServerUrl?: string;

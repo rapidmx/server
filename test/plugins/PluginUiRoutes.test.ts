@@ -72,9 +72,9 @@ describe("PluginUiRoutes", () => {
                 const route = new clazz();
                 expect(route.appDir).toBe(app.sourceDir);
                 expect(route.hydrate).toBe(true);
-                // The admin and escrow consoles navigate on the client; a plugin app beneath them has no router entry in the
-                // build, so it must not inherit the host's `router`.
-                expect(new base().router).toBe(host === "admin" || host === "escrow");
+                // The webmail and the admin and escrow consoles navigate on the client; a plugin app beneath one has no router
+                // entry in the build (and no app shell), so it must not inherit the host's `router`.
+                expect(new base().router).toBe(host !== "public");
                 expect(route.router).toBe(false);
                 expect(asCompiledRuntime(() => new clazz()).appDir).toBe(app.ssrDir);
             }

@@ -16,15 +16,33 @@ export const CORE_APP_DIRS: readonly string[] = [
 ];
 
 /**
- * The core apps that navigate between their pages on the client (`@rapidrest/react`'s router): the admin and escrow consoles.
- * The build gets a router entry for each, and their routes (`AdminConsoleRoute`, `EscrowConsoleRoute`) set `router = true`.
- * `www` is deliberately not here: it has its own router, which keeps one app frame mounted across pages (see
- * `@rapidmx/web-client`'s `apps/shared/navigation/AppRouter.tsx`), and plugin apps hydrate page by page.
+ * The core apps that navigate between their pages on the client (`@rapidrest/react`'s router): the webmail and the admin and
+ * escrow consoles. The build gets a router entry for each, and their routes (`WwwRoute`, `AdminConsoleRoute`,
+ * `EscrowConsoleRoute`) set `router = true`. The webmail's persistent app frame is the router's app shell
+ * (`@rapidmx/web-client`'s `apps/www/_shell.tsx`, built into its router entry); plugin apps hydrate page by page.
  */
 export const ROUTER_APP_DIRS: readonly string[] = [
+    "node_modules/@rapidmx/web-client/apps/www",
     "node_modules/@rapidmx/web-client/apps/admin",
     "node_modules/@rapidmx/web-client/apps/escrow",
 ];
+
+/**
+ * What the router entries are built with (`createViteConfig({ router })`). The options are the same for every routed app, so each
+ * entry is only given what is right for all of them:
+ *
+ * - `prefetch.idle`: the webmail's four rail pages, whose code is downloaded once the browser is idle after the first load (never
+ *   when the user asked to save data), so the likeliest next click is instant. In the admin and escrow entries these URLs are another
+ *   app's, which a router never handles, so they do nothing there.
+ * - `prefetch.links`: a plain `<a href>` warms its page (code and props) when it is pointed at, pressed or focused, as a `Link` does.
+ *   The webmail's own links are plain anchors (the rail, the settings menu, the bottom tab bar, folder lists); the ones that stay on
+ *   the page (a folder or an all-mailboxes view, which change only the query) opt out with `data-router-prefetch="false"`.
+ *
+ * Focus, scroll and the announcement after a navigation are set by the web client's shell (`useNavigationEffects()`), not here.
+ */
+export const ROUTER_OPTIONS = {
+    prefetch: { idle: ["/", "/calendar", "/contacts", "/tasks"], links: true },
+} as const;
 
 /** The web client's Tailwind entry point: its design tokens and the `@source` lines for its own and react-shared's classes. */
 export const WEB_CLIENT_APP_CSS = "node_modules/@rapidmx/web-client/apps/shared/styles/app.css";
@@ -110,7 +128,7 @@ export async function createServerViteConfig(options: ServerViteConfigOptions = 
     const stylesheets: AppStylesheet[] = options.stylesheets ?? [];
     const config: any = await createViteConfig({
         appDir: [...CORE_APP_DIRS, ...(options.extraAppDirs ?? [])],
-        router: [...ROUTER_APP_DIRS],
+        router: { appDirs: [...ROUTER_APP_DIRS], prefetch: { ...ROUTER_OPTIONS.prefetch, idle: [...ROUTER_OPTIONS.prefetch.idle] } },
         ...(options.outDir ? { outDir: options.outDir } : {}),
         plugins: [appStylesheetPlugin(stylesheets), tailwindcss()],
     });
