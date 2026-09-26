@@ -563,3 +563,69 @@ mean nothing to one. Usage: include "rapidmx.assertCoturn" $
 {{-     end -}}
 {{-   end -}}
 {{- end -}}
+
+{{/*********************************** RSPAMD ***********************************/}}
+
+{{/* The Secret holding rspamd's controller password: mail.rspamd.controller.existingSecret, else the one this chart renders. */}}
+{{- define "rapidmx.rspamdSecretName" -}}
+{{-   .Values.mail.rspamd.controller.existingSecret | default (printf "%s-rspamd" (include "rrst.fullname" .)) -}}
+{{- end -}}
+
+{{/*
+host:port of the Redis rspamd keeps its Bayes statistics in: mail.rspamd.bayes.redis.servers, else the host (and port, default
+6379) of global.cache.url, with any scheme, credentials and path taken off. Usage: include "rapidmx.rspamdRedisServers" .
+*/}}
+{{- define "rapidmx.rspamdRedisServers" -}}
+{{-   $servers := include "rrst.render" (dict "value" .Values.mail.rspamd.bayes.redis.servers "context" .) -}}
+{{-   if not $servers -}}
+{{-     $url := include "rrst.render" (dict "value" .Values.global.cache.url "context" .) -}}
+{{-     $servers = regexReplaceAll "/.*$" (regexReplaceAll "^[^@/]*@" (regexReplaceAll "^[A-Za-z][A-Za-z0-9+.-]*://" $url "") "") "" -}}
+{{-     if not (contains ":" $servers) -}}
+{{-       $servers = printf "%s:6379" $servers -}}
+{{-     end -}}
+{{-   end -}}
+{{-   $servers -}}
+{{- end -}}
+
+{{/*
+The Secret (name and key) holding the Redis password rspamd's classifier connects with, as "name/key", or empty for none:
+mail.rspamd.bayes.redis.existingSecret, else the bundled Redis's own Secret when it has authentication on.
+*/}}
+{{- define "rapidmx.rspamdRedisSecret" -}}
+{{-   $r := .Values.mail.rspamd.bayes.redis -}}
+{{-   if $r.existingSecret -}}
+{{-     printf "%s/%s" $r.existingSecret ($r.existingSecretKey | default "redis-password") -}}
+{{-   else if and .Values.redis.create .Values.redis.auth.enabled -}}
+{{-     printf "%s/redis-password" (.Values.redis.fullnameOverride | default "redis") -}}
+{{-   end -}}
+{{- end -}}
+
+{{/*
+Fails the render on an rspamd setting that would leave the spam filter unable to start or the controller unprotected. The
+controller password and the Redis address end up in a shell script and in rspamd's configuration (which reads a value in
+double quotes), so they are limited to characters that mean nothing to either; the password must also contain a letter, because
+the server reads its environment with parseValues and would turn an all-digit one into a number. Usage: include "rapidmx.assertRspamd" $
+*/}}
+{{- define "rapidmx.assertRspamd" -}}
+{{-   $c := .Values.mail.rspamd -}}
+{{-   if $c.controller.password -}}
+{{-     $pw := toString $c.controller.password -}}
+{{-     if not (regexMatch "^[A-Za-z0-9._~-]{16,}$" $pw) -}}
+{{-       fail "mail.rspamd.controller.password must be at least 16 characters, and only letters, digits and . _ ~ -" -}}
+{{-     end -}}
+{{-     if not (regexMatch "[A-Za-z]" $pw) -}}
+{{-       fail "mail.rspamd.controller.password must contain at least one letter (an all-digit value would be read as a number)." -}}
+{{-     end -}}
+{{-   end -}}
+{{-   $servers := include "rapidmx.rspamdRedisServers" . -}}
+{{-   if not (regexMatch "^[A-Za-z0-9._-]+:[0-9]{1,5}$" $servers) -}}
+{{-     fail (printf "the Redis rspamd keeps its statistics in resolves to %q - it must be host:port. Set mail.rspamd.bayes.redis.servers." $servers) -}}
+{{-   end -}}
+{{-   $db := int $c.bayes.redis.db -}}
+{{-   if or (lt $db 0) (gt $db 999) -}}
+{{-     fail (printf "mail.rspamd.bayes.redis.db is %d - it must be a database number." $db) -}}
+{{-   end -}}
+{{-   if lt (int $c.bayes.minLearns) 1 -}}
+{{-     fail "mail.rspamd.bayes.minLearns must be at least 1." -}}
+{{-   end -}}
+{{- end -}}

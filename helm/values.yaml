@@ -182,6 +182,10 @@ service:
     mail__booking__public_url: '{{ include "rapidmx.serverURL" . }}/book'
     mail__videoconf__public_url: '{{ include "rapidmx.serverURL" . }}/meet'
     mail__scan__spam__rspamd__url: http://rspamd:11333
+    # rspamd's controller, which the server teaches from a user's reports (the password is in the rspamd Secret, which the server
+    # pod loads as mail__scan__spam__rspamd__controller_password).
+    mail__scan__spam__rspamd__controller_url: http://rspamd:11334
+    mail__scan__spam__learn__enabled: '{{ .Values.mail.rspamd.learn.enabled }}'
     mail__scan__av__clamav__host: clamav
     mail__scan__av__clamav__port: 3310
     mail__pki__signing_enrollment__backend: '{{ include "rapidmx.signingEnrollmentBackend" . }}'
@@ -347,6 +351,8 @@ mail:
     # The e-mail address given to the CA when registering this deployment's ACME account (not one of this deployment's own
     # mailboxes). Empty defaults to global.certmanager.email.
     contactEmail: ''
+  # The spam filter. The server scores every message through rspamd's scan worker (port 11333), and teaches it through its
+  # controller (port 11334) when a user reports a message as junk or not junk (POST /api/mail/messages/:id/report).
   rspamd:
     image:
       registry: docker.io
@@ -356,6 +362,40 @@ mail:
       requests:
         cpu: 100m
         memory: 256Mi
+    # Whether a report teaches rspamd (mail:scan:spam:learn:enabled). Off, a report still moves the message and marks it, and
+    # the response says learnSkipped: "disabled". The controller below is set up either way.
+    learn:
+      enabled: true
+    # rspamd's controller, which takes the lessons. It is reachable only inside the cluster (the `rspamd` Service, port 11334,
+    # ClusterIP), and only with this password: the image's own default (q1) is replaced. The password is generated once and kept
+    # across upgrades, like the cookie and session secrets: empty gets a random one on install that later upgrades read back from
+    # the Secret. It is loaded into the server pod as mail__scan__spam__rspamd__controller_password, and the rspamd pod hashes it
+    # (rspamadm pw) when it starts, so both ends are always the same.
+    controller:
+      # Set it to choose your own: at least 16 letters, digits and . _ ~ - (with a letter among them).
+      password: ''
+      # Read the password from a Secret you manage instead, whose key mail__scan__spam__rspamd__controller_password holds it.
+      # Nothing is rendered here then.
+      existingSecret: ''
+    # The Bayes classifier that learns from those reports. It keeps its statistics in Redis.
+    bayes:
+      # How many messages of EACH class (spam and ham) have to be learned before the classifier's verdict counts towards a
+      # message's score. rspamd's own default, and a sound one: a classifier that has seen a handful of messages is wrong more
+      # often than it is right. Reports are the only lessons rspamd gets here (its autolearn needs a queue id that these scans
+      # don't carry), so a small deployment reaches it slowly; lower it knowingly.
+      minLearns: 200
+      redis:
+        # host:port of the Redis. Empty: the one global.cache.url names (the bundled Redis, redis-master:6379).
+        servers: ''
+        # The database the statistics live in, apart from the cache in database 0. The bundled Redis has 16.
+        db: 1
+        # A Secret in this namespace holding the Redis password under `existingSecretKey`. Empty: with the bundled Redis and
+        # redis.auth.enabled, the bundled Redis's own Secret; otherwise no password.
+        existingSecret: ''
+        existingSecretKey: redis-password
+      # More settings for the classifier, in rspamd's own syntax, added to local.d/classifier-bayes.conf as they are
+      # (autolearn, per_user, ...). See https://docs.rspamd.com/configuration/statistic.
+      extraConfig: ''
   clamav:
     image:
       registry: docker.io

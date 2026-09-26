@@ -1,7 +1,9 @@
 ---
-# Exposes rspamd's HTTP checkv2 API for RspamdSpamScanProvider (mail__scan__spam__rspamd__url). Distinct
+# Exposes rspamd's HTTP checkv2 API for RspamdSpamScanProvider (mail__scan__spam__rspamd__url) and its
+# controller, which the same provider teaches from a user's reports (mail__scan__spam__rspamd__controller_url). Distinct
 # from the rspamd bundled inside `boky/postfix` (DKIM signing) - that Deployment, along with Postfix and
 # postfix-bridge itself, now lives in the separate `postfix-bridge` chart, deployed alongside this one.
+# A ClusterIP Service: neither port is reachable from outside the cluster, and the controller wants its password inside it.
 apiVersion: v1
 kind: Service
 metadata:
@@ -11,6 +13,9 @@ spec:
     - port: 11333
       targetPort: 11333
       name: http
+    - port: 11334
+      targetPort: 11334
+      name: controller
   selector:
     app: rspamd
 ---

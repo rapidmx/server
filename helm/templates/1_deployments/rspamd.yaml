@@ -1,8 +1,16 @@
+{{- include "rapidmx.assertRspamd" $ }}
+{{- $image := printf "%s/%s:%s" $.Values.mail.rspamd.image.registry $.Values.mail.rspamd.image.repository (toString $.Values.mail.rspamd.image.tag) }}
+{{- $secret := include "rapidmx.rspamdSecretName" $ }}
+{{- $redisSecret := splitList "/" (include "rapidmx.rspamdRedisSecret" $) }}
 ---
 # Anti-spam scoring (SpamScanProvider) - see RspamdSpamScanProvider. This is a standalone rspamd instance
 # exposing its HTTP checkv2 API for the app's OWN inbound-message spam scoring - NOT the same rspamd that
 # signs DKIM on outbound mail, which is bundled inside the postfix Deployment's own boky/postfix image
 # (see postfix.yaml's own comment) - this one has no reason to mount the dkim-keys volume.
+#
+# It also takes lessons: a user's "report as junk / not junk" reaches its controller (11334), which teaches the Bayes classifier,
+# whose statistics live in Redis. Neither is rspamd's default (a password of q1, no statistics backend configured for the
+# classifier), so the init container below writes both into local.d, which rspamd includes over its own defaults.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -16,11 +24,100 @@ spec:
     metadata:
       labels:
         app: rspamd
+        {{- /*
+        The Bitnami Redis's NetworkPolicy admits pods labelled "<fullname>-client" when networkPolicy.allowExternal is false
+        (see service.yaml): without the label rspamd could not reach the classifier's statistics and every lesson would fail.
+        */}}
+        {{- if $.Values.redis.create }}
+        {{ $.Values.redis.fullnameOverride | default "redis" }}-client: "true"
+        {{- end }}
+      annotations:
+        # The password is only read when the pod starts.
+        checksum/secrets: {{ include (print $.Template.BasePath "/0_config/rspamd-secret.yaml") . | sha256sum }}
     spec:
+      volumes:
+        # Where the init container writes worker-controller.inc and classifier-bayes.conf, and rspamd reads them from.
+        - name: local-d
+          emptyDir: {}
+      initContainers:
+        - name: rspamd-config
+          image: {{ $image }}
+          command: ["/bin/sh", "-ec"]
+          args:
+            - |
+              umask 077
+              # The controller's password goes into the configuration hashed (rspamadm pw prints $<id>$<salt>$<key>). rspamd
+              # also accepts it in plain text, so if the tool fails for any reason the password is written as it is and the
+              # failure is logged: the spam filter must come up either way, because the server quarantines everything while
+              # it is down.
+              value=$CONTROLLER_PASSWORD
+              hash=
+              if rspamadm pw -p "$CONTROLLER_PASSWORD" >/tmp/hash 2>/tmp/hash.err; then
+                read -r hash </tmp/hash || true
+              fi
+              case "$hash" in
+                '$'*'$'*) value=$hash ;;
+                *) echo "rspamadm pw did not print a hash, writing the controller password in plain text:" >&2; cat /tmp/hash.err >&2 || true ;;
+              esac
+              printf 'password = "%s";\n' "$value" >/local.d/worker-controller.inc
+              # The classifier's statistics backend (backend = "redis" is rspamd's own default; it just has no server to talk to).
+              {
+                printf 'servers = "%s";\n' "$REDIS_SERVERS"
+                printf 'db = "%s";\n' "$REDIS_DB"
+                if [ -n "${REDIS_PASSWORD:-}" ]; then
+                  # A backslash or double quote in the password would end the string early in rspamd's syntax.
+                  printf '%s' "$REDIS_PASSWORD" | sed 's/[\\"]/\\&/g' >/tmp/redis.pw
+                  IFS= read -r escaped </tmp/redis.pw || true
+                  printf 'password = "%s";\n' "$escaped"
+                fi
+                printf 'min_learns = %s;\n' "$MIN_LEARNS"
+                if [ -n "${EXTRA_CONFIG:-}" ]; then
+                  printf '%s\n' "$EXTRA_CONFIG"
+                fi
+              } >/local.d/classifier-bayes.conf
+              echo "wrote /local.d/worker-controller.inc and /local.d/classifier-bayes.conf (servers $REDIS_SERVERS, db $REDIS_DB)"
+          env:
+            - name: CONTROLLER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: mail__scan__spam__rspamd__controller_password
+            - name: REDIS_SERVERS
+              value: {{ include "rapidmx.rspamdRedisServers" $ | quote }}
+            - name: REDIS_DB
+              value: {{ int $.Values.mail.rspamd.bayes.redis.db | toString | quote }}
+            - name: MIN_LEARNS
+              value: {{ int $.Values.mail.rspamd.bayes.minLearns | toString | quote }}
+            {{- with $.Values.mail.rspamd.bayes.extraConfig }}
+            - name: EXTRA_CONFIG
+              value: {{ . | toString | quote }}
+            {{- end }}
+            {{- if $redisSecret | first }}
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ index $redisSecret 0 }}
+                  key: {{ index $redisSecret 1 }}
+            {{- end }}
+          volumeMounts:
+            - name: local-d
+              mountPath: /local.d
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
       containers:
         - name: rspamd
-          image: {{ $.Values.mail.rspamd.image.registry }}/{{ $.Values.mail.rspamd.image.repository }}:{{ $.Values.mail.rspamd.image.tag }}
+          image: {{ $image }}
           ports:
-            - containerPort: 11333
+            - name: scan
+              containerPort: 11333
+            # The controller. The image binds it on every address (RSPAMD_LOCAL_ADDR=*); it is only published inside the
+            # cluster (the Service is a ClusterIP) and answers only with the password above.
+            - name: controller
+              containerPort: 11334
+          volumeMounts:
+            - name: local-d
+              mountPath: /etc/rspamd/local.d
           resources:
             {{- toYaml $.Values.mail.rspamd.resources | nindent 12 }}

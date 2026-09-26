@@ -307,6 +307,56 @@ describe("DevBypassSpamScanProvider", () => {
         await expect(provider.scoreMessage(RAW, ENVELOPE)).rejects.toThrow("RspamdSpamScanProvider");
     });
 
+    describe("learn", () => {
+        const refused = () =>
+            Object.assign(new TypeError("fetch failed"), { cause: { code: "ECONNREFUSED", message: "connect ECONNREFUSED 127.0.0.1:11334" } });
+
+        it("forwards a lesson to the real provider, with the reporting mailbox, without warning", async () => {
+            const inner = { name: "rspamd", scoreMessage: vi.fn(), learn: vi.fn().mockResolvedValue(undefined) };
+            const { provider, logger } = spamWrapper("http://127.0.0.1:11333", inner);
+
+            await expect(provider.learn(RAW, "spam", { recipient: "b@example.com" })).resolves.toBeUndefined();
+            await expect(provider.learn(RAW, "ham")).resolves.toBeUndefined();
+            expect(inner.learn).toHaveBeenNthCalledWith(1, RAW, "spam", { recipient: "b@example.com" });
+            expect(inner.learn).toHaveBeenNthCalledWith(2, RAW, "ham", {});
+            expect(logger.warn).not.toHaveBeenCalled();
+        });
+
+        it("counts a lesson for a controller that can't be connected to as learned, warning once and then at most every warnIntervalMs", async () => {
+            const inner = { name: "rspamd", scoreMessage: vi.fn(), learn: vi.fn().mockRejectedValue(refused()) };
+            const { provider, logger, clock } = spamWrapper("http://127.0.0.1:11333", inner);
+
+            await expect(provider.learn(RAW, "spam")).resolves.toBeUndefined();
+            await expect(provider.learn(RAW, "ham")).resolves.toBeUndefined();
+            expect(inner.learn).toHaveBeenCalledTimes(2);
+            expect(logger.warn).toHaveBeenCalledTimes(1);
+            expect(logger.warn.mock.calls[0][0]).toContain("[dev] rspamd's controller is unreachable");
+            expect(logger.warn.mock.calls[0][0]).toContain("ECONNREFUSED");
+            expect(logger.warn.mock.calls[0][0]).toContain(DEV_SCANNING_STACK_COMMAND);
+
+            clock.t += provider.warnIntervalMs;
+            await provider.learn(RAW, "spam");
+            expect(logger.warn).toHaveBeenCalledTimes(2);
+            expect(logger.warn.mock.calls[1][0]).toContain("2 lessons dropped since the last warning");
+        });
+
+        it("lets any other failure propagate, so a report says the lesson failed", async () => {
+            for (const err of [new Error("rspamd controller returned HTTP 403"), Object.assign(new Error("aborted"), { name: "AbortError" })]) {
+                const inner = { name: "rspamd", scoreMessage: vi.fn(), learn: vi.fn().mockRejectedValue(err) };
+                const { provider, logger } = spamWrapper("http://127.0.0.1:11333", inner);
+                await expect(provider.learn(RAW, "spam")).rejects.toBe(err);
+                expect(logger.warn).not.toHaveBeenCalled();
+            }
+        });
+
+        it("rejects when the real provider can't learn, and when it has no provider to wrap", async () => {
+            const { provider } = spamWrapper("http://127.0.0.1:11333", { name: "rspamd", scoreMessage: vi.fn() });
+            await expect(provider.learn(RAW, "spam")).rejects.toThrow("cannot learn");
+            const none = spamWrapper("http://127.0.0.1:11333", undefined).provider;
+            await expect(none.learn(RAW, "spam")).rejects.toThrow("RspamdSpamScanProvider");
+        });
+    });
+
     it("probes the host and port of the configured URL", () => {
         const address = (url: string) => (spamWrapper(url, {}).provider as any).engineAddress();
         expect(address("http://localhost:11333")).toEqual({ host: "localhost", port: 11333 });

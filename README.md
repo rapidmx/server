@@ -683,6 +683,28 @@ calls work as installed.
 - **Turn it off** with `coturn.create=false` (a local install with no public address has no use for it, and the AWS template leaves it off - see
   its README), then set the plugin's TURN settings yourself if you want a relay.
 
+### Spam filtering: reporting messages and teaching rspamd
+
+The server scores every message through the bundled [rspamd](https://rspamd.com) (`mail.rspamd`). When a user reports a message as junk or
+as not junk (`POST /api/mail/messages/:id/report`), the server also **teaches** rspamd's Bayes classifier through rspamd's controller, so the
+filter improves with what your users tell it. The chart sets this up:
+
+- **The controller** (port 11334) is published only inside the cluster (the `rspamd` Service is a ClusterIP) and answers only with a password. The
+  image's own default password is replaced. The password is generated once and kept across upgrades in the `<release>-rspamd` Secret, which the
+  server pod loads as `mail__scan__spam__rspamd__controller_password` and the rspamd pod hashes (`rspamadm pw`) into its configuration when it
+  starts, so both ends always agree. Set `mail.rspamd.controller.password` to choose it, or `mail.rspamd.controller.existingSecret` to read it from a
+  Secret you manage (key `mail__scan__spam__rspamd__controller_password`). Render the chart without cluster access (`helm template`, GitOps)
+  and it asks for the password rather than generate a new one on every render.
+- **The classifier's statistics** are kept in the bundled Redis (database `mail.rspamd.bayes.redis.db`, default 1, apart from the cache in database 0);
+  `mail.rspamd.bayes.redis.servers` points it at another Redis. The bundled Redis keeps its data on the pod's own volume
+  (`redis.master.persistence.enabled` is off), so what has been learned is lost if that pod is deleted; turn persistence on to keep it.
+- **It takes time to act.** The classifier's verdict counts towards a message's score only after `mail.rspamd.bayes.minLearns` messages of each kind,
+  spam and not spam (200, rspamd's default), have been learned, and a freshly installed or upgraded deployment starts with none. Reports are the only
+  lessons rspamd gets here (its autolearning needs a queue id these scans don't carry), so a small deployment reaches it slowly. Lower `minLearns`
+  knowingly, or add rspamd's own settings with `mail.rspamd.bayes.extraConfig`.
+- **Turn learning off** with `mail.rspamd.learn.enabled=false`: a report still moves and marks the message, and the response says
+  `learnSkipped: "disabled"`. When the controller can't be reached or refuses a lesson, the report still succeeds and says `learnSkipped: "failed"`.
+
 ### Signing certificates
 
 `mail.signingEnrollment` chooses how mailboxes get the S/MIME certificate their digital-signature key needs
@@ -885,8 +907,8 @@ does not let a trusted role read or change the ACLs of mailboxes and folders. Th
 can be composed and sent without the scanning stack or an MTA, so neither Docker nor Postfix is required:
 
 - **Spam and virus scanning:** while rspamd or clamd can't be connected to at all (connection refused, a host name that
-  doesn't resolve, or a connection timeout), scans are treated as clean and the server logs a `[dev] ... is unreachable`
-  warning when it starts bypassing and then at most every five minutes. Start the scanners with
+  doesn't resolve, or a connection timeout), scans are treated as clean (and a report's lesson for rspamd as learned) and the
+  server logs a `[dev] ... is unreachable` warning when it starts bypassing and then at most every five minutes. Start the scanners with
   `docker compose -f docker-compose.mail.yml up -d` to scan for real; once they answer, their verdicts are used again.
 - **Sending:** without a `sendmail` binary at `mail:transport:sendmail:path` (default `/usr/sbin/sendmail`), a sent
   message is delivered straight to this server's own mailboxes through the same ingest path Postfix uses, and arrives in

@@ -174,14 +174,23 @@ export abstract class DevScanBypass {
     }
 }
 
-/** DEV-ONLY: `RspamdSpamScanProvider`, with an unreachable rspamd treated as not spam. See `DevScanBypass`. */
+/**
+ * What `SpamScanProvider.learn()` takes (`POST /messages/:id/report` teaches the spam filter with it). Declared here rather than
+ * imported so this file compiles against a `@rapidmx/restapi` that predates learning (the interface's `learn` is optional).
+ */
+type SpamLearnFn = (raw: Buffer, kind: "spam" | "ham", options?: { recipient?: string }) => Promise<void>;
+
+/**
+ * DEV-ONLY: `RspamdSpamScanProvider`, with an unreachable rspamd treated as not spam and, for a report, as having learned. See
+ * `DevScanBypass`.
+ */
 export class DevBypassSpamScanProvider extends DevScanBypass implements SpamScanProvider {
     public readonly name: string = "rspamd";
     protected readonly engineLabel: string = "rspamd";
     protected readonly bypassDescription: string = "spam scoring is bypassed and messages are treated as not spam";
 
     @Inject(RspamdSpamScanProvider)
-    private inner?: SpamScanProvider;
+    private inner?: SpamScanProvider & { learn?: SpamLearnFn };
 
     // The same key and default `RspamdSpamScanProvider` connects to.
     @Config("mail:scan:spam:rspamd:url", "http://127.0.0.1:11333")
@@ -195,6 +204,47 @@ export class DevBypassSpamScanProvider extends DevScanBypass implements SpamScan
             () => ({ score: 0, verdict: SpamVerdict.CLEAN, symbols: ["DEV_SCAN_BYPASSED"] }),
         );
     }
+
+    /**
+     * Teaches rspamd through the real provider (`RspamdSpamScanProvider.learn()`, which talks to rspamd's controller). Without the
+     * development scanning stack there is no rspamd to teach, so a lesson the controller can't be connected to at all (the same
+     * error codes a scan's outage is recognised by) is dropped with a throttled warning and reported as learned, like the scan
+     * that is treated as clean, so reporting a message works in `yarn dev`. Everything else propagates and a report says
+     * `learnSkipped: "failed"`: a reachable controller that refuses (a wrong password, no statistics backend) or a lesson that
+     * times out is a real problem, not the absence of the stack.
+     */
+    public async learn(raw: Buffer, kind: "spam" | "ham", options: { recipient?: string } = {}): Promise<void> {
+        const inner: SpamScanProvider & { learn?: SpamLearnFn } = requireInner(this.inner, "RspamdSpamScanProvider");
+        if (typeof inner.learn !== "function") {
+            throw new Error("The wrapped RspamdSpamScanProvider cannot learn: it needs a @rapidmx/restapi with learning.");
+        }
+        try {
+            await inner.learn(raw, kind, options);
+        } catch (err: any) {
+            if (!isEngineUnreachableError(err)) {
+                throw err;
+            }
+            const now: number = this.now();
+            this.learnsBypassedSinceWarning++;
+            if (this.lastLearnWarnedAt === undefined || now - this.lastLearnWarnedAt >= this.warnIntervalMs) {
+                const count: string =
+                    this.learnsBypassedSinceWarning === 1
+                        ? ""
+                        : ` (${this.learnsBypassedSinceWarning} lessons dropped since the last warning)`;
+                this.logger?.warn(
+                    `[dev] rspamd's controller is unreachable (${err?.cause?.message ?? err?.message}), so the ${kind} lesson from a report is ` +
+                        `dropped and counted as learned${count}. The development scanning stack isn't running: start it with ` +
+                        `\`${DEV_SCANNING_STACK_COMMAND}\`. This only happens with NODE_ENV dev/development/test; any other NODE_ENV ` +
+                        "reports the lesson as failed.",
+                );
+                this.lastLearnWarnedAt = now;
+                this.learnsBypassedSinceWarning = 0;
+            }
+        }
+    }
+
+    private lastLearnWarnedAt?: number;
+    private learnsBypassedSinceWarning: number = 0;
 
     protected engineAddress(): { host: string; port: number } {
         const url: URL = new URL(this.url);

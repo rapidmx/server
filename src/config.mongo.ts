@@ -242,6 +242,26 @@ conf.defaults({
             spam: {
                 rspamd: {
                     url: "http://localhost:11333",
+                    // rspamd's controller worker, which `POST /api/mail/messages/:id/report` teaches (`/learnspam`, `/learnham`) when a
+                    // user reports a message; the scan worker above has no such endpoint. Empty: `url` with its port replaced by 11334,
+                    // rspamd's stock layout (env var mail__scan__spam__rspamd__controller_url; the Helm chart sets it to http://rspamd:11334).
+                    controller_url: "",
+                    // The controller's password, sent as the `Password` header. Empty sends none, which rspamd accepts only from its
+                    // controller's secure_ip (loopback) - so leave it empty for a rspamd on the same host, and set it for any other. Env var
+                    // mail__scan__spam__rspamd__controller_password; the Helm chart generates one (Secret `<release>-rspamd`) and gives the
+                    // same value to rspamd. Unlike the secrets above it is not checked at startup: empty just makes learning fail, which a
+                    // report answers with `learnSkipped: "failed"` after the message has been moved.
+                    controller_password: "",
+                    // How long a learn request may take before it is abandoned (learning is best-effort, so shorter than a scan's 15 s).
+                    controller_timeout_ms: 10_000,
+                },
+                learn: {
+                    // Whether a report teaches rspamd at all (env var mail__scan__spam__learn__enabled). Off, a report still moves and marks
+                    // the message, and answers `learnSkipped: "disabled"`. rspamd also needs a statistics backend for its Bayes classifier
+                    // (Redis), or every lesson fails - docker-compose.mail.yml's rspamd has none, so learning against it reports "failed";
+                    // with NODE_ENV dev/development/test an rspamd that can't be connected to at all is treated as having learned (see
+                    // dev/DevScanBypass.ts).
+                    enabled: true,
                 },
             },
             av: {
