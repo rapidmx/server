@@ -481,12 +481,14 @@ true
 
 {{/*
 The TURN URL the Video Conferencing plugin hands to browsers (mail:videoconf:turn:url), or empty when coturn is off: the UDP/TCP
-address, and with coturn.tls.enabled the TLS one after it, separated by a comma. Usage: include "rapidmx.coturnURL" .
+address, and when coturn serves TLS (rapidmx.coturnTLS) the TLS one after it, separated by a comma - which needs a Video
+Conferencing plugin of version 0.4.0 or later. It is built from the same condition the Deployment uses, so it never names a
+turns: address coturn isn't listening on. Usage: include "rapidmx.coturnURL" .
 */}}
 {{- define "rapidmx.coturnURL" -}}
 {{-   if eq (include "rapidmx.coturnEnabled" .) "true" -}}
 {{-     $host := include "rapidmx.coturnHost" . -}}
-{{-     if .Values.coturn.tls.enabled -}}
+{{-     if eq (include "rapidmx.coturnTLS" .) "true" -}}
 {{-       printf "turn:%s:%d,turns:%s:%d" $host (int .Values.coturn.port) $host (int .Values.coturn.tls.port) -}}
 {{-     else -}}
 {{-       printf "turn:%s:%d" $host (int .Values.coturn.port) -}}
@@ -506,6 +508,23 @@ address, and with coturn.tls.enabled the TLS one after it, separated by a comma.
 {{-     fail (printf "coturn.auth.mode is %q - it must be \"secret\" or \"credential\"." $mode) -}}
 {{-   end -}}
 {{-   $mode -}}
+{{- end -}}
+
+{{/*
+"true" when coturn really serves TLS: coturn.tls.enabled (on by default) and a certificate for it can be found - either
+coturn.tls.existingSecret, or the one this chart issues for its own host (tls-certs.yaml, which needs global.gateway.tls and a
+host that isn't localhost or *.local). With neither, coturn.tls.enabled being on by default must not break the install (a
+`--tls false` single-node install, a local one), so coturn runs without TLS and the plugin is told only the turn: address. The
+Deployment, the plugin's URL and NOTES.txt all use this rather than coturn.tls.enabled, so they can't disagree. A hostname the
+issued certificate doesn't cover is not handled this way: rapidmx.assertCoturn fails the render for it.
+Usage: include "rapidmx.coturnTLS" .
+*/}}
+{{- define "rapidmx.coturnTLS" -}}
+{{-   if and (eq (include "rapidmx.coturnEnabled" .) "true") .Values.coturn.tls.enabled -}}
+{{-     if or .Values.coturn.tls.existingSecret (eq (include "rrst.certificate" .) "true") -}}
+true
+{{-     end -}}
+{{-   end -}}
 {{- end -}}
 
 {{/*
@@ -553,13 +572,9 @@ mean nothing to one. Usage: include "rapidmx.assertCoturn" $
 {{-     if or (lt $tlsPort 1) (gt $tlsPort 65535) (eq $tlsPort $port) (and (ge $tlsPort $min) (le $tlsPort $max)) -}}
 {{-       fail (printf "coturn.tls.port is %d - it must be a port from 1 to 65535 that is neither coturn.port nor in the relay range %d-%d." $tlsPort $min $max) -}}
 {{-     end -}}
-{{-     if not $c.tls.existingSecret -}}
-{{-       if ne (include "rapidmx.coturnHost" .) (include "rrst.render" (dict "value" .Values.host "context" .)) -}}
-{{-         fail (printf "coturn.tls.enabled is true and coturn.hostname is %q, which is not this chart's host, so the certificate this chart issues does not cover it. Set coturn.tls.existingSecret to a kubernetes.io/tls Secret whose certificate does." (include "rapidmx.coturnHost" .)) -}}
-{{-       end -}}
-{{-       if ne (include "rrst.certificate" .) "true" -}}
-{{-         fail "coturn.tls.enabled is true, but this chart issues no certificate for its host (global.gateway.tls is off, or the host is localhost or a .local name). Set coturn.tls.existingSecret to a kubernetes.io/tls Secret holding one." -}}
-{{-       end -}}
+{{- /* The chart issues a certificate for its own host only: a different coturn.hostname needs one of its own. (When the chart issues none, TLS is simply off - see rapidmx.coturnTLS - so there is nothing to check.) */ -}}
+{{-     if and (not $c.tls.existingSecret) (eq (include "rrst.certificate" .) "true") (ne (include "rapidmx.coturnHost" .) (include "rrst.render" (dict "value" .Values.host "context" .))) -}}
+{{-       fail (printf "coturn.tls.enabled is true (the default) and coturn.hostname is %q, which is not this chart's host, so the certificate this chart issues does not cover it. Set coturn.tls.existingSecret to a kubernetes.io/tls Secret (keys tls.crt and tls.key) whose certificate covers it, or set coturn.tls.enabled=false for TURN without TLS." (include "rapidmx.coturnHost" .)) -}}
 {{-     end -}}
 {{-   end -}}
 {{- end -}}

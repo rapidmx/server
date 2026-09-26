@@ -1220,8 +1220,10 @@ function configureNginx() {
       firewallOpenPort 443/tcp
     fi
     # The chart's bundled coturn (values.yaml's coturn) listens on the host's own network for the Video Conferencing plugin:
-    # coturn.port over TCP and UDP, coturn.relayPorts over UDP, and coturn.tls.port over TCP if TLS is turned on. These are the
-    # chart's defaults.
+    # coturn.port over TCP and UDP, coturn.relayPorts over UDP, and coturn.tls.port over TCP for TURN over TLS (on by default: it
+    # uses the certificate the chart issues for $SERVER_HOST, so it is served whenever GATEWAY_TLS is; with --tls false coturn runs
+    # without TLS and 5349 stays unused). These are the chart's defaults. Port 443 stays nginx's: TURN on it would take an nginx
+    # `stream` route on the TLS server name (see the README's "Video calls").
     firewallOpenPort 3478/tcp
     firewallOpenPort 3478/udp
     firewallOpenPort 5349/tcp

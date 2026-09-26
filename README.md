@@ -668,16 +668,55 @@ calls work as installed.
 - **It runs on the node's own network** (`hostNetwork`), because TURN is UDP, which the Gateway can't carry, and relayed media must leave
   from an address a browser can reach. On the node it lands on (pin it with `coturn.nodeSelector` on a cluster with several):
   - `coturn.hostname` (default: `host`) must resolve to the node's public address;
-  - TCP and UDP `coturn.port` (3478), UDP `coturn.relayPorts` (49152-49252, about one port per relayed connection) and, with TLS, TCP
+  - TCP and UDP `coturn.port` (3478), UDP `coturn.relayPorts` (49152-49252, about one port per relayed connection) and, with TLS (on by default), TCP
     `coturn.tls.port` (5349) must be open to the internet in every firewall and security group - `single_node_install.sh` opens them;
   - `coturn.externalIp` may name the node's public address; left empty, coturn asks an external service for it when it starts.
-- **TURN over TLS** (`coturn.tls.enabled`, off by default) adds a `turns:` address for a participant whose network blocks everything but TLS.
-  The plugin is given both addresses in its one TURN URL setting, separated by a comma, which needs a Video Conferencing plugin of version
-  0.4.0 or later - an older one takes the pair for one invalid address and no call connects, which is why this is opt-in. coturn needs a
-  certificate for `coturn.hostname`: by default the one the chart issues for `host` (`<host>-tls-cert`), so `hostname` must be empty or be
-  `host`; for any other name, or when the chart issues none (`global.gateway.tls` off, a local domain), set `coturn.tls.existingSecret` to a
-  `kubernetes.io/tls` Secret. A renewed certificate is picked up without a restart: a small container beside coturn checks it every five
-  minutes and signals coturn when it has changed. coturn starts once the Secret exists, so a first install waits for the certificate.
+- **TURN over TLS** (`coturn.tls.enabled`, **on by default**) adds a `turns:` address, `turns:<hostname>:5349`, for a participant whose network
+  blocks UDP and lets only TLS out. The plugin is given both addresses in its one TURN URL setting, separated by a comma:
+  `turn:<hostname>:3478,turns:<hostname>:5349`. That needs a Video Conferencing plugin of version **0.4.0 or later** - an older one takes
+  the pair for one invalid address and no call connects, so update the plugin before (or with) the chart, or set `coturn.tls.enabled=false`
+  until you have. (Since 0.7.x the plugin also adds a `?transport=tcp` twin to a plain `turn:` URL by itself, which covers a network that
+  blocks only UDP but lets TCP to port 3478 through.) Where coturn's certificate comes from:
+  - `coturn.tls.existingSecret`, when you set it: a `kubernetes.io/tls` Secret (keys `tls.crt` and `tls.key`) in the release's namespace whose
+    certificate covers `coturn.hostname`. Otherwise
+  - the certificate the chart already has cert-manager issue for `host` (secret `<host>-tls-cert`, the one the Gateway serves). That is what
+    `single_node_install.sh` and the AWS template give you. It covers `host` only, so `coturn.hostname` must be empty or be `host`.
+  - So that "on by default" can't break an install: when the chart issues no certificate (`global.gateway.tls` off, which is `--tls false` in
+    the installer, or a `localhost` or `.local` host) and no `existingSecret` is set, coturn **runs without TLS** and the plugin is given only
+    the `turn:` address (the notes helm prints say so). The URL never names a `turns:` address coturn isn't serving. A `coturn.hostname`
+    other than `host` with no `existingSecret` **fails the render** and says what to set: an `existingSecret` covering that name, or
+    `coturn.tls.enabled=false`. `helm template` and `--dry-run` need no certificate to render.
+  - coturn starts once the Secret exists, so a first install waits (coturn pending) until cert-manager has issued the certificate
+    (`kubectl -n <namespace> get certificate`). A renewed certificate is picked up without a restart: a small container beside coturn checks
+    it every five minutes and signals coturn when it has changed. `coturn.tls.enabled=false` gives the earlier behaviour exactly (`turn:`
+    only, `--no-tls`).
+  - **What it gets through, and what it doesn't.** 5349 helps a participant whose network lets outbound TCP 5349 through. It does not help
+    one that allows only 443. On the single-node installer's host nginx owns 443 (its `stream` block hands it to the Gateway), so TURN on 443
+    would take a route on the TLS server name, with a name of its own for TURN (`host` is the Gateway's): a DNS record `turn.example.com`
+    for the node, a certificate for it (`coturn.hostname=turn.example.com`, `coturn.tls.existingSecret`), and this in nginx's `stream` block
+    instead of the installer's plain `443` server (`<gateway address>` is what that server already `proxy_pass`es to):
+
+    ```nginx
+    map $ssl_preread_server_name $rapidmx_443 {
+        turn.example.com  127.0.0.1:15349;
+        default           <gateway address>:443;
+    }
+    server {
+        listen 443;
+        ssl_preread on;
+        proxy_pass $rapidmx_443;
+        proxy_protocol on;                  # the Gateway expects it
+    }
+    server {
+        listen 127.0.0.1:15349 proxy_protocol;   # takes the header off again: coturn doesn't speak it
+        proxy_pass 127.0.0.1:5349;
+    }
+    ```
+
+    The plugin's TURN URL then has to say `turns:turn.example.com:443`, which the chart doesn't write (it writes `coturn.tls.port`):
+    save it in the plugin's settings in the admin console. Routing by ALPN (`$ssl_preread_alpn_protocols`, RFC 7443's `stun.turn`) would need no
+    second name, but only if the browser offers that ALPN, which hasn't been checked. This nginx configuration is a sketch: neither the
+    chart nor the installer sets it up, and it hasn't been run.
 - **An administrator's own setting wins.** What is saved in the plugin's settings in the admin console overrides these; an empty setting
   falls through to them, so the console's empty TURN fields don't hide what the chart set.
 - **Turn it off** with `coturn.create=false` (a local install with no public address has no use for it, and the AWS template leaves it off - see

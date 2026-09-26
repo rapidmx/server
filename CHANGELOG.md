@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Turn TURN over TLS on by default in the helm chart (coturn.tls.enabled is now true), so the Video Conferencing plugin is given turn:<host>:3478,turns:<host>:5349; this needs a Video Conferencing plugin of version 0.4.0 or later, and coturn.tls.enabled=false gives the earlier behaviour
+- Serve coturn's TLS with the certificate the chart already issues for its host or coturn.tls.existingSecret, run without TLS (and give the plugin only the turn: address) when the chart issues no certificate, and fail the render for another coturn.hostname without an existingSecret, saying what to set
+- Add the rapidmx.coturnTLS helper so the coturn Deployment, the plugin's TURN URL and the install notes agree on whether TLS is served
+- Test the coturn TLS rendering for each way the chart is installed by rendering it with helm, skipped where helm or the chart's dependencies are missing
+- Document the change, the certificate for each install mode, the plugin version it needs and what routing TURN through port 443 would take in the release notes, the README, the values, the AWS README and NOTES
+
 ## [1.0.0-beta.19] - 2026-09-26
 
 ### Added

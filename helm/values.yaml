@@ -119,6 +119,19 @@ mongodb:
   # new one is Ready, any change to MongoDB's pod spec deadlocks the upgrade. Recreate stops the old pod first.
   updateStrategy:
     type: Recreate
+  # The Bitnami probes run mongosh, a Node.js program, and start it from scratch every time: readiness every 10 s and liveness
+  # every 20 s. On an idle single-node install those two probes cost more CPU than mongod itself (about 0.5 core against 0.05),
+  # and two mongosh processes were running at any moment. They run a third and a half as often here, with more time to answer so
+  # that a busy or short-of-memory node does not fail them, and fewer failures are needed to act on: a hung mongod is still
+  # restarted after about three minutes, and taken out of service after about 90 seconds.
+  livenessProbe:
+    periodSeconds: 60
+    timeoutSeconds: 15
+    failureThreshold: 3
+  readinessProbe:
+    periodSeconds: 30
+    timeoutSeconds: 10
+    failureThreshold: 3
 postgresql:
   create: false
   architecture: standalone
@@ -425,7 +438,7 @@ mail:
 # TURN can't go through the Gateway (it is UDP), so coturn runs with hostNetwork: it listens on the node's own address. That
 # needs, on the node it runs on:
 #   - coturn.hostname (default: this chart's host) resolving to the node's public address,
-#   - the listening port (TCP and UDP) and the relay ports (UDP) - and the TLS port (TCP) with tls.enabled - open to the
+#   - the listening port (TCP and UDP) and the relay ports (UDP) - and the TLS port (TCP), while tls is on - open to the
 #     internet in every firewall and security group (the single-node installer opens them),
 #   - nothing else already listening on them.
 # One replica: a TURN allocation lives in one process. On a cluster with several nodes, pin it with nodeSelector.
@@ -463,14 +476,23 @@ coturn:
     # mail__videoconf__turn__shared_secret (secret mode), or mail__videoconf__turn__username and
     # mail__videoconf__turn__credential (credential mode).
     existingSecret: ''
-  # TURN over TLS (turns:), for a participant whose network blocks everything but TLS to a public host. With it on, the plugin is
-  # given both addresses, turn:<hostname>:<port> and turns:<hostname>:<tls.port>, as one comma-separated setting - which needs a
-  # Video Conferencing plugin of version 0.4.0 or later (an older one takes it for a single, invalid URL and no call connects).
-  # coturn needs a certificate for coturn.hostname: with none set here, the one this chart issues for its own host
-  # (<host>-tls-cert), which is only valid when coturn.hostname is empty or is that host. Any other hostname needs
-  # existingSecret. coturn picks up a renewed certificate without restarting.
+  # TURN over TLS (turns:), on by default: for a participant whose network blocks UDP and only lets TLS out to a public host, the
+  # plugin is given both addresses, turn:<hostname>:<port> and turns:<hostname>:<tls.port>, as one comma-separated setting.
+  # That needs a Video Conferencing plugin of version 0.4.0 or later (an older one takes the pair for a single, invalid URL
+  # and no call connects; since 0.7.x the plugin also adds a ?transport=tcp twin to a plain turn: URL by itself). A network
+  # that only lets port 443 out can't use tls.port - that needs 443 routed to coturn by SNI/ALPN (see the README).
+  # The certificate for coturn.hostname comes from:
+  #   - tls.existingSecret, when set (a kubernetes.io/tls Secret in this namespace, keys tls.crt and tls.key); or else
+  #   - the one this chart already has cert-manager issue for its own host, secret <host>-tls-cert (needs global.gateway.tls and
+  #     a host that isn't localhost or *.local - what the single-node installer and the AWS template set up), which covers
+  #     the host only: coturn.hostname must be empty or be the host.
+  # So that "on by default" can't break an install, when neither exists (global.gateway.tls off, a local host) coturn
+  # simply runs without TLS and the plugin is given only the turn: address (helm's NOTES say so); a coturn.hostname other
+  # than the host, with no existingSecret, fails the render with what to set instead. Set enabled: false for exactly the
+  # old behaviour (turn: only, --no-tls). A first install waits, with coturn pending, until cert-manager has issued the
+  # certificate; a renewed one is picked up without a restart.
   tls:
-    enabled: false
+    enabled: true
     port: 5349
     # A kubernetes.io/tls Secret (keys tls.crt and tls.key) in this namespace whose certificate covers coturn.hostname.
     existingSecret: ''

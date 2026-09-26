@@ -6,13 +6,15 @@
 {{- $mode := include "rapidmx.coturnAuthMode" . }}
 {{- $image := printf "%s/%s:%s" $c.image.registry $c.image.repository (toString $c.image.tag) }}
 {{- $pullPolicy := ternary "Always" "IfNotPresent" (eq (toString $c.image.tag) "latest") }}
+{{- /* coturn.tls.enabled and a certificate to serve: see rapidmx.coturnTLS. */}}
+{{- $tls := eq (include "rapidmx.coturnTLS" .) "true" }}
 {{- $tlsDir := "/etc/coturn-tls" }}
 {{- $containerSecurityContext := dict "allowPrivilegeEscalation" false "capabilities" (dict "drop" (list "ALL") "add" (list "NET_BIND_SERVICE")) }}
 ---
 # A TURN server for the Video Conferencing plugin - see values.yaml's coturn. It runs on the node's own network (hostNetwork):
 # TURN is UDP, which the Gateway can't carry, and relayed media has to leave from an address a browser can reach. So there is no
 # Service - nothing in the cluster talks to it - and the node's firewall must allow coturn.port (TCP and UDP), coturn.relayPorts
-# (UDP) and, with coturn.tls.enabled, coturn.tls.port (TCP).
+# (UDP) and, with TLS (on by default), coturn.tls.port (TCP).
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -41,7 +43,7 @@ spec:
       dnsPolicy: ClusterFirstWithHostNet
       automountServiceAccountToken: false
       terminationGracePeriodSeconds: 10
-      {{- if $c.tls.enabled }}
+      {{- if $tls }}
       # The certificate reloader below signals coturn, which needs to see its process.
       shareProcessNamespace: true
       {{- end }}
@@ -59,7 +61,7 @@ spec:
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- if $c.tls.enabled }}
+      {{- if $tls }}
       volumes:
         - name: tls
           secret:
@@ -114,7 +116,7 @@ spec:
             - --user=$(TURN_USERNAME):$(TURN_PASSWORD)
             {{- end }}
             - --fingerprint
-            {{- if $c.tls.enabled }}
+            {{- if $tls }}
             - --tls-listening-port={{ int $c.tls.port }}
             - --cert={{ $tlsDir }}/tls.crt
             - --pkey={{ $tlsDir }}/tls.key
@@ -136,12 +138,12 @@ spec:
             - name: turn-tcp
               containerPort: {{ int $c.port }}
               protocol: TCP
-            {{- if $c.tls.enabled }}
+            {{- if $tls }}
             - name: turns
               containerPort: {{ int $c.tls.port }}
               protocol: TCP
             {{- end }}
-          {{- if $c.tls.enabled }}
+          {{- if $tls }}
           volumeMounts:
             - name: tls
               mountPath: {{ $tlsDir }}
@@ -159,7 +161,7 @@ spec:
             failureThreshold: 3
           resources:
             {{- toYaml $c.resources | nindent 12 }}
-        {{- if $c.tls.enabled }}
+        {{- if $tls }}
         # coturn reads its certificate when it starts, and cert-manager renews the one this chart issues every 60 days; coturn
         # reloads it on SIGUSR2. This checks the certificate every few minutes and sends that signal when it has changed (the
         # Secret's files are updated in place a minute or so after a renewal).

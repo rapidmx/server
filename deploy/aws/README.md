@@ -70,8 +70,12 @@ Manager. The stack only reports success once the whole install finished, so a fa
   Calls still connect directly between participants and through public STUN servers, which covers most networks. To add
   TURN, give the instance an Elastic IP, open TCP and UDP 3478 and UDP 49152-49252 to it in the security group, and
   re-run `bootstrap.sh`'s `helm upgrade` with `--set coturn.create=true --set coturn.hostname=<that address>
-  --set coturn.externalIp=<that address>`, or run your own TURN server and set the Video Conferencing plugin's TURN
-  settings in the admin console.
+  --set coturn.externalIp=<that address> --set coturn.tls.enabled=false`, or run your own TURN server and set the Video
+  Conferencing plugin's TURN settings in the admin console. (`coturn.tls.enabled` is on by default, and its certificate is the
+  one the chart issues for the site's own host name, which an IP address can't use, hence `false` there. To offer TURN over TLS
+  as well, give the Elastic IP a DNS name, put a certificate for it in a `kubernetes.io/tls` Secret in the release's namespace,
+  use that name as `coturn.hostname` with `--set coturn.tls.existingSecret=<secret>` instead, and open TCP 5349 too. It needs
+  a Video Conferencing plugin of version 0.4.0 or later. See the main README's "Video calls".)
 - **One instance, no HA:** a single k3s node with `ReadWriteOnce` EBS volumes. Back up the database before upgrading —
   the server creates and updates its schema at startup, with no migrations.
 

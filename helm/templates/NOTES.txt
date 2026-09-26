@@ -82,10 +82,12 @@ Video call relay: coturn, a TURN server, is installed with this release for the 
 {{ include "rapidmx.coturnURL" . }}{{ if eq (include "rapidmx.coturnAuthMode" .) "secret" }} and, from the secret below, a credential of its own for each participant that joins a call, good for an hour{{ else }} and the user name and password below{{ end }}.
 It runs on the node's own network, so on the node it lands on{{ with .Values.coturn.nodeSelector }} (coturn.nodeSelector: {{ toJson . }}){{ end }}:
   - {{ include "rapidmx.coturnHost" . }} must resolve to the node's public address;
-  - TCP and UDP {{ .Values.coturn.port }}{{ if .Values.coturn.tls.enabled }}, TCP {{ .Values.coturn.tls.port }} (TLS){{ end }}, and UDP {{ .Values.coturn.relayPorts.min }}-{{ .Values.coturn.relayPorts.max }}, must be open to the internet in every firewall and security group.
-{{- if .Values.coturn.tls.enabled }}
-  - the certificate in the "{{ include "rapidmx.coturnTLSSecretName" . }}" Secret must cover {{ include "rapidmx.coturnHost" . }}; coturn stays pending until that Secret exists.
+  - TCP and UDP {{ .Values.coturn.port }}{{ if eq (include "rapidmx.coturnTLS" .) "true" }}, TCP {{ .Values.coturn.tls.port }} (TLS){{ end }}, and UDP {{ .Values.coturn.relayPorts.min }}-{{ .Values.coturn.relayPorts.max }}, must be open to the internet in every firewall and security group.
+{{- if eq (include "rapidmx.coturnTLS" .) "true" }}
+  - TURN over TLS (turns:) is on: the certificate in the "{{ include "rapidmx.coturnTLSSecretName" . }}" Secret must cover {{ include "rapidmx.coturnHost" . }}, and coturn stays pending until that Secret exists (the chart's own certificate: until cert-manager has issued it, see `kubectl -n {{ .Release.Namespace }} get certificate`). It helps networks that allow outbound TLS to port {{ .Values.coturn.tls.port }}, not ones that only allow port 443 (see the README).
   - the Video Conferencing plugin must be version 0.4.0 or later, which reads two TURN addresses in one setting.
+{{- else if .Values.coturn.tls.enabled }}
+  - TURN over TLS (coturn.tls.enabled, on by default) is NOT running: this chart issues no certificate for {{ include "rapidmx.coturnHost" . }} (global.gateway.tls is off, or the host is localhost or a .local name) and coturn.tls.existingSecret is not set, so coturn serves turn: only and the plugin is given only that address. Set coturn.tls.existingSecret to a kubernetes.io/tls Secret whose certificate covers {{ include "rapidmx.coturnHost" . }} to turn it on, or coturn.tls.enabled=false to silence this.
 {{- end }}
 {{- if eq (include "rapidmx.coturnAuthMode" .) "secret" }}
   Secret: kubectl -n {{ .Release.Namespace }} get secret {{ include "rapidmx.coturnSecretName" . }} -o jsonpath='{.data.mail__videoconf__turn__shared_secret}' | base64 -d
