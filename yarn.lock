@@ -1810,9 +1810,9 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@rapidmx/react-shared@npm:^0.21.0":
-  version: 0.21.0
-  resolution: "@rapidmx/react-shared@npm:0.21.0"
+"@rapidmx/react-shared@npm:^0.22.0":
+  version: 0.22.0
+  resolution: "@rapidmx/react-shared@npm:0.22.0"
   dependencies:
     "@emoji-mart/data": "npm:^1.2.1"
     "@peculiar/x509": "npm:^2.1.0"
@@ -1827,7 +1827,7 @@ __metadata:
   peerDependencies:
     react: 19.x
     react-dom: 19.x
-  checksum: 10c0/c108c605aa716f705685d8a305b741751575e28a8fc771cdc2ee493843f59e223937dcbd389f59239e5519f0ca9cdd125b6056db19c55107fcbd681b59a5278d
+  checksum: 10c0/cba37aeecea8d48ab9a9c7cbde0d6789f0a788228553603a1a48303d27922a4bd4b8276df6e1764f5ea618db6e4baf1c88a12275f29b7d936d13151bd10eb589
   languageName: node
   linkType: hard
 
@@ -1870,14 +1870,14 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@rapidmx/web-client@npm:^0.20.0":
-  version: 0.20.0
-  resolution: "@rapidmx/web-client@npm:0.20.0"
+"@rapidmx/web-client@npm:^0.21.0":
+  version: 0.21.0
+  resolution: "@rapidmx/web-client@npm:0.21.0"
   dependencies:
     "@dnd-kit/core": "npm:^6.3.1"
     "@journeyapps/wa-sqlite": "npm:^2.0.4"
     "@peculiar/x509": "npm:^2.1.0"
-    "@rapidmx/react-shared": "npm:^0.21.0"
+    "@rapidmx/react-shared": "npm:^0.22.0"
     "@tiptap/core": "npm:^3.31.3"
     "@tiptap/extension-highlight": "npm:^3.31.3"
     "@tiptap/extension-image": "npm:^3.31.3"
@@ -1900,7 +1900,7 @@ __metadata:
     "@rapidrest/react": ">=2.1.0 <3"
     react: 19.x
     react-dom: 19.x
-  checksum: 10c0/8f8766af7b669b615fa8789acf63f63fff4fe6045ddc7aea139f3ca66d5dcc200aac8e01865f78031ca500b1daef3650bf669d220f26af1cb2dde45e2b747e85
+  checksum: 10c0/513a5b784b483b5532762cf2a7586d7c193506ed6a856f87d21e2156d58e41e6d7550b4c63625c4adc84c964c85e32e14ee959151dded9cc3c4c0c334996503d
   languageName: node
   linkType: hard
 
@@ -9906,9 +9906,9 @@ __metadata:
   resolution: "server@workspace:."
   dependencies:
     "@aws-sdk/client-s3": "npm:^3.906.0"
-    "@rapidmx/react-shared": "npm:^0.21.0"
+    "@rapidmx/react-shared": "npm:^0.22.0"
     "@rapidmx/restapi": "npm:^0.24.0"
-    "@rapidmx/web-client": "npm:^0.20.0"
+    "@rapidmx/web-client": "npm:^0.21.0"
     "@rapidrest/cli": "npm:^2.1.0"
     "@rapidrest/core": "npm:^6.0.0"
     "@rapidrest/react": "npm:2.1.0"
