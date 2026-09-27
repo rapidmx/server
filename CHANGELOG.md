@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.20] - 2026-09-27
+
+### Added
+- Added a bounded, cached directory walk (measureDirectory and DirectorySizer) counted like du, and report how each volume's usage was found (measuredBy) and whether it is a lower bound (usedPartial), with no usage for a volume that could not be measured
+- Added the memory balloon the hypervisor holds and the memory, I/O and CPU pressure to the node's metrics, from /proc/vmstat and /proc/pressure
+
+### Changed
+- Turn TURN over TLS on by default in the helm chart
+- Change coturn.tls.enabled to true, so the bundled coturn serves turns: on 5349 with the certificate the chart already issues for its host (or coturn.tls.existingSecret) and the Video Conferencing plugin is handed both turn: and turns: addresses. Add the rapidmx.coturnTLS helper so the coturn Deployment, the plugin's TURN URL and NOTES.txt agree on whether TLS is really being served: a default install with no certificate to serve (gateway TLS off, or a local host) degrades to plain TURN instead of advertising a turns: address that nothing serves, and another coturn.hostname without an existingSecret fails the render with an actionable message. Test the rendering for each install mode with helm template, and document the change, the certificate per install mode, the plugin version it needs (0.4.0 or later for a comma-separated URL) and why 5349 does not help a network that only allows 443 in the values, README, installer and AWS notes, release notes, changelog and NOTES.
+- Measure the directory of a volume that shares the node's disk in the Diagnostics System tab, so its usage is what the volume holds and not what the whole disk holds
+- Test each, and document the change and the lengthened MongoDB probes in the release notes and NOTES
+- Cover the platform-dependent branches of the Diagnostics engine on every platform, so the coverage gate holds on Linux as well as Windows
+- Export allocatedBytes and test it with and without a block count, since Windows reports none and a Linux file system reports none for an empty file
+- Test readProcFile with a file that is there and one that is not, since every file it reads from /proc exists on Linux and none does on Windows
+- Upgraded helm deps
+- Upgraded rapidrest and rapidmx deps
+- Use @rapidmx/react-shared 0.22.0 and @rapidmx/web-client 0.21.0, which renew the sign-in in the background so no one is signed out every hour, and save a message being written to Drafts at least every 30 seconds
+- Document the change in the release notes and NOTES, including that the chart already scopes both sign-in cookies to the shared domain and allows this server's origin, so nothing needs configuring
+
+
 ### Changed
 - Turn TURN over TLS on by default in the helm chart (coturn.tls.enabled is now true), so the Video Conferencing plugin is given turn:<host>:3478,turns:<host>:5349; this needs a Video Conferencing plugin of version 0.4.0 or later, and coturn.tls.enabled=false gives the earlier behaviour
 - Serve coturn's TLS with the certificate the chart already issues for its host or coturn.tls.existingSecret, run without TLS (and give the plugin only the turn: address) when the chart issues no certificate, and fail the render for another coturn.hostname without an existingSecret, saying what to set
@@ -998,7 +1018,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed test from .dockerignore, fixing yarn build's lint step failing outright when the build context is missing the test directory its tsconfig.eslint.json requires
 - Removed docker-compose.mail.yml's partial server: service block, since include: only supports merging resources that don't already exist in the including file and hard-errors ("services.server conflicts with imported resource") on a Compose version newer than whatever this had only ever been tested against locally
 
-[Unreleased]: https://github.com/rapidmx/server/compare/v1.0.0-beta.19...HEAD
+[Unreleased]: https://github.com/rapidmx/server/compare/v1.0.0-beta.20...HEAD
+[1.0.0-beta.20]: https://github.com/rapidmx/server/compare/v1.0.0-beta.19...v1.0.0-beta.20
 [1.0.0-beta.19]: https://github.com/rapidmx/server/compare/v1.0.0-beta.18...v1.0.0-beta.19
 [1.0.0-beta.18]: https://github.com/rapidmx/server/compare/v1.0.0-beta.17...v1.0.0-beta.18
 [1.0.0-beta.17]: https://github.com/rapidmx/server/compare/v1.0.0-beta.16...v1.0.0-beta.17
