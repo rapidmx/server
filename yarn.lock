@@ -1810,9 +1810,9 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@rapidmx/react-shared@npm:^0.20.0":
-  version: 0.20.0
-  resolution: "@rapidmx/react-shared@npm:0.20.0"
+"@rapidmx/react-shared@npm:^0.21.0":
+  version: 0.21.0
+  resolution: "@rapidmx/react-shared@npm:0.21.0"
   dependencies:
     "@emoji-mart/data": "npm:^1.2.1"
     "@peculiar/x509": "npm:^2.1.0"
@@ -1827,7 +1827,7 @@ __metadata:
   peerDependencies:
     react: 19.x
     react-dom: 19.x
-  checksum: 10c0/c12af3d6b8f4021bea46a56c28d9944e5f4fabebd1b2cf67c6edd361ca967e3c5ce1ab79078c5fb395175efd0a7c7c716505a1fbd17fd82811cf6583a0fdfcbe
+  checksum: 10c0/c108c605aa716f705685d8a305b741751575e28a8fc771cdc2ee493843f59e223937dcbd389f59239e5519f0ca9cdd125b6056db19c55107fcbd681b59a5278d
   languageName: node
   linkType: hard
 
@@ -1870,14 +1870,14 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@rapidmx/web-client@npm:^0.19.0":
-  version: 0.19.0
-  resolution: "@rapidmx/web-client@npm:0.19.0"
+"@rapidmx/web-client@npm:^0.20.0":
+  version: 0.20.0
+  resolution: "@rapidmx/web-client@npm:0.20.0"
   dependencies:
     "@dnd-kit/core": "npm:^6.3.1"
     "@journeyapps/wa-sqlite": "npm:^2.0.4"
     "@peculiar/x509": "npm:^2.1.0"
-    "@rapidmx/react-shared": "npm:^0.20.0"
+    "@rapidmx/react-shared": "npm:^0.21.0"
     "@tiptap/core": "npm:^3.31.3"
     "@tiptap/extension-highlight": "npm:^3.31.3"
     "@tiptap/extension-image": "npm:^3.31.3"
@@ -1900,7 +1900,7 @@ __metadata:
     "@rapidrest/react": ">=2.1.0 <3"
     react: 19.x
     react-dom: 19.x
-  checksum: 10c0/81e5499621179e62f4bf96865a61ffaf38fbe0d5caffa88bb7d5536cc73a7046398e3bd0faf7c65c88ac383249e6d8470a3c79dc293fcd7ceff880474f5f6c74
+  checksum: 10c0/8f8766af7b669b615fa8789acf63f63fff4fe6045ddc7aea139f3ca66d5dcc200aac8e01865f78031ca500b1daef3650bf669d220f26af1cb2dde45e2b747e85
   languageName: node
   linkType: hard
 
@@ -1983,9 +1983,9 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@rapidrest/service-core@npm:^2.3.0":
-  version: 2.3.0
-  resolution: "@rapidrest/service-core@npm:2.3.0"
+"@rapidrest/service-core@npm:^2.4.0":
+  version: 2.4.0
+  resolution: "@rapidrest/service-core@npm:2.4.0"
   dependencies:
     axios: "npm:^1.20.0"
     dayjs: "npm:^1.11.23"
@@ -2015,7 +2015,7 @@ __metadata:
       optional: true
     uWebSockets.js:
       optional: true
-  checksum: 10c0/08bbefc6e9cf75aae18aa7d5f7dd936c18c6845c341f34b6d77f90c145606ecc84b483e35805bf5aac45e3f644806df4c5d424ba70f26ef014f4f02b94196e18
+  checksum: 10c0/b7763059c56ffb1e26b4a36c1014db6f7de87eda93c7b1a457a184f20bef9890926063d4e561df9087344eea12b2c0937dee61f01263a9145b2148757a41b1f9
   languageName: node
   linkType: hard
 
@@ -9906,13 +9906,13 @@ __metadata:
   resolution: "server@workspace:."
   dependencies:
     "@aws-sdk/client-s3": "npm:^3.906.0"
-    "@rapidmx/react-shared": "npm:^0.20.0"
+    "@rapidmx/react-shared": "npm:^0.21.0"
     "@rapidmx/restapi": "npm:^0.24.0"
-    "@rapidmx/web-client": "npm:^0.19.0"
+    "@rapidmx/web-client": "npm:^0.20.0"
     "@rapidrest/cli": "npm:^2.1.0"
     "@rapidrest/core": "npm:^6.0.0"
     "@rapidrest/react": "npm:2.1.0"
-    "@rapidrest/service-core": "npm:^2.3.0"
+    "@rapidrest/service-core": "npm:^2.4.0"
     "@swc/core": "npm:^1.16.2"
     "@tailwindcss/vite": "npm:^4.3.3"
     "@testing-library/dom": "npm:^10.4.1"
