@@ -2,9 +2,10 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 ///////////////////////////////////////////////////////////////////////////////
 import os from "node:os";
+import path from "node:path";
 import { classifyPod, type KubePod } from "../../src/diagnostics/kubernetesInfo.js";
 import { KubeError } from "../../src/diagnostics/KubeClient.js";
-import { collectKubernetesMetrics, parseBalloon, parsePressure, ProcessSampler, readCgroupMemoryUsage, serverMounts, sharesNodeDisk } from "../../src/diagnostics/metrics.js";
+import { collectKubernetesMetrics, parseBalloon, parsePressure, ProcessSampler, readCgroupMemoryUsage, readProcFile, serverMounts, sharesNodeDisk } from "../../src/diagnostics/metrics.js";
 import type { DiagnosticsDiskMetrics } from "../../src/diagnostics/types.js";
 
 function pod(name: string, container: string, image: string, app: string, claims: [string, string][] = []): KubePod {
@@ -39,6 +40,22 @@ describe("readCgroupMemoryUsage", () => {
     it("returns a number or nothing, never throws", () => {
         const value = readCgroupMemoryUsage();
         expect(value === undefined || Number.isFinite(value)).toBe(true);
+    });
+});
+
+describe("readProcFile", () => {
+    // Whether the kernel's files exist depends on the platform (there are none on Windows, and every one is there on most Linux
+    // hosts), so both answers are made here, from a file that is there and one that is not.
+    it("reads a file, and says nothing for one that is missing", async () => {
+        const { mkdtemp, rm, writeFile } = await import("node:fs/promises");
+        const dir = await mkdtemp(path.join(os.tmpdir(), "proc-"));
+        try {
+            await writeFile(path.join(dir, "vmstat"), "balloon_inflate 1\n");
+            expect(readProcFile(path.join(dir, "vmstat"))).toBe("balloon_inflate 1\n");
+            expect(readProcFile(path.join(dir, "missing"))).toBeUndefined();
+        } finally {
+            await rm(dir, { recursive: true, force: true });
+        }
     });
 });
 

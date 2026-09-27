@@ -24,7 +24,7 @@ export interface DirectoryWalkLimits {
 export const DEFAULT_WALK_LIMITS: DirectoryWalkLimits = { maxEntries: 200_000, budgetMs: 2_000 };
 
 /** The disk space a file takes: whole blocks, as `du` counts them, else its length where the platform reports no blocks. */
-function allocatedBytes(stats: { blocks?: number; size: number }): number {
+export function allocatedBytes(stats: { blocks?: number; size: number }): number {
     return stats.blocks ? stats.blocks * 512 : stats.size;
 }
 

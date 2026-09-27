@@ -19,7 +19,17 @@ vi.mock("node:fs/promises", async (importOriginal) => {
     };
 });
 
-import { DirectorySizer, measureDirectory } from "../../src/diagnostics/directorySize.js";
+import { allocatedBytes, DirectorySizer, measureDirectory } from "../../src/diagnostics/directorySize.js";
+
+describe("allocatedBytes", () => {
+    // Which of these a real file system gives depends on the platform: Windows reports no blocks, and a Linux file system reports
+    // none for an empty file, so each is written out here rather than left to whatever the test runs on.
+    it("counts whole 512-byte blocks where the platform reports them, and the length where it does not", () => {
+        expect(allocatedBytes({ blocks: 8, size: 1 })).toBe(4096);
+        expect(allocatedBytes({ blocks: 0, size: 5 })).toBe(5);
+        expect(allocatedBytes({ size: 7 })).toBe(7);
+    });
+});
 
 describe("measureDirectory", () => {
     let root: string;
