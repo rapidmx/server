@@ -12,11 +12,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Serve Autodiscover on autodiscover.<domain> as well as host in the helm chart, covering it on the same certificate and routing the Gateway/HTTPRoute (and TLSRoute under pod TLS termination) to it, so a client that only follows the CNAME (not the SRV record), like Outlook Mobile, can find the server instead of failing its TLS handshake
 - Document the fix in the release notes, changelog and chart NOTES.txt, noting the DNS CNAME/SRV record itself is still a manual step
-- Add the same autodiscover.<domain> listener to single_node_install.sh's shared Gateway, reading the same <server host>-tls-cert Secret, since --gateway shared mode's Gateway is created by the script, not the chart
-
-### Fixed
-- Serve Autodiscover on autodiscover.<domain> too, not just host, so clients that only follow the CNAME (not the SRV record) can find the server
-- Cover autodiscover.<domain> on the same certificate as host, and route the Gateway/HTTPRoute (and TLSRoute under pod TLS termination) to it
 
 ## [1.0.0-beta.20] - 2026-09-27
 
