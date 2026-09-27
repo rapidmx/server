@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.21] - 2026-09-27
+
+### Changed
+- Serve Autodiscover on autodiscover.<domain> as well as host in the helm chart, covering it on the same certificate and routing the Gateway/HTTPRoute (and TLSRoute under pod TLS termination) to it, so a client that only follows the CNAME (not the SRV record), like Outlook Mobile, can find the server instead of failing its TLS handshake
+- Document the fix in the release notes, changelog and chart NOTES.txt, noting the DNS CNAME/SRV record itself is still a manual step
+
 ### Fixed
 - Serve Autodiscover on autodiscover.<domain> too, not just host, so clients that only follow the CNAME (not the SRV record) can find the server
 - Cover autodiscover.<domain> on the same certificate as host, and route the Gateway/HTTPRoute (and TLSRoute under pod TLS termination) to it
@@ -29,7 +35,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Upgraded rapidrest and rapidmx deps
 - Use @rapidmx/react-shared 0.22.0 and @rapidmx/web-client 0.21.0, which renew the sign-in in the background so no one is signed out every hour, and save a message being written to Drafts at least every 30 seconds
 - Document the change in the release notes and NOTES, including that the chart already scopes both sign-in cookies to the shared domain and allows this server's origin, so nothing needs configuring
-
 
 ### Changed
 - Turn TURN over TLS on by default in the helm chart (coturn.tls.enabled is now true), so the Video Conferencing plugin is given turn:<host>:3478,turns:<host>:5349; this needs a Video Conferencing plugin of version 0.4.0 or later, and coturn.tls.enabled=false gives the earlier behaviour
@@ -1022,7 +1027,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed test from .dockerignore, fixing yarn build's lint step failing outright when the build context is missing the test directory its tsconfig.eslint.json requires
 - Removed docker-compose.mail.yml's partial server: service block, since include: only supports merging resources that don't already exist in the including file and hard-errors ("services.server conflicts with imported resource") on a Compose version newer than whatever this had only ever been tested against locally
 
-[Unreleased]: https://github.com/rapidmx/server/compare/v1.0.0-beta.20...HEAD
+[Unreleased]: https://github.com/rapidmx/server/compare/v1.0.0-beta.21...HEAD
+[1.0.0-beta.21]: https://github.com/rapidmx/server/compare/v1.0.0-beta.20...v1.0.0-beta.21
 [1.0.0-beta.20]: https://github.com/rapidmx/server/compare/v1.0.0-beta.19...v1.0.0-beta.20
 [1.0.0-beta.19]: https://github.com/rapidmx/server/compare/v1.0.0-beta.18...v1.0.0-beta.19
 [1.0.0-beta.18]: https://github.com/rapidmx/server/compare/v1.0.0-beta.17...v1.0.0-beta.18

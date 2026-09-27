@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v1.0.0-beta.21
+
 ### Fixed
 
 - **The chart now serves Autodiscover on `autodiscover.<domain>`, so Outlook Mobile (and any other client that only follows the CNAME, not the `_autodiscover._tcp` SRV record) can find this server.** The Autodiscover plugin's README, and the admin console's Domain DNS setup checklist, already told operators to add a CNAME (or SRV) for `autodiscover.<domain>` pointing at this server - but the chart only ever issued a certificate, and only ever routed the Gateway, for `host` (`mail.<domain>` by default). A client that reached `autodiscover.<domain>` got a TLS handshake failure (no certificate covers that name, and no listener answers on it), even though DNS was set up exactly as instructed and the server's own Autodiscover and ActiveSync endpoints worked fine on `host`. The chart's Certificate now also covers `autodiscover.<domain>` (one certificate, two names), and the Gateway/HTTPRoute (or TLSRoute, with `global.gateway.tlsTermination: pod`) now also listens and routes on it, to the same backend as `host`. The DNS record itself is still a manual step (see the Domain DNS setup checklist); nothing else needs configuring. Every existing release picks this up on its next `helm upgrade` (the certificate re-issues with the added name).
