@@ -320,6 +320,17 @@ Usage: include "rapidmx.trustedAuthservId" .
 {{- end -}}
 
 {{/*
+The host name mail clients look for when they auto-discover this server from just an e-mail address: `autodiscover.<global.domain>`,
+the fixed name the Autodiscover protocol (and the CNAME or SRV record the Domain DNS setup checklist tells operators to add) requires.
+It is distinct from `host` (which names wherever this chart's own release happens to be reached, e.g. a non-default `mail2.<domain>`),
+since a client only ever looks for `autodiscover.` in front of the domain half of the account's e-mail address. Usage:
+include "rapidmx.autodiscoverHost" .
+*/}}
+{{- define "rapidmx.autodiscoverHost" -}}
+{{-   printf "autodiscover.%s" (include "rrst.render" (dict "value" .Values.global.domain "context" .)) -}}
+{{- end -}}
+
+{{/*
 "true" when `global.domain` is one a public certificate authority could never issue for: `localhost` or a domain ending in
 `.local`, `.localhost`, `.test` or `.invalid` (the reserved-for-testing/local-use TLDs). Usage: include "rapidmx.isLocalDomain" .
 */}}

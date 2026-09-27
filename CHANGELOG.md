@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Serve Autodiscover on autodiscover.<domain> too, not just host, so clients that only follow the CNAME (not the SRV record) can find the server
+- Cover autodiscover.<domain> on the same certificate as host, and route the Gateway/HTTPRoute (and TLSRoute under pod TLS termination) to it
+
 ## [1.0.0-beta.20] - 2026-09-27
 
 ### Added

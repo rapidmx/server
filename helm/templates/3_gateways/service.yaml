@@ -2,6 +2,7 @@
 {{- /* Matches tls-certs.yaml: a certificate is only issued for a host that can get one. */}}
 {{- $certificate := eq (include "rrst.certificate" $) "true" }}
 {{- $podTLS := eq (include "rrst.podTLS" $) "true" }}
+{{- $autodiscoverHost := include "rapidmx.autodiscoverHost" $ }}
 {{- if $ownsGateway }}
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
@@ -17,6 +18,15 @@ spec:
     allowedRoutes:
       namespaces:
         from: All
+  # Mail clients' Autodiscover probe reaches this server on this fixed name regardless of `host` (see tls-certs.yaml,
+  # which covers it on the same certificate as `host`).
+  - name: http-autodiscover
+    port: 80
+    protocol: HTTP
+    hostname: {{ $autodiscoverHost | quote }}
+    allowedRoutes:
+      namespaces:
+        from: All
   {{- if $certificate }}
   - name: https
     {{- if $podTLS }}
@@ -29,6 +39,26 @@ spec:
     {{- end }}
     port: 443
     hostname: {{ (include "rrst.render" (dict "value" $.Values.host "context" $)) | quote }}
+    tls:
+      {{- if $podTLS }}
+      mode: Passthrough
+      {{- else }}
+      mode: Terminate
+      certificateRefs:
+      - kind: Secret
+        name: {{ (include "rrst.render" (dict "value" $.Values.host "context" $)) }}-tls-cert
+      {{- end }}
+    allowedRoutes:
+      namespaces:
+        from: All
+  - name: https-autodiscover
+    {{- if $podTLS }}
+    protocol: TLS
+    {{- else }}
+    protocol: HTTPS
+    {{- end }}
+    port: 443
+    hostname: {{ $autodiscoverHost | quote }}
     tls:
       {{- if $podTLS }}
       mode: Passthrough
@@ -76,10 +106,16 @@ spec:
   - name: {{ tpl $.Values.global.gateway.name $ }}
     namespace: {{ tpl $.Values.global.gateway.namespace $ }}
     sectionName: http
+  - name: {{ tpl $.Values.global.gateway.name $ }}
+    namespace: {{ tpl $.Values.global.gateway.namespace $ }}
+    sectionName: http-autodiscover
   {{- if and (not $podTLS) $certificate }}
   - name: {{ tpl $.Values.global.gateway.name $ }}
     namespace: {{ $.Release.Namespace }}
     sectionName: https
+  - name: {{ tpl $.Values.global.gateway.name $ }}
+    namespace: {{ $.Release.Namespace }}
+    sectionName: https-autodiscover
   {{- end }}
   {{- else }}
   # A Gateway this chart doesn't own (global.gateway.name/namespace) has listeners it names itself, so the route names
@@ -90,6 +126,7 @@ spec:
   {{- end }}
   hostnames:
   - {{ (include "rrst.render" (dict "value" $.Values.host "context" $)) | quote }}
+  - {{ $autodiscoverHost | quote }}
   rules:
   {{- if $podTLS }}
   # The pod only speaks TLS once its ssl config is set (see 1_deployments/service.yaml), so plain HTTP arriving on
@@ -137,9 +174,13 @@ spec:
   - name: {{ tpl $.Values.global.gateway.name $ }}
     namespace: {{ $.Release.Namespace }}
     sectionName: https
+  - name: {{ tpl $.Values.global.gateway.name $ }}
+    namespace: {{ $.Release.Namespace }}
+    sectionName: https-autodiscover
   {{- end }}
   hostnames:
   - {{ (include "rrst.render" (dict "value" $.Values.host "context" $)) | quote }}
+  - {{ $autodiscoverHost | quote }}
   rules:
   - backendRefs:
     - name: {{ include "rrst.fullname" . }}-services

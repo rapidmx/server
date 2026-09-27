@@ -32,6 +32,10 @@ JWT Auth:
   "{{ include "rrst.fullname" . }}-jwt-auth" Secret. Supply it again on every upgrade.
 {{- end }}
 
+{{- if eq (include "rrst.certificate" .) "true" }}
+
+Autodiscover: this release answers on {{ include "rapidmx.autodiscoverHost" . }} as well as {{ include "rrst.render" (dict "value" .Values.host "context" .) }} (same certificate, same Gateway route), so a mail client that finds this server through the CNAME - rather than the `_autodiscover._tcp` SRV record - reaches it too. You still need to add that CNAME (or the SRV record) yourself: see the Domain DNS setup checklist on each domain's admin console page.
+{{- end }}
 
 {{- if .Values.postfixBridge.create }}
 

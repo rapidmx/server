@@ -50,6 +50,10 @@ spec:
   # At least one of a DNS Name, URI, or IP address is required.
   dnsNames:
   - {{ (include "rrst.render" (dict "value" $.Values.host "context" $)) }}
+  # Mail clients' Autodiscover probe looks for this name regardless of what `host` is (see 3_gateways/service.yaml, which
+  # answers on it too) - it is not conditional on the Autodiscover plugin being installed, since the plugin ships by
+  # default and the name costs nothing to cover when a certificate is already being issued for `host`.
+  - {{ include "rapidmx.autodiscoverHost" $ }}
   {{- if $podTLS }}
   # global.gateway.tlsTermination: pod - the Gateway passes TLS straight through by SNI (see 3_gateways/service.yaml),
   # so this pod-mounted certificate is the only one any caller ever sees, including in-cluster callers that reach it
