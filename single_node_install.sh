@@ -1098,13 +1098,18 @@ fi
 
 # TLS is set up only when it's on and the host can get a certificate from Let's Encrypt (not localhost or *.local): the
 # chart then has cert-manager issue "<host>-tls-cert" Secrets in $NAMESPACE for $SERVER_HOST and $AUTH_HOST, and the
-# Gateway terminates TLS with them.
+# Gateway terminates TLS with them. The chart's own Certificate for $SERVER_HOST also covers $AUTODISCOVER_HOST (mail
+# clients' Autodiscover probe looks for it regardless of $MAIL_HOST) on the very same Secret, so it needs no Certificate
+# of its own - just another listener pointed at $SERVER_HOST's.
+AUTODISCOVER_HOST="autodiscover.$DOMAIN"
 GATEWAY_TLS=false
 HTTPS_LISTENER=""
 AUTH_HTTPS_LISTENER=""
+AUTODISCOVER_HTTPS_LISTENER=""
 if [[ "$TLS" = "true" && "$SERVER_HOST" != "localhost" && ! "$SERVER_HOST" =~ \.(local|localhost)$ ]]; then
   GATEWAY_TLS=true
   HTTPS_LISTENER="https"
+  AUTODISCOVER_HTTPS_LISTENER="https-autodiscover"
   # The auth-server subchart only issues a certificate for a host that doesn't contain ".local".
   if [[ "$AUTH_HOST" != *.local* ]]; then
     AUTH_HTTPS_LISTENER="https-auth"
@@ -1135,21 +1140,25 @@ spec:
     port: 80
     protocol: HTTP
 EOF
-  for listener in "$HTTPS_LISTENER:$SERVER_HOST" "$AUTH_HTTPS_LISTENER:$AUTH_HOST"; do
-    if [[ "${listener%%:*}" != "" ]]; then
+  # name:hostname:certHost - certHost names the Secret ("<certHost>-tls-cert") the listener's certificateRefs read,
+  # which is the listener's own host except for Autodiscover, which reads $SERVER_HOST's (see AUTODISCOVER_HOST above).
+  for listener in "$HTTPS_LISTENER:$SERVER_HOST:$SERVER_HOST" "$AUTH_HTTPS_LISTENER:$AUTH_HOST:$AUTH_HOST" \
+      "$AUTODISCOVER_HTTPS_LISTENER:$AUTODISCOVER_HOST:$SERVER_HOST"; do
+    IFS=: read -r name hostname certHost <<< "$listener"
+    if [[ -n "$name" ]]; then
   cat << EOF
   - allowedRoutes:
       namespaces:
         from: All
-    name: ${listener%%:*}
-    hostname: "${listener#*:}"
+    name: $name
+    hostname: "$hostname"
     port: 443
     protocol: HTTPS
     tls:
       mode: Terminate
       certificateRefs:
       - kind: Secret
-        name: ${listener#*:}-tls-cert
+        name: $certHost-tls-cert
         namespace: $NAMESPACE
 EOF
     fi
