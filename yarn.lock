@@ -1810,27 +1810,6 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@rapidmx/react-shared@npm:^0.22.0":
-  version: 0.22.0
-  resolution: "@rapidmx/react-shared@npm:0.22.0"
-  dependencies:
-    "@emoji-mart/data": "npm:^1.2.1"
-    "@peculiar/x509": "npm:^2.1.0"
-    asn1js: "npm:^3.0.10"
-    date-fns: "npm:^4.4.0"
-    dompurify: "npm:^3.4.15"
-    hash-wasm: "npm:^4.12.0"
-    pkijs: "npm:^3.4.0"
-    react-icons: "npm:^5.7.0"
-    reflect-metadata: "npm:^0.2.2"
-    rrule: "npm:^2.8.1"
-  peerDependencies:
-    react: 19.x
-    react-dom: 19.x
-  checksum: 10c0/cba37aeecea8d48ab9a9c7cbde0d6789f0a788228553603a1a48303d27922a4bd4b8276df6e1764f5ea618db6e4baf1c88a12275f29b7d936d13151bd10eb589
-  languageName: node
-  linkType: hard
-
 "@rapidmx/restapi@npm:^0.24.0":
   version: 0.24.0
   resolution: "@rapidmx/restapi@npm:0.24.0"
@@ -1870,14 +1849,14 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@rapidmx/web-client@npm:^0.21.0":
-  version: 0.21.0
-  resolution: "@rapidmx/web-client@npm:0.21.0"
+"@rapidmx/web-client@npm:^0.22.0":
+  version: 0.22.0
+  resolution: "@rapidmx/web-client@npm:0.22.0"
   dependencies:
     "@dnd-kit/core": "npm:^6.3.1"
+    "@emoji-mart/data": "npm:^1.2.1"
     "@journeyapps/wa-sqlite": "npm:^2.0.4"
     "@peculiar/x509": "npm:^2.1.0"
-    "@rapidmx/react-shared": "npm:^0.22.0"
     "@tiptap/core": "npm:^3.31.3"
     "@tiptap/extension-highlight": "npm:^3.31.3"
     "@tiptap/extension-image": "npm:^3.31.3"
@@ -1896,11 +1875,12 @@ __metadata:
     pkijs: "npm:^3.4.0"
     react-icons: "npm:^5.7.0"
     reflect-metadata: "npm:^0.2.2"
+    rrule: "npm:^2.8.1"
   peerDependencies:
     "@rapidrest/react": ">=2.1.0 <3"
     react: 19.x
     react-dom: 19.x
-  checksum: 10c0/513a5b784b483b5532762cf2a7586d7c193506ed6a856f87d21e2156d58e41e6d7550b4c63625c4adc84c964c85e32e14ee959151dded9cc3c4c0c334996503d
+  checksum: 10c0/fa375f0f35e0067d87928703f6b7965755b02944234d76cb346bc91332ec91bc86704f6ef90dedd57560aad9534a40ddf2385e4d07b3df7bbab336ff682d4b63
   languageName: node
   linkType: hard
 
@@ -9907,7 +9887,7 @@ __metadata:
   dependencies:
     "@aws-sdk/client-s3": "npm:^3.906.0"
     "@rapidmx/restapi": "npm:^0.24.0"
-    "@rapidmx/web-client": "npm:^0.21.0"
+    "@rapidmx/web-client": "npm:^0.22.0"
     "@rapidrest/cli": "npm:^2.1.0"
     "@rapidrest/core": "npm:^6.0.0"
     "@rapidrest/react": "npm:2.1.0"
