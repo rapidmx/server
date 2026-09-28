@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.22] - 2026-09-28
+
+### Added
+- Added an https-autodiscover listener for autodiscover.<domain> to single_node_install.sh's shared Gateway, reading the same <server host>-tls-cert Secret the https listener already reads, since --gateway shared mode's Gateway is created by the script rather than the chart and the chart's own new listeners (see the previous commit) only apply in --gateway chart mode
+- Added a more specific dev-mode Vite alias for @rapidmx/web-client/lib/ imports, tried before the existing apps/ one, so a lib/ import is never mistaken for a page under apps/
+- Added a temporary mail:basic_auth:oauth_client_id diagnostic flag that offers a second WWW-Authenticate: Bearer challenge (client_id + auth-server's /auth/authorize) alongside the existing Basic one on /mapi and /Microsoft-Server-ActiveSync 401s, to test whether Outlook desktop's MAPI/HTTP provider will trust a session and advance past Connect/Bind into Execute once Modern Auth is offered - a live capture showed Outlook only ever repeating the empty-Bearer-probe/Connect handshake against this deployment, discarding an already-successful session, while the same client completes real OAuth against Exchange Online in the same capture
+
+### Changed
+- Document that an install using shared mode needs to re-run the script (it re-applies the Gateway manifest) after upgrading the chart, since helm upgrade alone does not touch a Gateway the chart does not own
+- Rewrite every @rapidmx/react-shared import to @rapidmx/web-client's new lib/ path, and drop the now-unused direct dependency
+- Document both changes, and that the new lib/ alias test needs a web-client release containing lib/ before it can pass, in NOTES
+- Document the investigation's root-cause finding and the auth-server OAuth2 capability check in NOTES, and add RELEASE_NOTES coverage under Unreleased
+
+### Removed
+- Removed the CHANGELOG.md entries this session mistakenly hand-wrote instead of leaving the file to yarn release, which builds it from commit messages alone and duplicates or strands anything typed into it directly
+
 ## [1.0.0-beta.21] - 2026-09-27
 
 ### Changed
@@ -1023,7 +1039,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed test from .dockerignore, fixing yarn build's lint step failing outright when the build context is missing the test directory its tsconfig.eslint.json requires
 - Removed docker-compose.mail.yml's partial server: service block, since include: only supports merging resources that don't already exist in the including file and hard-errors ("services.server conflicts with imported resource") on a Compose version newer than whatever this had only ever been tested against locally
 
-[Unreleased]: https://github.com/rapidmx/server/compare/v1.0.0-beta.21...HEAD
+[Unreleased]: https://github.com/rapidmx/server/compare/v1.0.0-beta.22...HEAD
+[1.0.0-beta.22]: https://github.com/rapidmx/server/compare/v1.0.0-beta.21...v1.0.0-beta.22
 [1.0.0-beta.21]: https://github.com/rapidmx/server/compare/v1.0.0-beta.20...v1.0.0-beta.21
 [1.0.0-beta.20]: https://github.com/rapidmx/server/compare/v1.0.0-beta.19...v1.0.0-beta.20
 [1.0.0-beta.19]: https://github.com/rapidmx/server/compare/v1.0.0-beta.18...v1.0.0-beta.19
