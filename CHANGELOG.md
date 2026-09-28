@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.24] - 2026-09-28
+
+### Added
+- Added the missing "Enable corepack" step to the validate job - without it, this job's yarn commands ran the container's stock Yarn 1.22.22 instead of the packageManager-pinned 4.2.2, which refuses to run at all ("packageManager defines yarn@4.2.2... Corepack must currently be enabled"), so validate's yarn npm audit never actually ran and always failed regardless of real findings. Confirmed via the real CI log JP provided; every other job already has this step
+
+### Changed
+- Bump the @rapidmx/restapi dependency to ^0.25.1, now that it's actually published (0.25.0 never made it out - see restapi's own NOTES) - picks up GET /.well-known/rapidmx/server-info and the plugin routes' ?prerelease=true support
+- Document the standing wait-for-green-CI-before-releasing rule in NOTES, per JP
+- Pin form-data (via coveralls's deprecated request dependency) to a fixed version in resolutions - this CI run's validate job failed yarn npm audit on a real critical CVE (unsafe boundary randomness) and a high one (CRLF injection) in the old 2.3.3 the ~2.3.2 range resolved to
+
 ## [1.0.0-beta.23] - 2026-09-28
 
 ### Changed
@@ -1044,7 +1054,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed test from .dockerignore, fixing yarn build's lint step failing outright when the build context is missing the test directory its tsconfig.eslint.json requires
 - Removed docker-compose.mail.yml's partial server: service block, since include: only supports merging resources that don't already exist in the including file and hard-errors ("services.server conflicts with imported resource") on a Compose version newer than whatever this had only ever been tested against locally
 
-[Unreleased]: https://github.com/rapidmx/server/compare/v1.0.0-beta.23...HEAD
+[Unreleased]: https://github.com/rapidmx/server/compare/v1.0.0-beta.24...HEAD
+[1.0.0-beta.24]: https://github.com/rapidmx/server/compare/v1.0.0-beta.23...v1.0.0-beta.24
 [1.0.0-beta.23]: https://github.com/rapidmx/server/compare/v1.0.0-beta.22...v1.0.0-beta.23
 [1.0.0-beta.22]: https://github.com/rapidmx/server/compare/v1.0.0-beta.21...v1.0.0-beta.22
 [1.0.0-beta.21]: https://github.com/rapidmx/server/compare/v1.0.0-beta.20...v1.0.0-beta.21
