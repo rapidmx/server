@@ -103,7 +103,8 @@
   "resolutions": {
     "semver": "^7.5.2",
     "axios": "^1.19.0",
-    "json-schema": "^0.4.0"
+    "json-schema": "^0.4.0",
+    "form-data@npm:~2.3.2": "^4.0.6"
   },
   "packageManager": "yarn@4.2.2",
   "engines": {
