@@ -19,7 +19,6 @@ const BUILD_FORMAT = 1;
 /** Installed packages whose versions (and yarn patches) decide what a UI build contains. */
 const HASHED_PACKAGES = [
     "@rapidmx/web-client",
-    "@rapidmx/react-shared",
     "@rapidrest/react",
     "react",
     "react-dom",

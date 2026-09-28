@@ -9906,7 +9906,6 @@ __metadata:
   resolution: "server@workspace:."
   dependencies:
     "@aws-sdk/client-s3": "npm:^3.906.0"
-    "@rapidmx/react-shared": "npm:^0.22.0"
     "@rapidmx/restapi": "npm:^0.24.0"
     "@rapidmx/web-client": "npm:^0.21.0"
     "@rapidrest/cli": "npm:^2.1.0"

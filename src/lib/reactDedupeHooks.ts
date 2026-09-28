@@ -9,16 +9,16 @@
  * module graph is asking, to resolve to *this project's own* installed copy rather than whatever
  * copy happens to live closest to the importing file on disk.
  *
- * Why this is needed: `@rapidmx/react-shared` and `@rapidmx/web-client` are `link:`-ed sibling
- * repos, each with their own independent `node_modules/react` (needed so each can run its own
- * test suite standalone — see their own `.claude/NOTES.md`). Vite's `resolve.dedupe` (see
+ * Why this is needed: `@rapidmx/web-client` is a `link:`-ed sibling repo with its own independent
+ * `node_modules/react` (needed so it can run its own test suite standalone — see its own
+ * `.claude/NOTES.md`). Vite's `resolve.dedupe` (see
  * `vite.config.ts`) already solves this for the client bundle, but `ReactRoute.renderPage()`'s
  * SSR path loads page/layout modules via a plain Node `import()` — no Vite bundling involved at
  * all — so `resolve.dedupe` has no effect there. Node's own ESM resolver, walking up from wherever
  * a `.tsx` file *actually* lives on disk (its real, symlink-resolved path), finds
  * `@rapidmx/web-client`'s own `node_modules/react` before it ever reaches this project's, loading
- * a second, independent React module instance — every hook call inside a component from either
- * linked package then throws "Invalid hook call" (two separate `ReactCurrentDispatcher`
+ * a second, independent React module instance — every hook call inside one of its components then
+ * throws "Invalid hook call" (two separate `ReactCurrentDispatcher`
  * singletons, one per instance).
  *
  * `--preserve-symlinks` does **not** fix this — confirmed empirically, not assumed. It only

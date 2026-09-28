@@ -4,7 +4,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 import { register } from "module";
 // Forces every `react`/`react-dom` resolution (from this project's own code AND from the
-// `link:`-ed @rapidmx/react-shared / @rapidmx/web-client packages' own SSR'd modules) onto this
+// `link:`-ed @rapidmx/web-client package's own SSR'd modules) onto this
 // project's single installed copy — see reactDedupeHooks.ts's own doc comment for why this is
 // necessary (Vite's `resolve.dedupe` only covers the client bundle, not ReactRoute's plain-Node
 // SSR `import()` path) and why `--preserve-symlinks` does not substitute for it. Must run before

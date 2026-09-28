@@ -44,7 +44,7 @@ export const ROUTER_OPTIONS = {
     prefetch: { idle: ["/", "/calendar", "/contacts", "/tasks"], links: true },
 } as const;
 
-/** The web client's Tailwind entry point: its design tokens and the `@source` lines for its own and react-shared's classes. */
+/** The web client's Tailwind entry point: its design tokens and the `@source` lines for its own classes. */
 export const WEB_CLIENT_APP_CSS = "node_modules/@rapidmx/web-client/apps/shared/styles/app.css";
 
 /** The id prefix `@rapidrest/react`'s hydration plugin gives each page's generated client entry module. */
@@ -94,7 +94,7 @@ export function appStylesheetPlugin(stylesheets: AppStylesheet[]): any {
  * The Vite build configuration for the server's browser bundles, shared by `vite.config.ts` (the image's prebuilt
  * `dist/public`) and `PluginUiBuilder` (the same build plus enabled plugins' UI apps, made at startup).
  *
- * `resolve.dedupe` forces every import of react/react-dom onto one physical copy, so hooks from `@rapidmx/react-shared`
+ * `resolve.dedupe` forces every import of react/react-dom onto one physical copy, so hooks from `@rapidmx/web-client`
  * (and from plugins) share the server's React instance instead of failing with "Invalid hook call".
  *
  * `resolve.alias` sends package imports of the web client (`@rapidmx/web-client/<path>.js`, the plugin UI surface) to
@@ -103,10 +103,10 @@ export function appStylesheetPlugin(stylesheets: AppStylesheet[]): any {
  * copy of every web client module it uses, with its own module state, next to the copies the core pages share.
  *
  * `build.rolldownOptions.output.strictExecutionOrder` keeps modules running in import order. Without it Rolldown runs
- * a CommonJS module lazily where it's imported but hoists ESM modules, so `@rapidmx/react-shared`'s
+ * a CommonJS module lazily where it's imported but hoists ESM modules, so `@rapidmx/web-client`'s crypto module's
  * `import "reflect-metadata"` (CommonJS) ran after `@peculiar/x509`'s ESM dependency tsyringe, which throws "tsyringe
  * requires a reflect polyfill" on load and left every page that imports the crypto modules blank. The web client loads
- * those modules lazily (`import()`) now, and `@rapidmx/react-shared` awaits `reflect-metadata` before `@peculiar/x509`
+ * those modules lazily (`import()`) now, and its crypto module awaits `reflect-metadata` before `@peculiar/x509`
  * where it loads that; the ordering guarantee is what keeps a lazy chunk that holds both correct.
  *
  * `build.rolldownOptions.output.codeSplitting` names the stable third-party pieces, so that they are chunks of their own
@@ -153,7 +153,12 @@ export async function createServerViteConfig(options: ServerViteConfigOptions = 
         },
         resolve: {
             ...config.resolve,
-            alias: [webClientSourceAlias()],
+            // `webClientLibSourceAlias()` first: its `find` only matches `@rapidmx/web-client/lib/...`, a strict
+            // subset of `webClientSourceAlias()`'s own unconditional `@rapidmx/web-client/...` pattern. Vite tries
+            // alias entries in array order and stops at the first match, so this ordering is load-bearing - the
+            // other way around, every `lib/` import would resolve under the app sources instead (where it never
+            // existed even before `@rapidmx/react-shared` merged into `@rapidmx/web-client`'s `lib/` directory).
+            alias: [webClientLibSourceAlias(), webClientSourceAlias()],
             dedupe: ["react", "react-dom"],
         },
     };
@@ -162,8 +167,19 @@ export async function createServerViteConfig(options: ServerViteConfigOptions = 
 /** The web client's app sources, relative to the server's directory. */
 export const WEB_CLIENT_APPS = "node_modules/@rapidmx/web-client/apps";
 
+/** The web client's merged-in `@rapidmx/react-shared` sources (API clients, crypto, shared hooks/components - not
+ * page components), relative to the server's directory. */
+export const WEB_CLIENT_LIB = "node_modules/@rapidmx/web-client/lib";
+
 /** The Vite alias that resolves `@rapidmx/web-client/<path>.js` to `<path>` under the web client's app sources, where
  * Vite then finds the `.ts` or `.tsx` file. */
 export function webClientSourceAlias(): { find: RegExp; replacement: string } {
     return { find: /^@rapidmx\/web-client\/(.+)\.js$/, replacement: `${path.resolve(WEB_CLIENT_APPS).replace(/\\/g, "/")}/$1` };
+}
+
+/** The Vite alias that resolves `@rapidmx/web-client/lib/<path>.js` (the former `@rapidmx/react-shared` package,
+ * merged into `web-client`'s own `lib/` directory) to `<path>` under that directory, ahead of the app-sources
+ * alias above so a `lib/` import is never mistaken for one under `apps/`. */
+export function webClientLibSourceAlias(): { find: RegExp; replacement: string } {
+    return { find: /^@rapidmx\/web-client\/lib\/(.+)\.js$/, replacement: `${path.resolve(WEB_CLIENT_LIB).replace(/\\/g, "/")}/$1` };
 }

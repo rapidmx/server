@@ -36,7 +36,7 @@ const { Description, Returns, Summary } = DocDecorators;
 const { Auth, Param, Post, User: AuthUser } = RouteDecorators;
 
 /**
- * The structured compose input a webmail client submits — see `assembleDraft()` in `@rapidmx/react-shared`'s `mailApi.ts`.
+ * The structured compose input a webmail client submits — see `assembleDraft()` in `@rapidmx/web-client`'s `lib/mail/mailApi.ts`.
  * `to` and `html` may be empty: the client autosaves (and saves on Close and sign-out) through this route, so a draft
  * typed before any recipient is added, or with an empty body, must still be stored. Sending needs recipients, which
  * the client checks before calling send.
@@ -51,12 +51,12 @@ export interface ComposeAssembleInput {
 
 /**
  * The already-fully-composed input a webmail client submits for an E2E signed and/or encrypted
- * message — see `assembleDraftRaw()` in `@rapidmx/react-shared`'s `mailApi.ts`. Unlike
+ * message — see `assembleDraftRaw()` in `@rapidmx/web-client`'s `lib/mail/mailApi.ts`. Unlike
  * `ComposeAssembleInput`, there is no HTML body for this server to sanitize or compose into MIME:
  * `specs/end-to-end_encryption.md`'s "Digital Signatures" section requires signing to be "the final
  * step before submission," since "any downstream process that normalises whitespace, re-wraps lines
  * or re-encodes the body will invalidate the signature" — real crypto (signing/encryption) happens
- * entirely client-side (`@rapidmx/react-shared`'s `crypto/smimeMessage.ts`), and this server only
+ * entirely client-side (`@rapidmx/web-client`'s `lib/crypto/smimeMessage.ts`), and this server only
  * ever stores the resulting bytes completely unmodified.
  */
 export interface ComposeAssembleRawInput {
@@ -318,7 +318,7 @@ export function sanitizeComposeHtml(html: string): string {
 
 /**
  * Rewrites `<img>` references to this draft's own already-uploaded attachments (by their
- * `/mail/attachments/:uid/content` URL — see `attachmentContentUrl()` in `@rapidmx/react-shared`'s `mailApi.ts`)
+ * `/mail/attachments/:uid/content` URL — see `attachmentContentUrl()` in `@rapidmx/web-client`'s `lib/mail/mailApi.ts`)
  * into `cid:` references instead, matching each attachment's own `contentId`.
  *
  * The client's rich-text editor can't render a `cid:` URL at all (browsers only resolve that scheme

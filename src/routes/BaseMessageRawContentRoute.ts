@@ -46,7 +46,7 @@ const rawContentRateLimitKey = (userUid: string): string => `${userUid}|mail-mes
  * This exists for `specs/end-to-end_encryption.md`'s client-side decrypt/verify requirement: an
  * encrypted message's real body is never sanitized (or even visible) server-side at all — `ScanPipeline`
  * can't extract HTML from ciphertext — so the client must fetch the raw bytes itself and run
- * `@rapidmx/react-shared`'s `crypto/smimeMessage.ts` against them; the same raw bytes are also how a
+ * `@rapidmx/web-client`'s `lib/crypto/smimeMessage.ts` against them; the same raw bytes are also how a
  * signed (not necessarily encrypted) message's signature gets verified, since a sanitized HTML body
  * never carries the detached signature part.
  *
