@@ -164,7 +164,7 @@ service:
   image:
     registry: ghcr.io
     repository: rapidmx/server
-    tag: 1.0.0-beta.22
+    tag: 1.0.0-beta.23
   replicas: 1
   resources:
     requests:

@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.23] - 2026-09-28
+
+### Changed
+- Bump the @rapidmx/web-client dependency to ^0.22.0, now that a lib/-having release is published - closes the gap the 2026-09-27 lib/ merge left open, and test/lib/serverViteConfig.test.ts's lib/-resolution case now passes
+
 ## [1.0.0-beta.22] - 2026-09-28
 
 ### Added
@@ -1039,7 +1044,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed test from .dockerignore, fixing yarn build's lint step failing outright when the build context is missing the test directory its tsconfig.eslint.json requires
 - Removed docker-compose.mail.yml's partial server: service block, since include: only supports merging resources that don't already exist in the including file and hard-errors ("services.server conflicts with imported resource") on a Compose version newer than whatever this had only ever been tested against locally
 
-[Unreleased]: https://github.com/rapidmx/server/compare/v1.0.0-beta.22...HEAD
+[Unreleased]: https://github.com/rapidmx/server/compare/v1.0.0-beta.23...HEAD
+[1.0.0-beta.23]: https://github.com/rapidmx/server/compare/v1.0.0-beta.22...v1.0.0-beta.23
 [1.0.0-beta.22]: https://github.com/rapidmx/server/compare/v1.0.0-beta.21...v1.0.0-beta.22
 [1.0.0-beta.21]: https://github.com/rapidmx/server/compare/v1.0.0-beta.20...v1.0.0-beta.21
 [1.0.0-beta.20]: https://github.com/rapidmx/server/compare/v1.0.0-beta.19...v1.0.0-beta.20
