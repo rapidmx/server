@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+- **Temporary diagnostic: `mail:basic_auth:oauth_client_id`, unset by default, adds a second `WWW-Authenticate: Bearer client_id="..." authorization_uri="..."` header alongside the existing Basic one on a 401 for `/mapi` and `/Microsoft-Server-ActiveSync`.** Part of the ongoing Outlook desktop MAPI/HTTP investigation: a live capture confirmed Outlook never advances past `Connect`/`Bind` into `Execute` against this deployment, while every response-shape difference against a real Exchange Online session (cookies, headers, body bytes) has already been matched byte-for-byte. The one remaining structural difference is that Exchange Online's 401 offers `Bearer` (Modern Auth) - Outlook's `Accept-Auth` header shows it's willing to negotiate it - while this deployment only ever offered `Basic`, so Outlook repeats its empty-Bearer probe forever instead of trusting the session it already has. This flag is step one of testing that theory: it does not implement real OAuth token validation, just the challenge header, to see whether Outlook's sign-in flow triggers at all against auth-server's `/auth/authorize` before committing to the rest.
+
 ## v1.0.0-beta.21
 
 ### Fixed

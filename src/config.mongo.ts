@@ -143,6 +143,9 @@ conf.defaults({
         // A successful login is remembered for `cache_ttl_ms` (never past the token's expiry) because these clients send their
         // credentials with every request; `failure_limit` failed logins within `failure_window_ms`, per client address or per
         // username, get a 429 until the window passes. Needs `mail:auth_server_url`. See lib/BasicAuthJWTStrategy.ts.
+        // `oauth_client_id`, unset by default, is a temporary diagnostic flag: when set (to an auth-server OAuth `Client`'s
+        // uid), a 401 on these paths also carries a second `WWW-Authenticate: Bearer client_id="..." authorization_uri="..."`
+        // header, alongside the existing Basic one, so Outlook's MAPI/HTTP provider can discover and launch OAuth sign-in.
         basic_auth: {
             enabled: true,
             paths: ["/mapi", "/Microsoft-Server-ActiveSync"],
@@ -151,6 +154,7 @@ conf.defaults({
             cache_max_entries: 5000,
             failure_limit: 10,
             failure_window_ms: 900_000,
+            oauth_client_id: "",
         },
         // `default_quota_bytes` and `auto_provision.enabled`/`quota_bytes` seed the admin-editable mailbox policy
         // (system/mailbox-policy) the first time it's read, and stay its fallback for anything it leaves unset.
