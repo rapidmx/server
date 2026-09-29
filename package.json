@@ -34,8 +34,8 @@
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.906.0",
-    "@rapidmx/restapi": "^0.25.1",
-    "@rapidmx/web-client": "^0.22.0",
+    "@rapidmx/restapi": "^0.25.2",
+    "@rapidmx/web-client": "^0.23.0",
     "@rapidrest/core": "^6.0.0",
     "@rapidrest/react": "2.1.0",
     "@rapidrest/service-core": "^2.4.0",
