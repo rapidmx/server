@@ -23,18 +23,13 @@ function request(path: string, headers: Record<string, string> = {}, remote = "2
     return { path, headers, cookies: {}, query: {}, signedCookies: {}, socket: { remoteAddress: remote } };
 }
 
-function response(): { res: any; headers: Record<string, string>; appended: { key: string; value: string }[] } {
+function response(): { res: any; headers: Record<string, string> } {
     const headers: Record<string, string> = {};
-    const appended: { key: string; value: string }[] = [];
     return {
         headers,
-        appended,
         res: {
             setHeader: (key: string, value: string) => {
                 headers[key] = value;
-            },
-            appendHeader: (key: string, value: string) => {
-                appended.push({ key, value });
             },
         },
     };
@@ -68,11 +63,8 @@ describe("BasicAuthJWTStrategy", () => {
 
     afterEach(() => {
         vi.useRealTimers();
-        for (const key of ["enabled", "cache_ttl_ms", "failure_limit", "paths", "oauth_client_id"]) {
-            config.set(
-                `mail:basic_auth:${key}`,
-                { enabled: true, cache_ttl_ms: 300_000, failure_limit: 10, paths: [...DEFAULT_BASIC_AUTH_PATHS], oauth_client_id: "" }[key],
-            );
+        for (const key of ["enabled", "cache_ttl_ms", "failure_limit", "paths"]) {
+            config.set(`mail:basic_auth:${key}`, { enabled: true, cache_ttl_ms: 300_000, failure_limit: 10, paths: [...DEFAULT_BASIC_AUTH_PATHS] }[key]);
         }
     });
 
@@ -202,29 +194,6 @@ describe("BasicAuthJWTStrategy", () => {
             const other = response();
             expect(await basicStrategy.authenticate(request("/api/mail/mailboxes"), other.res)).toBeUndefined();
             expect(other.headers["WWW-Authenticate"]).toBeUndefined();
-        });
-
-        it("also offers a Bearer challenge, as a second WWW-Authenticate header, when an oauth_client_id is configured", async () => {
-            config.set("mail:basic_auth:oauth_client_id", "5c9e7a2b-1234-4a5b-8c6d-9f0a1b2c3d4e");
-            const fetcher = authServer(() => ({ status: 200, token: tokenFor() }));
-            const basicStrategy = await strategy(fetcher);
-            const { res, headers, appended } = response();
-            expect(await basicStrategy.authenticate(request("/mapi/emsmdb"), res)).toBeUndefined();
-            expect(headers["WWW-Authenticate"]).toBe('Basic realm="RapidMX", charset="UTF-8"');
-            expect(appended).toEqual([
-                {
-                    key: "WWW-Authenticate",
-                    value: 'Bearer client_id="5c9e7a2b-1234-4a5b-8c6d-9f0a1b2c3d4e", authorization_uri="https://auth.example.com/auth/authorize"',
-                },
-            ]);
-        });
-
-        it("leaves the challenge Basic-only when no oauth_client_id is configured", async () => {
-            const fetcher = authServer(() => ({ status: 200, token: tokenFor() }));
-            const basicStrategy = await strategy(fetcher);
-            const { res, appended } = response();
-            expect(await basicStrategy.authenticate(request("/mapi/emsmdb"), res)).toBeUndefined();
-            expect(appended).toEqual([]);
         });
 
         it("refuses wrong credentials with the same challenge, and counts the failure", async () => {

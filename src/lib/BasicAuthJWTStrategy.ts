@@ -110,18 +110,6 @@ export class BasicAuthJWTStrategy implements AuthStrategy {
     @Config("mail:auth_server_url", "")
     protected authServerUrl: string = "";
 
-    // Temporary: gated behind an empty-by-default client id so this is a no-op until auth-server has a real
-    // client registered for it. Real Outlook probes every request with an empty `Authorization: Bearer` before
-    // falling back to Basic (confirmed via live capture); with only a Basic challenge on the 401 it gets back,
-    // Outlook's modern MAPI/HTTP provider never advances past `Connect`/`Bind` into `Execute` - it just repeats
-    // the same empty-Bearer probe forever, discarding the session it already established. Real Exchange Online's
-    // 401 instead carries `WWW-Authenticate: Bearer client_id="...", authorization_uri="..."`, which is what
-    // gets Outlook to launch its OAuth sign-in. This adds that same shape as a second `WWW-Authenticate` header
-    // (RFC 7235 §4.1 allows offering multiple schemes at once), alongside the existing Basic one so EAS/Gmail
-    // (Basic-only) keeps working unchanged.
-    @Config("mail:basic_auth:oauth_client_id", "")
-    protected oauthClientId: string = "";
-
     @Config("trusted_proxies", [])
     protected trustedProxies: string[] = [];
 
@@ -233,10 +221,6 @@ export class BasicAuthJWTStrategy implements AuthStrategy {
 
     private challenge(res?: HttpResponse): void {
         res?.setHeader("WWW-Authenticate", `Basic realm="${this.realm.replace(/["\\]/g, "")}", charset="UTF-8"`);
-        if (this.oauthClientId && this.authServerUrl) {
-            const authorizationUri: string = `${this.authServerUrl.replace(/\/+$/, "")}/auth/authorize`;
-            res?.appendHeader("WWW-Authenticate", `Bearer client_id="${this.oauthClientId}", authorization_uri="${authorizationUri}"`);
-        }
     }
 
     /** The access token auth-server gives for these credentials, or `undefined` when it refuses them. Throws when it can't be asked. */
