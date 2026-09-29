@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.25] - 2026-09-29
+
+### Changed
+- Revert beta.22's mail:basic_auth:oauth_client_id diagnostic flag and its second WWW-Authenticate: Bearer challenge header - a real device test proved Outlook's Modern Auth for MAPI/HTTP hands off entirely to Windows' WAM broker, which only resolves domains registered in a real Microsoft Entra ID/Azure AD tenant and ignores the authorization_uri/client_id we advertised; separately confirmed against Gromox's own source that it never offers OAuth for MAPI/HTTP either, only Basic by default, so the auth scheme was never the actual blocker
+- Document the WAM/Gromox investigation conclusion and next steps in NOTES, and the revert in RELEASE_NOTES
+
 ## [1.0.0-beta.24] - 2026-09-28
 
 ### Added
@@ -1054,7 +1060,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed test from .dockerignore, fixing yarn build's lint step failing outright when the build context is missing the test directory its tsconfig.eslint.json requires
 - Removed docker-compose.mail.yml's partial server: service block, since include: only supports merging resources that don't already exist in the including file and hard-errors ("services.server conflicts with imported resource") on a Compose version newer than whatever this had only ever been tested against locally
 
-[Unreleased]: https://github.com/rapidmx/server/compare/v1.0.0-beta.24...HEAD
+[Unreleased]: https://github.com/rapidmx/server/compare/v1.0.0-beta.25...HEAD
+[1.0.0-beta.25]: https://github.com/rapidmx/server/compare/v1.0.0-beta.24...v1.0.0-beta.25
 [1.0.0-beta.24]: https://github.com/rapidmx/server/compare/v1.0.0-beta.23...v1.0.0-beta.24
 [1.0.0-beta.23]: https://github.com/rapidmx/server/compare/v1.0.0-beta.22...v1.0.0-beta.23
 [1.0.0-beta.22]: https://github.com/rapidmx/server/compare/v1.0.0-beta.21...v1.0.0-beta.22

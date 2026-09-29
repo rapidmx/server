@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v1.0.0-beta.25
+
 ### Removed
 
 - **Reverted beta.22's `mail:basic_auth:oauth_client_id` diagnostic flag and its second `WWW-Authenticate: Bearer` challenge header.** It did its job: a real device test showed Outlook's Modern Auth for MAPI/HTTP hands off entirely to Windows' own WAM (Web Account Manager) broker, which only resolves domains registered in a real Microsoft Entra ID/Azure AD tenant - it ignores the `authorization_uri`/`client_id` this server advertised entirely, and fails immediately for a self-hosted, Microsoft-independent domain ("We couldn't find an account with that email address"). Separately confirmed against Gromox's own source (the real, working open-source MAPI/HTTP server Outlook does connect to) that it never offers OAuth for MAPI/HTTP either - only `Basic`, by default - so the auth scheme was never the actual blocker. See `.claude/NOTES.md` for the full investigation.
