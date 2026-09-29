@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v1.0.0-beta.26
+
 ## v1.0.0-beta.25
 
 ### Removed

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.26] - 2026-09-29
+
+### Changed
+- Updated auth-server helm dep
+- Send composed messages as multipart/alternative with a text/plain part and a complete <html> document for the HTML part, so spam scorers stop flagging them
+- Update @rapidmx/restapi to 0.25.2 and @rapidmx/web-client to 0.23.0
+
 ## [1.0.0-beta.25] - 2026-09-29
 
 ### Changed
@@ -1060,7 +1067,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed test from .dockerignore, fixing yarn build's lint step failing outright when the build context is missing the test directory its tsconfig.eslint.json requires
 - Removed docker-compose.mail.yml's partial server: service block, since include: only supports merging resources that don't already exist in the including file and hard-errors ("services.server conflicts with imported resource") on a Compose version newer than whatever this had only ever been tested against locally
 
-[Unreleased]: https://github.com/rapidmx/server/compare/v1.0.0-beta.25...HEAD
+[Unreleased]: https://github.com/rapidmx/server/compare/v1.0.0-beta.26...HEAD
+[1.0.0-beta.26]: https://github.com/rapidmx/server/compare/v1.0.0-beta.25...v1.0.0-beta.26
 [1.0.0-beta.25]: https://github.com/rapidmx/server/compare/v1.0.0-beta.24...v1.0.0-beta.25
 [1.0.0-beta.24]: https://github.com/rapidmx/server/compare/v1.0.0-beta.23...v1.0.0-beta.24
 [1.0.0-beta.23]: https://github.com/rapidmx/server/compare/v1.0.0-beta.22...v1.0.0-beta.23
