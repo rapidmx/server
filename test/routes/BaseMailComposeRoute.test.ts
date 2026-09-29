@@ -16,10 +16,12 @@ import {
     assertRawMimeHeadersMatch,
     BaseMailComposeRoute,
     decodeEncodedWords,
+    htmlToPlainText,
     parseTopLevelHeaders,
     rewriteInlineImageSources,
     safeFromDisplayName,
     sanitizeComposeHtml,
+    wrapHtmlDocument,
 } from "../../src/routes/BaseMailComposeRoute.js";
 
 /** A minimal RFC 5322 message with the given top-level headers. */
@@ -715,5 +717,27 @@ describe("rewriteInlineImageSources() Tests", () => {
             { uid: "a2", contentId: "cid-2" },
         ]);
         expect(result).toBe('<img src="cid:cid-1">');
+    });
+});
+
+describe("wrapHtmlDocument() Tests", () => {
+    it("wraps a fragment in a complete document", () => {
+        const doc = wrapHtmlDocument("<p>hi</p>");
+        expect(doc).toMatch(/^<!DOCTYPE html>\n<html[ >]/);
+        expect(doc).toContain("<head>");
+        expect(doc).toContain("<body>\n<p>hi</p>\n</body>");
+        expect(doc.trimEnd().endsWith("</html>")).toBe(true);
+    });
+});
+
+describe("htmlToPlainText() Tests", () => {
+    it("keeps line breaks, lists and link targets, and decodes entities", () => {
+        const text = htmlToPlainText('<p>Hello &amp; welcome</p><p>Line<br>two</p><ul><li>a</li><li>b</li></ul><a href="https://example.com/x">site</a>');
+        expect(text).toBe("Hello & welcome\n\nLine\ntwo\n\n- a\n- b\nsite (https://example.com/x)");
+    });
+
+    it("drops tags and script/style content, and never emits markup", () => {
+        expect(htmlToPlainText("<style>p{color:red}</style><p>a<b>b</b></p>")).toBe("ab");
+        expect(htmlToPlainText("&lt;script&gt;")).toBe("<script>");
     });
 });

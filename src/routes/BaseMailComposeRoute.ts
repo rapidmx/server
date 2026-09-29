@@ -341,7 +341,50 @@ export function rewriteInlineImageSources(html: string, attachments: { uid: stri
     return result;
 }
 
-/** A short, tag-stripped plain-text preview, mirroring how `@rapidmx/restapi`'s own ingestion pipeline derives `bodyPreview`. */
+/**
+ * Wraps the compose editor's sanitized HTML fragment in a complete document. `sanitizeComposeHtml()` never emits
+ * `<html>`/`<head>`/`<body>`, and spam scorers (e.g. mail-tester.com) penalize a text/html part without them.
+ */
+export function wrapHtmlDocument(fragment: string): string {
+    return (
+        '<!DOCTYPE html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n' +
+        '<meta name="viewport" content="width=device-width, initial-scale=1">\n</head>\n' +
+        `<body>\n${fragment}\n</body>\n</html>`
+    );
+}
+
+const HTML_ENTITIES: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " " };
+
+/**
+ * The text/plain alternative of the compose editor's sanitized HTML: a line break per `<br>`/block element, `- ` before
+ * list items, and a link's URL in parentheses after its text. Every other tag is dropped and entities are decoded.
+ * Produces text, not markup, so it is safe for any input.
+ */
+export function htmlToPlainText(html: string): string {
+    return html
+        .replace(/<(style|script|head)\b[^>]*>[\s\S]*?<\/\1>/gi, "")
+        .replace(/<a\b[^>]*\bhref\s*=\s*(?:"([^"]*)"|'([^']*)')[^>]*>([\s\S]*?)<\/a>/gi, (_m, d: string, s: string, inner: string) => {
+            const href = d ?? s;
+            const label = inner.replace(/<[^>]*>/g, "").trim();
+            return !href || /^(mailto:|#)/i.test(href) || label === href ? inner : `${inner} (${href})`;
+        })
+        .replace(/<li\b[^>]*>/gi, "\n- ")
+        .replace(/<br\s*\/?>|<\/(p|div|h[1-6]|tr|blockquote|ul|ol|table)>/gi, "\n")
+        .replace(/<(p|div|h[1-6]|blockquote)\b[^>]*>/gi, "\n")
+        .replace(/<[^>]*>/g, "")
+        .replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (m, e: string) => {
+            if (e[0] === "#") {
+                const code = e[1].toLowerCase() === "x" ? parseInt(e.slice(2), 16) : parseInt(e.slice(1), 10);
+                return Number.isFinite(code) && code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : m;
+            }
+            return HTML_ENTITIES[e.toLowerCase()] ?? m;
+        })
+        .replace(/[ \t]+\n/g, "\n")
+        .replace(/\n{3,}/g, "\n\n")
+        .trim();
+}
+
+/** A short, tag-stripped plain-text preview,mirroring how `@rapidmx/restapi`'s own ingestion pipeline derives `bodyPreview`. */
 function toPreview(html: string): string {
     return html
         .replace(/<[^>]*>/g, " ")
@@ -526,7 +569,8 @@ export abstract class BaseMailComposeRoute<M extends Message, A extends Attachme
             cc: body.cc?.map(toNodemailerAddress),
             bcc: body.bcc?.map(toNodemailerAddress),
             subject: body.subject ?? "",
-            html,
+            text: htmlToPlainText(html),
+            html: wrapHtmlDocument(html),
             attachments,
         })
             .compile()
