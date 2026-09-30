@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.29] - 2026-09-30
+
+### Changed
+- Update @rapidmx/restapi to 0.27.1 and @rapidmx/web-client to 0.28.0 Fix the plugin manager finding no plugins in a namespace, select and bulk-act on mail in the All mailboxes views, and empty Deleted Items and Junk Email there
+
 ## [1.0.0-beta.28] - 2026-09-30
 
 ### Changed
@@ -1079,7 +1084,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed test from .dockerignore, fixing yarn build's lint step failing outright when the build context is missing the test directory its tsconfig.eslint.json requires
 - Removed docker-compose.mail.yml's partial server: service block, since include: only supports merging resources that don't already exist in the including file and hard-errors ("services.server conflicts with imported resource") on a Compose version newer than whatever this had only ever been tested against locally
 
-[Unreleased]: https://github.com/rapidmx/server/compare/v1.0.0-beta.28...HEAD
+[Unreleased]: https://github.com/rapidmx/server/compare/v1.0.0-beta.29...HEAD
+[1.0.0-beta.29]: https://github.com/rapidmx/server/compare/v1.0.0-beta.28...v1.0.0-beta.29
 [1.0.0-beta.28]: https://github.com/rapidmx/server/compare/v1.0.0-beta.27...v1.0.0-beta.28
 [1.0.0-beta.27]: https://github.com/rapidmx/server/compare/v1.0.0-beta.26...v1.0.0-beta.27
 [1.0.0-beta.26]: https://github.com/rapidmx/server/compare/v1.0.0-beta.25...v1.0.0-beta.26

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v1.0.0-beta.29
+
 ## v1.0.0-beta.28
 
 ## v1.0.0-beta.27
