@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.28] - 2026-09-30
+
+### Changed
+- Pass the resolveFrom of a plugin's app rail entries through to the web client, so the meet plugin's Meet button can show for users with a personal meeting room
+- Update @rapidmx/restapi to 0.27.0 and @rapidmx/web-client to 0.27.0 Add contact pictures with Gravatar fallback, a star to favorite contacts, copy icons beside email addresses, and a Meet button for users with a personal meeting room
+
 ## [1.0.0-beta.27] - 2026-09-30
 
 ### Changed
@@ -1073,7 +1079,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed test from .dockerignore, fixing yarn build's lint step failing outright when the build context is missing the test directory its tsconfig.eslint.json requires
 - Removed docker-compose.mail.yml's partial server: service block, since include: only supports merging resources that don't already exist in the including file and hard-errors ("services.server conflicts with imported resource") on a Compose version newer than whatever this had only ever been tested against locally
 
-[Unreleased]: https://github.com/rapidmx/server/compare/v1.0.0-beta.27...HEAD
+[Unreleased]: https://github.com/rapidmx/server/compare/v1.0.0-beta.28...HEAD
+[1.0.0-beta.28]: https://github.com/rapidmx/server/compare/v1.0.0-beta.27...v1.0.0-beta.28
 [1.0.0-beta.27]: https://github.com/rapidmx/server/compare/v1.0.0-beta.26...v1.0.0-beta.27
 [1.0.0-beta.26]: https://github.com/rapidmx/server/compare/v1.0.0-beta.25...v1.0.0-beta.26
 [1.0.0-beta.25]: https://github.com/rapidmx/server/compare/v1.0.0-beta.24...v1.0.0-beta.25
