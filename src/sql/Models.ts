@@ -17,6 +17,7 @@ export {
     CalendarShareLinkSQL,
     ContactListSQL,
     ContactSQL,
+    CorrespondentSQL,
     DataExportRequestSQL,
     DataSubjectErasureRequestSQL,
     DistributionListSQL,

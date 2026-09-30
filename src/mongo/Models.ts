@@ -17,6 +17,7 @@ export {
     CalendarShareLinkMongo,
     ContactListMongo,
     ContactMongo,
+    CorrespondentMongo,
     DataExportRequestMongo,
     DataSubjectErasureRequestMongo,
     DistributionListMongo,
