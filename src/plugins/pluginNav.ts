@@ -4,6 +4,13 @@
 ///////////////////////////////////////////////////////////////////////////////
 import { PluginRegistry, type LoadedPlugin, type PluginManifest, type PluginUiNavItem } from "@rapidmx/restapi";
 
+/**
+ * A navigation entry as this server forwards it. `resolveFrom` (an API path the web client's shell requests for the
+ * signed-in user to decide whether, and where, to show the entry) is declared here because the installed
+ * `@rapidmx/restapi` `PluginUiNavItem` may predate it; once restapi has the field the intersection is a no-op.
+ */
+export type PluginNavItem = PluginUiNavItem & { resolveFrom?: string };
+
 /** How a loaded plugin's UI fared this start. */
 export interface LoadedPluginUi {
     /** `built` when the plugin's apps are in this start's UI build, `failed` when they aren't (see `error`). */
@@ -26,9 +33,9 @@ export interface LoadedPluginWithUi extends LoadedPlugin {
 
 /** The navigation entries loaded plugins add to the web client and admin console shells (the shells' `pluginNav` prop). */
 export interface PluginNav {
-    settingsSections: PluginUiNavItem[];
-    adminNav: PluginUiNavItem[];
-    appRail: PluginUiNavItem[];
+    settingsSections: PluginNavItem[];
+    adminNav: PluginNavItem[];
+    appRail: PluginNavItem[];
 }
 
 const NAV_LISTS: (keyof PluginNav)[] = ["settingsSections", "adminNav", "appRail"];
@@ -40,15 +47,21 @@ function isBeneath(href: string, mount: string): boolean {
     return path === base || path.startsWith(`${base}/`);
 }
 
-/** The manifest's navigation entries (only `id`, `label`, `href` and `icon`), leaving out any linking beneath `refusedMounts`. */
+/** The manifest's navigation entries (only `id`, `label`, `href`, `icon` and `resolveFrom`), leaving out any linking beneath `refusedMounts`. */
 export function manifestNav(manifest: PluginManifest | undefined, refusedMounts: string[] = []): PluginNav {
     const nav: PluginNav = { settingsSections: [], adminNav: [], appRail: [] };
     for (const list of NAV_LISTS) {
-        for (const item of manifest?.ui?.[list] ?? []) {
+        for (const item of (manifest?.ui?.[list] ?? []) as PluginNavItem[]) {
             if (refusedMounts.some((mount) => isBeneath(item.href, mount))) {
                 continue;
             }
-            nav[list].push({ id: item.id, label: item.label, href: item.href, ...(item.icon ? { icon: item.icon } : {}) });
+            nav[list].push({
+                id: item.id,
+                label: item.label,
+                href: item.href,
+                ...(item.icon ? { icon: item.icon } : {}),
+                ...(typeof item.resolveFrom === "string" && item.resolveFrom ? { resolveFrom: item.resolveFrom } : {}),
+            });
         }
     }
     return nav;

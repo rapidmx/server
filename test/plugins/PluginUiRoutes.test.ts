@@ -175,6 +175,35 @@ describe("PluginUiRoutes", () => {
             PluginRegistry.setLoaded([]);
         }
     });
+
+    it("forwards an entry's resolveFrom when it is a non-empty string, and drops it otherwise", () => {
+        // Cast: the installed restapi's `PluginUiNavItem` may not declare `resolveFrom` yet.
+        const manifest: any = {
+            apiVersion: 1,
+            displayName: "x",
+            ui: {
+                appRail: [
+                    { id: "meet", label: "Meet", href: "/meet", icon: "HiOutlineVideoCamera", resolveFrom: "/mail/video-meetings/personal-room" },
+                    { id: "plain", label: "Plain", href: "/plain" },
+                    { id: "empty", label: "Empty", href: "/empty", resolveFrom: "" },
+                    { id: "bad", label: "Bad", href: "/bad", resolveFrom: 42 },
+                ],
+                settingsSections: [{ id: "s", label: "S", href: "/settings/s", resolveFrom: "/mail/s" }],
+            },
+        };
+        expect(manifestNav(manifest)).toEqual({
+            settingsSections: [{ id: "s", label: "S", href: "/settings/s", resolveFrom: "/mail/s" }],
+            adminNav: [],
+            appRail: [
+                { id: "meet", label: "Meet", href: "/meet", icon: "HiOutlineVideoCamera", resolveFrom: "/mail/video-meetings/personal-room" },
+                { id: "plain", label: "Plain", href: "/plain" },
+                { id: "empty", label: "Empty", href: "/empty" },
+                { id: "bad", label: "Bad", href: "/bad" },
+            ],
+        });
+        // Still refused beneath a refused mount.
+        expect(manifestNav(manifest, ["/meet"]).appRail.map((item) => item.id)).toEqual(["plain", "empty", "bad"]);
+    });
 });
 
 describe("PluginClassLoader with plugin UI", () => {
