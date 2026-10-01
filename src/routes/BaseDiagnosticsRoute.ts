@@ -4,7 +4,7 @@
 import { ObjectDecorators } from "@rapidrest/core";
 import { DocDecorators, RouteDecorators } from "@rapidrest/service-core";
 import { DiagnosticsCollector } from "../diagnostics/DiagnosticsCollector.js";
-import type { DiagnosticsMetrics, DiagnosticsRuntime, DiagnosticsVersions } from "../diagnostics/types.js";
+import type { DiagnosticsInformation, DiagnosticsMetrics, DiagnosticsRuntime, DiagnosticsVersions } from "../diagnostics/types.js";
 
 const { Config } = ObjectDecorators;
 const { Description, Returns, Summary } = DocDecorators;
@@ -12,7 +12,7 @@ const { Auth, Get, RequiresElevation, RequiresTrustedRole } = RouteDecorators;
 
 /**
  * What the admin console's Diagnostics page reads to help troubleshoot a deployment: the server's own versions and
- * installed packages, the other containers' versions and health, the Kubernetes runtime, and live CPU, memory, disk and
+ * installed packages, its environment and configuration (secrets withheld), the other containers' versions and health, the Kubernetes runtime, and live CPU, memory, disk and
  * PVC usage (of the node the server runs on, the namespace's pods and the PVCs the server has mounted). Trusted role and an elevated token only, like the rest of `/api/admin` (`BaseAdminRoute`, whose `/logs`
  * WebSocket the page's log viewer connects to).
  *
@@ -48,6 +48,18 @@ export abstract class BaseDiagnosticsRoute {
     @RequiresTrustedRole()
     public versions(): Promise<DiagnosticsVersions> {
         return this.diagnostics.versions();
+    }
+
+    @Summary("Environment and configuration")
+    @Description(
+        "Returns the server's environment variables and effective configuration. Secret-like and unrecognized environment variables are listed by name only, and secrets in the configuration (passwords, tokens, keys, URL credentials) are withheld: their values are never part of the response."
+    )
+    @Auth(["jwt"])
+    @Get("/information")
+    @Returns([Object])
+    @RequiresTrustedRole()
+    public information(): DiagnosticsInformation {
+        return this.diagnostics.information();
     }
 
     @Summary("Kubernetes runtime")

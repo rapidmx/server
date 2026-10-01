@@ -3,15 +3,29 @@
 ///////////////////////////////////////////////////////////////////////////////
 import os from "node:os";
 import path from "node:path";
+import nconf from "nconf";
 import { DirectorySizer, type SizeDirectory } from "./directorySize.js";
 import { KubeClient, type KubeTransport } from "./KubeClient.js";
 import { buildComponents, collectRuntime, errorMessage, listPods, type ClassifiedPod } from "./kubernetesInfo.js";
 import { collectKubernetesMetrics, ProcessSampler, serverMounts } from "./metrics.js";
+import { describeConfiguration, describeEnvironment } from "./redaction.js";
 import { collectPackages, collectServerInfo, readPackageJson, type PackageJson } from "./serverInfo.js";
-import type { DiagnosticsMetrics, DiagnosticsPackage, DiagnosticsRuntime, DiagnosticsVersions } from "./types.js";
+import type { DiagnosticsInformation, DiagnosticsMetrics, DiagnosticsPackage, DiagnosticsRuntime, DiagnosticsVersions } from "./types.js";
 
 /** How long the installed-packages listing is reused; it only changes when the server is redeployed. */
 const PACKAGES_TTL_MS = 60_000;
+
+/** The merged configuration and the top-level keys the server's defaults declare, as `information()` reads them. */
+export interface ConfigurationSource {
+    tree: unknown;
+    declared: string[];
+}
+
+/** The server's effective configuration: every layer of the shared `nconf` instance that `config.mongo.ts`/`config.sql.ts` set up. */
+function nconfSource(): ConfigurationSource {
+    const defaults = (nconf as unknown as { stores?: Record<string, { store?: object } | undefined> }).stores?.defaults?.store;
+    return { tree: nconf.get(), declared: Object.keys(defaults ?? {}) };
+}
 
 export interface DiagnosticsCollectorOptions {
     /** The directory holding the deployed `package.json` and `node_modules`. */
@@ -20,6 +34,8 @@ export interface DiagnosticsCollectorOptions {
     namespace?: string;
     timeoutMs?: number;
     env?: NodeJS.ProcessEnv;
+    /** Reads the effective configuration. Defaults to the server's `nconf`. */
+    configuration?: () => ConfigurationSource;
     serviceAccountDir?: string;
     transport?: KubeTransport;
     hostname?: () => string;
@@ -90,6 +106,16 @@ export class DiagnosticsCollector {
         } catch (err) {
             return { server, packages, components: buildComponents(undefined), kubernetes: { available: false, reason: errorMessage(err) } };
         }
+    }
+
+    /**
+     * The process environment and the effective configuration with every secret withheld (`redaction.ts`): the values of
+     * secret-like and unrecognized names are not read into the answer at all.
+     */
+    information(): DiagnosticsInformation {
+        const env = this.options.env ?? process.env;
+        const { tree, declared } = (this.options.configuration ?? nconfSource)();
+        return { environment: describeEnvironment(env), configuration: describeConfiguration(tree, env, declared) };
     }
 
     async runtime(): Promise<DiagnosticsRuntime> {

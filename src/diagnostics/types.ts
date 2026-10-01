@@ -3,7 +3,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 
 /**
- * The response shapes of the admin console's Diagnostics page (`GET /api/admin/diagnostics/versions|runtime|metrics`,
+ * The response shapes of the admin console's Diagnostics page (`GET /api/admin/diagnostics/versions|information|runtime|metrics`,
  * routes/BaseDiagnosticsRoute.ts). `@rapidmx/web-client`'s `diagnosticsApi.ts` mirrors them.
  */
 
@@ -81,6 +81,22 @@ export interface DiagnosticsVersions {
     packages: DiagnosticsPackage[];
     components: DiagnosticsComponent[];
     kubernetes: DiagnosticsAvailability;
+}
+
+/**
+ * One environment variable or configuration setting of the Information page. A `redacted` setting has no `value`: the value
+ * is never sent (see `redaction.ts`).
+ */
+export interface DiagnosticsSetting {
+    name: string;
+    value?: string;
+    redacted: boolean;
+}
+
+/** The environment and effective configuration of the server, secrets withheld, each sorted by name. */
+export interface DiagnosticsInformation {
+    environment: DiagnosticsSetting[];
+    configuration: DiagnosticsSetting[];
 }
 
 export type KubernetesDistribution = "k3s" | "rke2" | "eks" | "gke" | "aks" | "kubernetes";

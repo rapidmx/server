@@ -24,14 +24,14 @@ describe.each([
     ["mongo", DiagnosticsRouteMongo],
     ["sql", DiagnosticsRouteSql],
 ])("%s DiagnosticsRoute", (_name, routeClass) => {
-    it("serves versions, runtime and metrics beside /api/admin", () => {
+    it("serves versions, information, runtime and metrics beside /api/admin", () => {
         expect(Reflect.getMetadata("rrst:routePaths", routeClass.prototype)).toContain("/api/admin/diagnostics");
-        expect(declaredMethods(routeClass)).toEqual(expect.arrayContaining(["get /versions", "get /runtime", "get /metrics"]));
+        expect(declaredMethods(routeClass)).toEqual(expect.arrayContaining(["get /versions", "get /information", "get /runtime", "get /metrics"]));
     });
 
     it("needs a JWT, a trusted role and an elevated token on every handler", () => {
         expect(Reflect.getMetadata("rrst:requiresElevation", routeClass.prototype)).toBeDefined();
-        for (const handler of ["versions", "runtime", "metrics"]) {
+        for (const handler of ["versions", "information", "runtime", "metrics"]) {
             const route = Reflect.getMetadata("rrst:route", routeClass.prototype, handler);
             expect(route).toMatchObject({ authStrategies: ["jwt"], authRequired: true, requiresTrustedRole: true });
         }
@@ -45,10 +45,13 @@ describe.each([
             versions: vi.spyOn(DiagnosticsCollector.prototype, "versions").mockResolvedValue("v" as any),
             runtime: vi.spyOn(DiagnosticsCollector.prototype, "runtime").mockResolvedValue("r" as any),
             metrics: vi.spyOn(DiagnosticsCollector.prototype, "metrics").mockResolvedValue("m" as any),
+            information: vi.spyOn(DiagnosticsCollector.prototype, "information").mockReturnValue("i" as any),
         };
         expect(await route.versions()).toBe("v");
         expect(await route.runtime()).toBe("r");
         expect(await route.metrics()).toBe("m");
+        expect(route.information()).toBe("i");
+        expect(spies.information).toHaveBeenCalledOnce();
         expect(spies.versions).toHaveBeenCalledOnce();
         // One collector serves all three, so its samples (CPU rates) carry over between polls.
         expect(route.collector).toBeInstanceOf(DiagnosticsCollector);
