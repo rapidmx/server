@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.31] - 2026-10-01
+
+### Changed
+- Update the auth-server helm dependency to 1.0.0-beta.30
+- Update @rapidmx/web-client to 0.30.0 Swipe to archive or move mail in the All mailboxes views and in search results, and start bulk selection on a phone by pressing and holding a message
+
 ## [1.0.0-beta.30] - 2026-10-01
 
 ### Added
@@ -1092,7 +1098,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed test from .dockerignore, fixing yarn build's lint step failing outright when the build context is missing the test directory its tsconfig.eslint.json requires
 - Removed docker-compose.mail.yml's partial server: service block, since include: only supports merging resources that don't already exist in the including file and hard-errors ("services.server conflicts with imported resource") on a Compose version newer than whatever this had only ever been tested against locally
 
-[Unreleased]: https://github.com/rapidmx/server/compare/v1.0.0-beta.30...HEAD
+[Unreleased]: https://github.com/rapidmx/server/compare/v1.0.0-beta.31...HEAD
+[1.0.0-beta.31]: https://github.com/rapidmx/server/compare/v1.0.0-beta.30...v1.0.0-beta.31
 [1.0.0-beta.30]: https://github.com/rapidmx/server/compare/v1.0.0-beta.29...v1.0.0-beta.30
 [1.0.0-beta.29]: https://github.com/rapidmx/server/compare/v1.0.0-beta.28...v1.0.0-beta.29
 [1.0.0-beta.28]: https://github.com/rapidmx/server/compare/v1.0.0-beta.27...v1.0.0-beta.28
