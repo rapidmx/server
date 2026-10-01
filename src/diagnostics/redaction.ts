@@ -15,10 +15,11 @@ import type { DiagnosticsSetting } from "./types.js";
  * (NODE_ENV, TZ, *_HOST, *_PORT, ...). Every other name is hidden, because an unknown variable can hold anything.
  *
  * Configuration keys are the server's own settings, so they are shown unless the name is secret-like, but a value that is
- * itself shaped like a secret (private key block, JWT) is hidden, and every shown value is scrubbed (`scrubValue`).
+ * itself shaped like a secret (private key block, JWT, `password=...`) is hidden, and every shown value is scrubbed (`scrubValue`).
  *
- * A URL loses its `user:password@` part and the value of any secret-named query parameter. A secret in a URL's path (a
- * webhook) cannot be recognized, so a name containing "webhook" is treated as secret and environment URLs are not allowlisted.
+ * A URL loses its `user:password@` part, and a value with a secret-named `name=value` pair is hidden whole. A secret in a
+ * URL's path (a webhook) cannot be recognized, so a name containing "webhook" is treated as secret and environment URLs are
+ * not allowlisted.
  */
 
 /**
@@ -54,8 +55,27 @@ const SECRET_VALUE = /-----BEGIN [A-Z0-9 ]*(PRIVATE KEY|CERTIFICATE)|\beyJ[\w-]{
  */
 const URL_SCHEME = /(?<![a-z0-9+.-])[a-z][a-z0-9+.-]*:\/\//gi;
 
-/** `?name=value` / `&name=value` pairs whose name is secret-like. */
-const SECRET_QUERY_PARAM = /([?&;])([^=&;#\s]*)=([^&;#\s]*)/g;
+/**
+ * A `name=value` pair (a query parameter, a connection-string setting, a cookie): the name starts the value or follows one of
+ * `? & ; , #` or whitespace, and is bounded so a long run of delimiters is not rescanned from every position. `value` is
+ * the empty string for an empty value, which holds nothing to hide.
+ */
+const NAME_VALUE_PAIR = /(?<=^|[?&;,#\s])([^=&;,#?\s]{0,128})=([^&;,#\s]?)/g;
+
+/** Secret names beyond `SECRET_NAME` that only occur as a whole word: `Pwd`, `pw`, an Azure SAS `sig`. */
+const SECRET_PAIR_NAME = /(^|[^a-z])(pwd|pw|sig|sas|pat)([^a-z]|$)/i;
+
+/** An opaque credential under any name: `Bearer abc`, `Basic dXNl...`, an `Authorization: ...` header. */
+const OPAQUE_CREDENTIAL = /\b(bearer|basic)\s+\S|\bauthorization\s*[:=]/i;
+
+/**
+ * A `user:password@host` or `//user@host` left in a value that has no `scheme://`. The lead is the start of the value or a
+ * delimiter, and the character classes leave out the delimiters so a long run is not rescanned from every one.
+ */
+const SCHEMELESS_USERINFO = /(?:^|[\s=,;(])(?:(?!mailto:)[^\s@:/?#=,;(]+:[^\s@/]*@\S|\/\/[^\s/@]*@\S)/i;
+
+/** A host with an optional port (or a bracketed IPv6 address): what an authority without userinfo looks like. */
+const PLAIN_AUTHORITY = /^(\[[0-9a-f:.]*\]|[^\s:@]*)(:\d*)?$/i;
 
 /** Longest value sent; anything longer is cut, so one stray blob cannot bloat the response. */
 export const MAX_VALUE_LENGTH = 1000;
@@ -67,18 +87,25 @@ export const MAX_VALUE_LENGTH = 1000;
 const MAX_SCRUBBED_LENGTH = MAX_VALUE_LENGTH * 10;
 
 /**
- * `rest` is what follows a `scheme://`: the part up to the last `@` of its whitespace-free run is the userinfo (a password may
- * legally hold `@`, `/` and `?`) and is removed. Whitespace inside the authority makes the userinfo's end unknowable, so
- * when an `@` follows that whitespace the value is hidden whole (`undefined`).
+ * `tail` is what follows a `scheme://`, up to the end of the value, and `nextStart` is where the next URL in it begins. Only
+ * the authority, the part up to the first `/`, `?`, `#` or whitespace, can hold userinfo, so an `@` in a path or query
+ * (`/@scope/pkg`, `?to=a@b.c`) is left alone. The userinfo is what precedes the authority's last `@` (a password may legally hold `@`) and is removed.
+ *
+ * A password may also hold `/`, `?`, `#`, whitespace or even `://`, which ends the authority early and leaves the start of
+ * the password in what looks like the host. So an authority that is not a plain host and port, with an `@` anywhere after
+ * it, has an unknowable extent and the value is hidden whole (`undefined`), as is one with another `scheme://` inside it.
  */
-function stripUserinfo(rest: string): string | undefined {
-    const authority = rest.slice(0, rest.search(/[/?#]|$/));
-    const space = authority.search(/\s/);
-    if (space >= 0 && rest.indexOf("@", space) >= 0) {
+function stripUserinfo(tail: string, nextStart: number): string | undefined {
+    const end = tail.search(/[/?#\s]|$/);
+    if (nextStart < end) {
         return undefined;
     }
-    const run = rest.slice(0, rest.search(/\s|$/));
-    return rest.slice(run.lastIndexOf("@") + 1);
+    const authority = tail.slice(0, end);
+    const at = authority.lastIndexOf("@");
+    if (at < 0) {
+        return PLAIN_AUTHORITY.test(authority) || tail.indexOf("@", end) < 0 ? tail.slice(0, nextStart) : undefined;
+    }
+    return tail.slice(at + 1, nextStart);
 }
 
 /** `value` without the credentials of any URL in it, or `undefined` when they cannot be told apart from the rest. */
@@ -88,7 +115,8 @@ function stripUrlCredentials(value: string): string | undefined {
     for (let i = 0; i < starts.length; i++) {
         const head = starts[i];
         const from = head.index + head[0].length;
-        const rest = stripUserinfo(value.slice(from, starts[i + 1]?.index ?? value.length));
+        const next = starts[i + 1]?.index ?? value.length;
+        const rest = stripUserinfo(value.slice(from), next - from);
         if (rest === undefined) {
             return undefined;
         }
@@ -97,19 +125,30 @@ function stripUrlCredentials(value: string): string | undefined {
     return out;
 }
 
+/** Whether a `name=value` pair in `value` has a secret-like name and a non-empty value. */
+function hasSecretPair(value: string): boolean {
+    for (const match of value.matchAll(NAME_VALUE_PAIR)) {
+        if (match[2] !== "" && (isSecretName(match[1]) || SECRET_PAIR_NAME.test(match[1]))) {
+            return true;
+        }
+    }
+    return false;
+}
+
 /**
- * The text that may be shown for `value`, or `undefined` when the whole value has to be hidden. URL credentials and secret
- * query parameters are removed; a value shaped like a private key or a JWT is hidden entirely.
+ * The text that may be shown for `value`, or `undefined` when the whole value has to be hidden. A value is either shown
+ * exactly or hidden whole, never partly scrubbed: the credentials of a URL are removed only where their extent is certain,
+ * and a value that holds a secret-named pair (`password=...`), a `Bearer`/`Basic` token, a private key or a JWT, or a
+ * `user:password@host` it cannot place, is hidden entirely.
  */
 export function scrubValue(value: string): string | undefined {
-    if (value.length > MAX_SCRUBBED_LENGTH || SECRET_VALUE.test(value)) {
+    if (value.length > MAX_SCRUBBED_LENGTH || SECRET_VALUE.test(value) || OPAQUE_CREDENTIAL.test(value) || hasSecretPair(value)) {
         return undefined;
     }
-    let scrubbed = stripUrlCredentials(value);
-    if (scrubbed === undefined) {
+    const scrubbed = stripUrlCredentials(value);
+    if (scrubbed === undefined || SCHEMELESS_USERINFO.test(scrubbed)) {
         return undefined;
     }
-    scrubbed = scrubbed.replace(SECRET_QUERY_PARAM, (match, sep: string, name: string) => (isSecretName(name) ? `${sep}${name}=` : match));
     return scrubbed.length > MAX_VALUE_LENGTH ? `${scrubbed.slice(0, MAX_VALUE_LENGTH)}...` : scrubbed;
 }
 
@@ -161,7 +200,13 @@ function flatten(node: unknown, prefix: string, depth: number, seen: Set<unknown
         return;
     }
     seen.add(node);
-    const entries = Array.isArray(node) ? node.map((item, index) => [String(index), item] as const) : Object.entries(node);
+    // Only as many entries as the budget still lists are read, so a huge array or object is not materialised whole.
+    const budget = MAX_SETTINGS - out.length;
+    const entries = Array.isArray(node)
+        ? node.slice(0, budget).map((item, index) => [String(index), item] as const)
+        : Object.keys(node)
+              .slice(0, budget)
+              .map((key) => [key, (node as Record<string, unknown>)[key]] as const);
     if (entries.length === 0) {
         out.push(shown(prefix, Array.isArray(node) ? "[]" : "{}"));
     }

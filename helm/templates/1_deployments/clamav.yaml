@@ -1,13 +1,20 @@
 ---
 # Anti-virus scanning (AvScanProvider) - see ClamAvScanProvider. clamd's signature database can take a
 # few minutes to load on first start; the provider fails closed (quarantines) until it's ready - see the
-# generous resources.requests default in values.yaml.
+# generous resources.requests default in values.yaml. clamd only listens once the signatures are loaded, so the probes watch its
+# port: a new pod is not ready (and the old one is kept, see the strategy) until it can scan, and the startup probe gives it
+# time to load before the readiness one applies. The timings are mail.clamav.startupProbe / readinessProbe.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: clamav
 spec:
   replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
   selector:
     matchLabels:
       app: clamav
@@ -21,5 +28,13 @@ spec:
           image: {{ $.Values.mail.clamav.image.registry }}/{{ $.Values.mail.clamav.image.repository }}:{{ $.Values.mail.clamav.image.tag }}
           ports:
             - containerPort: 3310
+          startupProbe:
+            tcpSocket:
+              port: 3310
+            {{- toYaml $.Values.mail.clamav.startupProbe | nindent 12 }}
+          readinessProbe:
+            tcpSocket:
+              port: 3310
+            {{- toYaml $.Values.mail.clamav.readinessProbe | nindent 12 }}
           resources:
             {{- toYaml $.Values.mail.clamav.resources | nindent 12 }}

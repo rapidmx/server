@@ -430,6 +430,16 @@ mail:
       requests:
         cpu: 200m
         memory: 1Gi
+    # clamd listens only once its signature database is loaded, which takes minutes, and the AV provider quarantines mail until
+    # it answers. The startup probe allows failureThreshold x periodSeconds (about 10 minutes) for that; the readiness probe
+    # then takes the pod out of service if clamd stops listening. A rollout keeps the old pod until the new one is ready.
+    startupProbe:
+      periodSeconds: 10
+      failureThreshold: 60
+    readinessProbe:
+      periodSeconds: 10
+      timeoutSeconds: 5
+      failureThreshold: 3
 # A TURN server (coturn) for the Video Conferencing plugin. Calls go directly between participants when they can, and through a
 # TURN server when a firewall or NAT stops that; without one, a participant behind such a network can't join. The plugin's
 # TURN settings (mail:videoconf:turn:*) are filled in from this section, so the plugin works as installed. A value an

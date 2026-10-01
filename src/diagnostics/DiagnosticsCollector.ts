@@ -4,6 +4,7 @@
 import os from "node:os";
 import path from "node:path";
 import nconf from "nconf";
+import { PLUGIN_SETTINGS_STORE } from "../config.defaults.js";
 import { DirectorySizer, type SizeDirectory } from "./directorySize.js";
 import { KubeClient, type KubeTransport } from "./KubeClient.js";
 import { buildComponents, collectRuntime, errorMessage, listPods, type ClassifiedPod } from "./kubernetesInfo.js";
@@ -23,8 +24,9 @@ export interface ConfigurationSource {
 
 /** The server's effective configuration: every layer of the shared `nconf` instance that `config.mongo.ts`/`config.sql.ts` set up. */
 function nconfSource(): ConfigurationSource {
-    const defaults = (nconf as unknown as { stores?: Record<string, { store?: object } | undefined> }).stores?.defaults?.store;
-    return { tree: nconf.get(), declared: Object.keys(defaults ?? {}) };
+    const stores = (nconf as unknown as { stores?: Record<string, { store?: object } | undefined> }).stores;
+    // A setting saved on a plugin is the server's own, not a copy of an environment variable, even when one starts with its key.
+    return { tree: nconf.get(), declared: [...Object.keys(stores?.defaults?.store ?? {}), ...Object.keys(stores?.[PLUGIN_SETTINGS_STORE]?.store ?? {})] };
 }
 
 export interface DiagnosticsCollectorOptions {

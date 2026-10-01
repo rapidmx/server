@@ -145,8 +145,24 @@ describe("BaseMailComposeRoute.assembleRaw() Tests (mocked collaborators)", () =
     });
 
     it("rejects when the draft already has file attachments uploaded", async () => {
-        const route = buildRoute({ attachmentRepo: { count: vi.fn().mockResolvedValue(2) } });
+        const file = { uid: "f1", isInline: false };
+        const route = buildRoute({ attachmentRepo: { count: vi.fn().mockResolvedValue(2), find: vi.fn().mockResolvedValue([file, file]) } });
         await expect(route.assembleRaw("m1", validInput, user)).rejects.toThrow(/cannot include file attachments/i);
+    });
+
+    it("ignores an inline image the user pasted and then deleted from the body, which has no chip to remove", async () => {
+        const inline = { uid: "a1", isInline: true, contentId: "a1@cid" };
+        const route = buildRoute({ attachmentRepo: { count: vi.fn().mockResolvedValue(1), find: vi.fn().mockResolvedValue([inline]) } });
+        await expect(route.assembleRaw("m1", validInput, user)).resolves.toBeDefined();
+    });
+
+    it("still rejects an inline image the raw MIME refers to", async () => {
+        const inline = { uid: "a1", isInline: true, contentId: "a1@cid" };
+        const route = buildRoute({ attachmentRepo: { count: vi.fn().mockResolvedValue(1), find: vi.fn().mockResolvedValue([inline]) } });
+        await expect(route.assembleRaw("m1", { ...validInput, rawMime: `${rawMime}
+<img src="cid:a1@cid">` }, user)).rejects.toThrow(
+            /cannot include file attachments/i,
+        );
     });
 
     it("stores the raw MIME source byte-for-byte and updates the message with server-derived from/recipients", async () => {
@@ -798,6 +814,13 @@ describe("BaseMailComposeRoute.assemble() inline attachments", () => {
         const odd = { isInline: true, contentId: "a+b(1)[x]@cid" };
         expect(referencedAttachments('<img src="cid:a+b(1)[x]@cid">', [odd])).toEqual([odd]);
         expect(referencedAttachments('<img src="cid:aab1x@cid">', [odd])).toEqual([]);
+    });
+
+    it("tells content ids of different lengths apart in one pass over a large body", () => {
+        const [short, long, absent] = [{ isInline: true, contentId: "ab" }, { isInline: true, contentId: "<ABC>" }, { isInline: true, contentId: "abd" }];
+        const html = `${"<p>x</p>".repeat(100_000)}<img src="cid:ab"><img src="cid:<abc>">`;
+        expect(referencedAttachments(html, [short, long, absent])).toEqual([short, long]);
+        expect(referencedAttachments('<img src="cid:abc">', [short, long])).toEqual([long]);
     });
 
     it("drops an inline image the HTML no longer references and reports no attachments", async () => {

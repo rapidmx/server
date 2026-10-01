@@ -1,6 +1,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 ///////////////////////////////////////////////////////////////////////////////
+import nconf from "nconf";
 import { DiagnosticsCollector } from "../../src/diagnostics/DiagnosticsCollector.js";
 import {
     describeConfiguration,
@@ -62,7 +63,8 @@ describe("scrubValue", () => {
     it("strips the credentials of a URL", () => {
         expect(scrubValue("mongodb://admin:urlpass-secret@db:27017/mail")).toBe("mongodb://db:27017/mail");
         expect(scrubValue("https://token-only@example.com/x")).toBe("https://example.com/x");
-        expect(scrubValue("redis://user:pa/ss@cache:6379")).toBe("redis://cache:6379");
+        // A password holding `/` ends the authority early, so where the credential stops is unknowable: hidden whole.
+        expect(scrubValue("redis://user:pa/ss@cache:6379")).toBeUndefined();
     });
 
     it("strips everything up to the last @ of the authority, so a password holding @ is not half-shown", () => {
@@ -85,8 +87,8 @@ describe("scrubValue", () => {
         expect(scrubValue("no url here, a@b.test")).toBe("no url here, a@b.test");
     });
 
-    it("scrubs credentials and secret query parameters together", () => {
-        expect(scrubValue("redis://:p@ss@host/0?password=query-param-secret&db=1")).toBe("redis://host/0?password=&db=1");
+    it("hides the whole value of a URL holding credentials and a secret query parameter", () => {
+        expect(scrubValue("redis://:p@ss@host/0?password=query-param-secret&db=1")).toBeUndefined();
     });
 
     it("hides a value too long to scrub safely, and does so in linear time", () => {
@@ -100,8 +102,8 @@ describe("scrubValue", () => {
         expect(Date.now() - near).toBeLessThan(500);
     });
 
-    it("strips the value of a secret-named query parameter and keeps the others", () => {
-        expect(scrubValue("https://x.test/cb?mode=a&api_key=query-param-secret&b=2")).toBe("https://x.test/cb?mode=a&api_key=&b=2");
+    it("hides the whole value of a URL with a secret-named query parameter, not just that parameter", () => {
+        expect(scrubValue("https://x.test/cb?mode=a&api_key=query-param-secret&b=2")).toBeUndefined();
     });
 
     it("hides a private key block or a JWT entirely", () => {
@@ -114,6 +116,81 @@ describe("scrubValue", () => {
         expect(scrubValue("plain value")).toBe("plain value");
         const cut = scrubValue("x".repeat(MAX_VALUE_LENGTH + 50));
         expect(cut).toBe(`${"x".repeat(MAX_VALUE_LENGTH)}...`);
+    });
+});
+
+describe("scrubValue: round-2 findings", () => {
+    it("never lets an @ in a URL's path or query cut the host (R2S-1)", () => {
+        for (const url of [
+            "https://registry.npmjs.org/@scope/pkg",
+            "https://medium.com/@user/post",
+            "https://h/?redirect=a@b.c",
+            "https://h:8080/x#a@b",
+            "http://[::1]:8080/@x",
+        ]) {
+            expect(scrubValue(url)).toBe(url);
+        }
+        expect(scrubValue("https://u:p@h/@scope/pkg")).toBe("https://h/@scope/pkg");
+    });
+
+    it("hides the whole value of a secret-named pair, wherever it stands (R2S-2)", () => {
+        for (const value of [
+            "Password=abc;Server=x",
+            "Server=x;Pwd=abc",
+            "Server=x;pw=abc",
+            "https://h/blob?sv=1&sig=abc%3D",
+            ";Password=my pass;",
+            "https://h/?x=1#password=abc",
+            "https://h/?password=ab&cd",
+            "x=1,secret=abc",
+            "api-key=abc",
+        ]) {
+            expect(scrubValue(value)).toBeUndefined();
+        }
+        // An empty value holds nothing to hide.
+        expect(scrubValue("https://h/?password=&db=1")).toBe("https://h/?password=&db=1");
+    });
+
+    it("hides the whole value when a credential's extent cannot be told (R2S-2)", () => {
+        for (const value of [
+            "postgres://user:pa://x@host/db",
+            "x://u:pa/ss word@h",
+            "redis://user:pa/ss@cache:6379",
+            "user:pass@host:5432/db",
+            "//user:pw@host/x",
+            "db=user:pass@host:5432/db",
+            "Bearer abc123",
+            "Basic dXNlcjpwdw==",
+            "Authorization: token",
+        ]) {
+            expect(scrubValue(value)).toBeUndefined();
+        }
+    });
+
+    it.each([
+        "db.example.com",
+        "https://example.com/path?x=1",
+        "1.2.3",
+        "true",
+        "a1b2",
+        "us-east-1",
+        "admin@example.com",
+        "mailto:admin@example.com",
+        "From: a@b.test",
+        "mongodb://db:27017/mail",
+        "sslmode=require",
+        "a,b,c",
+    ])("leaves %s visible", (value) => {
+        expect(scrubValue(value)).toBe(value);
+    });
+
+    it("scrubs in linear time (R2S-3)", () => {
+        for (const filler of ["?", "a", "&", "a b ", "=", ",", ":", "x://", "a:"]) {
+            const value = filler.repeat(Math.floor(9000 / filler.length));
+            const started = Date.now();
+            scrubValue(value);
+            expect(Date.now() - started).toBeLessThan(30);
+        }
     });
 });
 
@@ -208,7 +285,7 @@ describe("describeConfiguration", () => {
         expect(byName["datastores:mongo:host"].value).toBe("db");
         expect(byName["mail:transport:host"].value).toBe("mx");
         expect(byName["mail:origins:0"].value).toBe("https://a.example.com");
-        expect(byName["mail:origins:1"].value).toBe("https://b.example.com?token=");
+        expect(byName["mail:origins:1"]).toEqual({ name: "mail:origins:1", redacted: true });
         expect(byName["mail:empty"].value).toBe("[]");
         expect(byName["mail:none"].value).toBe("{}");
         expect(byName["mail:callback"]).toEqual({ name: "mail:callback", redacted: true });
@@ -259,6 +336,27 @@ describe("describeConfiguration", () => {
         expect(describeConfiguration(undefined, {})).toEqual([]);
         expect(describeConfiguration("text", {})).toEqual([]);
         expect(describeConfiguration(null, {})).toEqual([]);
+    });
+
+    it("reads no more of an array than it can list (R2S-3)", () => {
+        let reads = 0;
+        const items = new Proxy(Array.from({ length: 20_000 }, (_, i) => i), {
+            get(target, key, receiver) {
+                if (typeof key === "string" && /^\d+$/.test(key)) {
+                    reads++;
+                }
+                return Reflect.get(target, key, receiver);
+            },
+        });
+        expect(describeConfiguration({ items }, {})).toHaveLength(5000);
+        expect(reads).toBeLessThanOrEqual(5000);
+    });
+
+    it("keeps a top-level key the plugin settings layer holds, even when an environment variable starts with it (R2S-4)", () => {
+        const env = { CRM__ENDPOINT: "https://crm.example.com", DB__HOST: "x" };
+        const tree = { crm: { endpoint: "https://crm.example.com/v2", region: "eu" }, db: { host: "x" } };
+        expect(describeConfiguration(tree, env, []).map((s) => s.name)).toEqual([]);
+        expect(describeConfiguration(tree, env, ["crm"]).map((s) => s.name)).toEqual(["crm:endpoint", "crm:region"]);
     });
 
     it("guards against a cycle, a tree that is too deep and one that is too large", () => {
@@ -320,6 +418,18 @@ describe("DiagnosticsCollector.information", () => {
             } else {
                 process.env.RAPIDMX_TEST_PASSWORD = previous;
             }
+        }
+    });
+
+    it("lists what the plugin settings layer holds even when an environment variable starts with its key (R2S-4)", () => {
+        process.env.RAPIDMX_TESTPLUGIN__REGION = "eu";
+        nconf.add("plugins", { type: "literal", store: { rapidmx_testplugin: { region: "us" } } });
+        try {
+            const names = new DiagnosticsCollector().information().configuration.map((s) => s.name);
+            expect(names).toContain("rapidmx_testplugin:region");
+        } finally {
+            nconf.remove("plugins");
+            delete process.env.RAPIDMX_TESTPLUGIN__REGION;
         }
     });
 });

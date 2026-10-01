@@ -347,15 +347,23 @@ export function rewriteInlineImageSources(html: string, attachments: { uid: stri
  * can delete the image from the body afterwards and never sees it as a chip, so it would otherwise still be sent.
  */
 export function referencedAttachments<T extends { isInline?: boolean; contentId?: string }>(html: string, attachments: T[]): T[] {
-    return attachments.filter((attachment) => {
-        const id = attachment.contentId?.replace(/^<|>$/g, "");
-        if (!attachment.isInline || !id) {
-            return true;
+    const ids = attachments.map((attachment) => (attachment.isInline ? attachment.contentId?.replace(/^<|>$/g, "").toLowerCase() : undefined));
+    const lengths = new Set<number>(ids.filter((id): id is string => !!id).map((id) => id.length));
+    // One pass over the HTML: every `cid:` in it, and the content ids (of the lengths wanted) that start right after it.
+    const referenced = new Set<string>();
+    if (lengths.size > 0) {
+        const lower = html.toLowerCase();
+        for (const match of lower.matchAll(/cid:<?/g)) {
+            const from = match.index + match[0].length;
+            for (const length of lengths) {
+                // Not followed by another id character, so `cid:a1` is not found in `cid:a1@other`.
+                if (!/[a-z0-9._@%+-]/.test(lower.charAt(from + length))) {
+                    referenced.add(lower.substr(from, length));
+                }
+            }
         }
-        const escaped = id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-        // Not followed by another id character, so `cid:a1` is not found in `cid:a1@other`.
-        return new RegExp(`cid:<?${escaped}(?![A-Za-z0-9._@%+-])`, "i").test(html);
-    });
+    }
+    return attachments.filter((_, index) => !ids[index] || referenced.has(ids[index]));
 }
 
 /**
@@ -769,8 +777,14 @@ export abstract class BaseMailComposeRoute<M extends Message, A extends Attachme
         // them as additional MIME parts before signing/encrypting, which crypto/smimeMessage.ts doesn't
         // build today) - reject rather than silently proceeding with a draft the user thinks includes
         // files it doesn't, if they uploaded any via the ordinary attachment-upload endpoint first.
+        // An inline image the user pasted and then deleted has no chip to remove and is not sent, so only a record the message
+        // still carries counts (the same rule `assemble()` applies); the records are read only when there are any.
         const attachmentCount = await this.attachmentRepo!.count({ messageUid: message.uid } as any, { ignoreACL: true });
-        if (attachmentCount > 0) {
+        const carried =
+            attachmentCount > 0
+                ? referencedAttachments(body.rawMime, await this.attachmentRepo!.find({ messageUid: message.uid }, { ignoreACL: true, limit: 1000 }))
+                : [];
+        if (carried.length > 0) {
             throw new ApiError(
                 ApiErrors.INVALID_REQUEST,
                 400,
