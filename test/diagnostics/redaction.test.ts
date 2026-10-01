@@ -65,6 +65,41 @@ describe("scrubValue", () => {
         expect(scrubValue("redis://user:pa/ss@cache:6379")).toBe("redis://cache:6379");
     });
 
+    it("strips everything up to the last @ of the authority, so a password holding @ is not half-shown", () => {
+        expect(scrubValue("redis://:p@ss@host:6379/0")).toBe("redis://host:6379/0");
+        expect(scrubValue("redis://u:p@ss@@host:6379")).toBe("redis://host:6379");
+    });
+
+    it("hides the whole value when the userinfo holds whitespace", () => {
+        expect(scrubValue("postgres://u:pa ss@host/db")).toBeUndefined();
+        expect(scrubValue("postgres://u:pa ss/x@host/db")).toBeUndefined();
+        // Whitespace after the authority is not userinfo.
+        expect(scrubValue("https://example.com/a b")).toBe("https://example.com/a b");
+    });
+
+    it("scrubs every URL of a value and leaves a URL without credentials intact", () => {
+        expect(scrubValue("a=mongodb://u:p1@h1/x b=redis://:p@2@h2:6379 c=https://example.com:8080/path?x=1#f")).toBe(
+            "a=mongodb://h1/x b=redis://h2:6379 c=https://example.com:8080/path?x=1#f"
+        );
+        expect(scrubValue("https://example.com/path")).toBe("https://example.com/path");
+        expect(scrubValue("no url here, a@b.test")).toBe("no url here, a@b.test");
+    });
+
+    it("scrubs credentials and secret query parameters together", () => {
+        expect(scrubValue("redis://:p@ss@host/0?password=query-param-secret&db=1")).toBe("redis://host/0?password=&db=1");
+    });
+
+    it("hides a value too long to scrub safely, and does so in linear time", () => {
+        const started = Date.now();
+        expect(scrubValue("a".repeat(200_000))).toBeUndefined();
+        expect(scrubValue("?".repeat(200_000))).toBeUndefined();
+        expect(Date.now() - started).toBeLessThan(500);
+        // A long run of scheme characters just under the cap is scanned in linear time as well.
+        const near = Date.now();
+        expect(scrubValue("a".repeat(MAX_VALUE_LENGTH * 10))).toBe(`${"a".repeat(MAX_VALUE_LENGTH)}...`);
+        expect(Date.now() - near).toBeLessThan(500);
+    });
+
     it("strips the value of a secret-named query parameter and keeps the others", () => {
         expect(scrubValue("https://x.test/cb?mode=a&api_key=query-param-secret&b=2")).toBe("https://x.test/cb?mode=a&api_key=&b=2");
     });
@@ -195,6 +230,29 @@ describe("describeConfiguration", () => {
         const env = { PATH: "/usr/bin", max_body_size: "5" };
         const result = describeConfiguration({ PATH: "/usr/bin", max_body_size: 5, nested: { PATH: "x" } }, env, ["max_body_size"]);
         expect(result.map((s) => s.name)).toEqual(["max_body_size", "nested:PATH"]);
+    });
+
+    it("drops a top-level key that is an environment variable whatever its value parses to", () => {
+        const env = { DB_CONFIG: '{"u":"admin","p":"hunter2"}', FOO__BAR: "secretvalue", Mixed_Case: "x", datastores__cache__type: "redis" };
+        const result = describeConfiguration(
+            {
+                DB_CONFIG: { u: "admin", p: "hunter2" },
+                FOO: { BAR: "secretvalue" },
+                mixed_case: { a: "b" },
+                datastores: { cache: { type: "redis" } },
+                service_name: "rapidmx",
+            },
+            env,
+            ["datastores", "service_name"]
+        );
+        expect(result.map((s) => s.name)).toEqual(["datastores:cache:type", "service_name"]);
+        expect(JSON.stringify(result)).not.toContain("hunter2");
+        expect(JSON.stringify(result)).not.toContain("secretvalue");
+    });
+
+    it("keeps a declared key that is also an environment variable name", () => {
+        const result = describeConfiguration({ service: { name: "a" } }, { SERVICE__NAME: "a" }, ["service"]);
+        expect(result.map((s) => s.name)).toEqual(["service:name"]);
     });
 
     it("answers nothing for a configuration that is not an object", () => {

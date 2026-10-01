@@ -49,10 +49,10 @@ const SHOWN_ENVIRONMENT: RegExp[] = [
 const SECRET_VALUE = /-----BEGIN [A-Z0-9 ]*(PRIVATE KEY|CERTIFICATE)|\beyJ[\w-]{5,}\.[\w-]{5,}\.[\w-]*/;
 
 /**
- * `scheme://user:password@` (also `user@` alone): the credentials of a URL. Everything up to the last `@` of the run is taken,
- * so a password holding an unescaped `/` or `?` is removed whole rather than half-shown.
+ * The start of a URL: `scheme://`. The lookbehind makes only the first character of a run of scheme characters a candidate
+ * start, so a long unbroken run is scanned once, not once per character.
  */
-const URL_CREDENTIALS = /([a-z][a-z0-9+.-]*:\/\/)[^\s@]*@/gi;
+const URL_SCHEME = /(?<![a-z0-9+.-])[a-z][a-z0-9+.-]*:\/\//gi;
 
 /** `?name=value` / `&name=value` pairs whose name is secret-like. */
 const SECRET_QUERY_PARAM = /([?&;])([^=&;#\s]*)=([^&;#\s]*)/g;
@@ -61,14 +61,54 @@ const SECRET_QUERY_PARAM = /([?&;])([^=&;#\s]*)=([^&;#\s]*)/g;
 export const MAX_VALUE_LENGTH = 1000;
 
 /**
+ * Longest value that is scrubbed at all. A longer one is hidden whole rather than cut first: cutting before scrubbing could
+ * leave the start of a credential whose `@` fell past the cut.
+ */
+const MAX_SCRUBBED_LENGTH = MAX_VALUE_LENGTH * 10;
+
+/**
+ * `rest` is what follows a `scheme://`: the part up to the last `@` of its whitespace-free run is the userinfo (a password may
+ * legally hold `@`, `/` and `?`) and is removed. Whitespace inside the authority makes the userinfo's end unknowable, so
+ * when an `@` follows that whitespace the value is hidden whole (`undefined`).
+ */
+function stripUserinfo(rest: string): string | undefined {
+    const authority = rest.slice(0, rest.search(/[/?#]|$/));
+    const space = authority.search(/\s/);
+    if (space >= 0 && rest.indexOf("@", space) >= 0) {
+        return undefined;
+    }
+    const run = rest.slice(0, rest.search(/\s|$/));
+    return rest.slice(run.lastIndexOf("@") + 1);
+}
+
+/** `value` without the credentials of any URL in it, or `undefined` when they cannot be told apart from the rest. */
+function stripUrlCredentials(value: string): string | undefined {
+    const starts = [...value.matchAll(URL_SCHEME)];
+    let out = value.slice(0, starts[0]?.index ?? value.length);
+    for (let i = 0; i < starts.length; i++) {
+        const head = starts[i];
+        const from = head.index + head[0].length;
+        const rest = stripUserinfo(value.slice(from, starts[i + 1]?.index ?? value.length));
+        if (rest === undefined) {
+            return undefined;
+        }
+        out += head[0] + rest;
+    }
+    return out;
+}
+
+/**
  * The text that may be shown for `value`, or `undefined` when the whole value has to be hidden. URL credentials and secret
  * query parameters are removed; a value shaped like a private key or a JWT is hidden entirely.
  */
 export function scrubValue(value: string): string | undefined {
-    if (SECRET_VALUE.test(value)) {
+    if (value.length > MAX_SCRUBBED_LENGTH || SECRET_VALUE.test(value)) {
         return undefined;
     }
-    let scrubbed = value.replace(URL_CREDENTIALS, "$1");
+    let scrubbed = stripUrlCredentials(value);
+    if (scrubbed === undefined) {
+        return undefined;
+    }
     scrubbed = scrubbed.replace(SECRET_QUERY_PARAM, (match, sep: string, name: string) => (isSecretName(name) ? `${sep}${name}=` : match));
     return scrubbed.length > MAX_VALUE_LENGTH ? `${scrubbed.slice(0, MAX_VALUE_LENGTH)}...` : scrubbed;
 }
@@ -140,7 +180,9 @@ function flatten(node: unknown, prefix: string, depth: number, seen: Set<unknown
  * The effective configuration (every nconf layer merged: arguments, environment, runtime and plugin settings, defaults),
  * flattened and sorted. The merged tree also holds every environment variable as a top-level key of its own name (nconf's env
  * layer); those are what the Environment list already covers, under its stricter allowlist, so a scalar top-level key that is
- * an environment variable and not one of the `declared` defaults is dropped rather than shown twice and unfiltered.
+ * an environment variable and not one of the `declared` defaults is dropped rather than shown twice and unfiltered. That holds
+ * whatever the value: `parseValues` turns a JSON value into an object, and the `__` separator turns `FOO__BAR` into a
+ * `FOO` subtree, so a key is also dropped when it is the first segment of an environment name. Names compare case-insensitively.
  *
  * @param tree The merged configuration object.
  * @param env The process environment.
@@ -152,13 +194,13 @@ export function describeConfiguration(tree: unknown, env: NodeJS.ProcessEnv, dec
         return out;
     }
     const known = new Set(declared);
+    const environment = new Set(Object.keys(env).map((name) => name.split("__")[0].toLowerCase()));
     for (const [key, child] of Object.entries(tree as Record<string, unknown>)) {
         // `_` and `$0` are the command line's positional arguments and script, not settings.
         if (key === "_" || key === "$0") {
             continue;
         }
-        const isEnvironmentCopy = env[key] !== undefined && !known.has(key) && (child === null || typeof child !== "object");
-        if (isEnvironmentCopy) {
+        if (!known.has(key) && environment.has(key.toLowerCase())) {
             continue;
         }
         if (isSecretName(key)) {

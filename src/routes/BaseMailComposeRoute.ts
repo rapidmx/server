@@ -342,6 +342,23 @@ export function rewriteInlineImageSources(html: string, attachments: { uid: stri
 }
 
 /**
+ * The records that belong in the message: every regular attachment, and an inline one (it has a `contentId`) only while
+ * `html` still references `cid:<contentId>`. An inline upload is a record from the moment an image is pasted, but the user
+ * can delete the image from the body afterwards and never sees it as a chip, so it would otherwise still be sent.
+ */
+export function referencedAttachments<T extends { isInline?: boolean; contentId?: string }>(html: string, attachments: T[]): T[] {
+    return attachments.filter((attachment) => {
+        const id = attachment.contentId?.replace(/^<|>$/g, "");
+        if (!attachment.isInline || !id) {
+            return true;
+        }
+        const escaped = id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        // Not followed by another id character, so `cid:a1` is not found in `cid:a1@other`.
+        return new RegExp(`cid:<?${escaped}(?![A-Za-z0-9._@%+-])`, "i").test(html);
+    });
+}
+
+/**
  * Wraps the compose editor's sanitized HTML fragment in a complete document. `sanitizeComposeHtml()` never emits
  * `<html>`/`<head>`/`<body>`, and spam scorers (e.g. mail-tester.com) penalize a text/html part without them.
  */
@@ -531,10 +548,13 @@ export abstract class BaseMailComposeRoute<M extends Message, A extends Attachme
             throw new ApiError(ApiErrors.NOT_FOUND, 404, ApiErrorMessages.NOT_FOUND);
         }
 
-        const attachmentRecords: A[] = await this.attachmentRepo!.find(
+        const allRecords: A[] = await this.attachmentRepo!.find(
             { messageUid: message.uid },
             { ignoreACL: true, limit: 1000 },
         );
+        const html = sanitizeComposeHtml(rewriteInlineImageSources(body.html ?? "", allRecords));
+        // Judged on the HTML that is actually sent (after the rewrite and the sanitizer), so a deleted image is not shipped.
+        const attachmentRecords: A[] = referencedAttachments(html, allRecords);
 
         // Checked against each attachment's already-known `sizeBytes` - deliberately before loading any blob
         // content below, so an oversized draft is rejected without ever buffering its attachments into memory.
@@ -558,8 +578,6 @@ export abstract class BaseMailComposeRoute<M extends Message, A extends Attachme
                 cid: attachment.contentId,
             })),
         );
-
-        const html = sanitizeComposeHtml(rewriteInlineImageSources(body.html ?? "", attachmentRecords));
 
         const fromName: string | undefined = safeFromDisplayName(mailbox.displayName);
         const from = fromName ? { name: fromName, address: mailbox.primarySmtpAddress } : mailbox.primarySmtpAddress;

@@ -18,6 +18,7 @@ import {
     decodeEncodedWords,
     htmlToPlainText,
     parseTopLevelHeaders,
+    referencedAttachments,
     rewriteInlineImageSources,
     safeFromDisplayName,
     sanitizeComposeHtml,
@@ -739,5 +740,102 @@ describe("htmlToPlainText() Tests", () => {
     it("drops tags and script/style content, and never emits markup", () => {
         expect(htmlToPlainText("<style>p{color:red}</style><p>a<b>b</b></p>")).toBe("ab");
         expect(htmlToPlainText("&lt;script&gt;")).toBe("<script>");
+    });
+});
+
+describe("BaseMailComposeRoute.assemble() inline attachments", () => {
+    const mailbox = { uid: "mb1", displayName: "Alice", primarySmtpAddress: "alice@example.com", aliasAddresses: [] };
+    const user = { uid: "u1" } as any;
+    const png = Buffer.from("iVBORw0KGgo=", "base64");
+
+    const record = (uid: string, over: Record<string, unknown> = {}) => ({
+        uid,
+        filename: `${uid}.png`,
+        mimeType: "image/png",
+        blobKey: `att/${uid}`,
+        sizeBytes: png.length,
+        isInline: true,
+        contentId: `${uid}@cid`,
+        ...over,
+    });
+
+    async function assembleWith(records: any[], html: string) {
+        const message = { uid: "m1", version: 3, folderUid: "f1", mailboxUid: "mb1" };
+        const route: any = new (TestMailComposeRoute as any)();
+        route._objectFactory = { newInstance: vi.fn() };
+        route.messageRepo = { findOne: vi.fn().mockResolvedValue(message), update: vi.fn().mockResolvedValue(message), count: vi.fn().mockResolvedValue(0) };
+        route.folderRepo = { findOne: vi.fn().mockResolvedValue({ uid: "f1", type: "drafts" }) };
+        route.mailboxRepo = { findOne: vi.fn().mockResolvedValue(mailbox) };
+        route.attachmentRepo = { count: vi.fn().mockResolvedValue(0), find: vi.fn().mockResolvedValue(records) };
+        route.aclUtils = { hasPermission: vi.fn().mockResolvedValue(true) };
+        route.blobStore = {
+            get: vi.fn().mockResolvedValue(png),
+            put: vi.fn().mockResolvedValue(undefined),
+            delete: vi.fn().mockResolvedValue(undefined),
+        };
+        route.matterRepo = { find: vi.fn().mockResolvedValue([]) };
+        await route.assemble("m1", { to: [{ address: "bob@example.com" }], html }, user);
+        const raw: string = route.blobStore.put.mock.calls[0][1].toString("utf8");
+        return { raw, patch: route.messageRepo.update.mock.calls[0][0], route };
+    }
+
+    it("keeps an inline image the HTML still references, whether by the content URL or by cid", async () => {
+        const viaUrl = await assembleWith([record("a1")], '<p>x</p><img src="/api/mail/attachments/a1/content">');
+        expect(viaUrl.raw).toContain("Content-ID: <a1@cid>");
+        expect(viaUrl.raw).toContain(`src="cid:a1@cid"`);
+        expect(viaUrl.patch.hasAttachments).toBe(true);
+
+        const viaCid = await assembleWith([record("a1")], '<img src="CID:A1@cid">');
+        expect(viaCid.raw).toContain("Content-ID: <a1@cid>");
+    });
+
+    it("tolerates angle brackets around the content id on the record", async () => {
+        const result = await assembleWith([record("a1", { contentId: "<a1@cid>" })], '<img src="cid:a1@cid">');
+        expect(result.raw).toContain("Content-ID: <a1@cid>");
+    });
+
+    it("matches a content id holding regular-expression characters literally", () => {
+        const odd = { isInline: true, contentId: "a+b(1)[x]@cid" };
+        expect(referencedAttachments('<img src="cid:a+b(1)[x]@cid">', [odd])).toEqual([odd]);
+        expect(referencedAttachments('<img src="cid:aab1x@cid">', [odd])).toEqual([]);
+    });
+
+    it("drops an inline image the HTML no longer references and reports no attachments", async () => {
+        const result = await assembleWith([record("a1")], "<p>the screenshot was deleted</p>");
+        expect(result.raw).not.toContain("Content-ID");
+        expect(result.raw).not.toContain("image/png");
+        expect(result.patch.hasAttachments).toBe(false);
+        expect(result.route.blobStore.get).not.toHaveBeenCalled();
+    });
+
+    it("does not mistake one content id for another that merely starts with it", async () => {
+        const result = await assembleWith([record("a1", { contentId: "a1" })], '<img src="cid:a1@other">');
+        expect(result.raw).not.toContain("Content-ID");
+    });
+
+    it("keeps only the referenced one of two inline images", async () => {
+        const result = await assembleWith([record("a1"), record("a2")], '<img src="/api/mail/attachments/a2/content">');
+        expect(result.raw).toContain("Content-ID: <a2@cid>");
+        expect(result.raw).not.toContain("Content-ID: <a1@cid>");
+        expect(result.patch.hasAttachments).toBe(true);
+    });
+
+    it("always keeps a regular attachment, referenced or not", async () => {
+        const file = record("f1", { isInline: false, contentId: undefined, mimeType: "application/pdf", filename: "report.pdf" });
+        const result = await assembleWith([file, record("a1")], "<p>see attached</p>");
+        expect(result.raw).toContain("report.pdf");
+        expect(result.raw).not.toContain("Content-ID");
+        expect(result.patch.hasAttachments).toBe(true);
+    });
+
+    it("keeps an inline record with no content id, which cannot be referenced at all", async () => {
+        const result = await assembleWith([record("a1", { contentId: undefined })], "<p>x</p>");
+        expect(result.raw).toContain("a1.png");
+    });
+
+    it("does not count an unreferenced inline image toward the attachment size limit", async () => {
+        const big = record("a1", { sizeBytes: 1e12 });
+        const result = await assembleWith([big], "<p>x</p>");
+        expect(result.patch.hasAttachments).toBe(false);
     });
 });

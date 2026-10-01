@@ -21,6 +21,9 @@ GATEWAY_NAMESPACE=$ENVOY_NAMESPACE
 # The published chart: the CI pushes ./helm (chart name "server") to oci://ghcr.io/<owner>/charts. Set CHART to a local
 # chart directory (e.g. CHART=./helm) to install from a checkout instead; --version is then ignored.
 CHART=${CHART:-oci://ghcr.io/rapidmx/charts/server}
+# Helm release (https://github.com/helm/helm/releases) whose get-helm-3 installer script is run when helm is missing and snap
+# is unavailable. Pinned to a tag so the script that runs as root can't change underneath us; it still installs helm itself.
+HELM_SCRIPT_VERSION=${HELM_SCRIPT_VERSION:-v3.19.0}
 # Envoy Gateway release (https://github.com/envoyproxy/gateway/releases). Pinned: v0.0.0-latest tracks main.
 ENVOY_GATEWAY_VERSION=${ENVOY_GATEWAY_VERSION:-v1.9.1}
 # External Secrets release (https://github.com/external-secrets/external-secrets), which the charts' OpenBao support
@@ -973,7 +976,7 @@ else
     sudo snap install --classic helm
     HELM_INSTALLED_BY=snap
   else
-    curl https://raw.githubusercontent.com/helm/helm/master/scripts/get-helm-3 | sudo bash
+    curl -fsSL "https://raw.githubusercontent.com/helm/helm/$HELM_SCRIPT_VERSION/scripts/get-helm-3" | sudo bash
     HELM_INSTALLED_BY=script
   fi
   if ! command -v helm >/dev/null 2>&1; then
