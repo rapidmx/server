@@ -10,9 +10,9 @@ dependencies:
   version: 24.1.8
 - name: auth-server
   repository: oci://ghcr.io/rapidrest/charts
-  version: 1.0.0-beta.29
+  version: 1.0.0-beta.30
 - name: postfix-bridge
   repository: oci://ghcr.io/rapidmx/charts
   version: 1.5.0
-digest: sha256:ca60bf469f3d8990c7715d1987785a24e0350391d3767c345a893ba260a715fc
-generated: "2026-09-28T22:23:46.585027-07:00"
+digest: sha256:37c4649952bee4a789fb89a04e81358460666d399384491e795b91ffaaad3c84
+generated: "2026-09-30T22:38:21.370633-07:00"
