@@ -28,7 +28,7 @@ import { enableBasicAuthIfApplicable } from "./lib/enableBasicAuth.js";
 
 import * as fs from "fs";
 import { readFile } from "fs/promises";
-import { assertProductionSecretsAreSet, DEVELOPMENT_ENVIRONMENTS, trustedAuthservIdWarning } from "./config.defaults.js";
+import { assertProductionSecretsAreSet, DEVELOPMENT_ENVIRONMENTS, trustedAuthservIdWarning, weakIngestSecretWarning } from "./config.defaults.js";
 import { configMs, DEFAULT_RELEASE_TIMEOUT_MS, drainAndStop, withTimeout } from "./lib/gracefulShutdown.js";
 import { startTelemetryToken } from "./lib/telemetryToken.js";
 import { PluginMongo, MailboxMongo } from "@rapidmx/restapi/mongo";
@@ -51,6 +51,10 @@ const logger = Logger(logLevel, config.get("logger:file"));
 const authservIdWarning: string | undefined = trustedAuthservIdWarning(config);
 if (authservIdWarning) {
     logger.warn(authservIdWarning);
+}
+const weakSecretWarning: string | undefined = weakIngestSecretWarning(config, process.env.NODE_ENV);
+if (weakSecretWarning) {
+    logger.error(weakSecretWarning);
 }
 console.log("Log Level=" + logLevel);
 

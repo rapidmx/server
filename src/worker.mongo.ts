@@ -24,7 +24,7 @@ import { enableBasicAuthIfApplicable } from "./lib/enableBasicAuth.js";
 
 import * as fs from "fs";
 import { readFile } from "fs/promises";
-import { assertProductionSecretsAreSet, DEVELOPMENT_ENVIRONMENTS, escrowAuditKeyWarning, trustedAuthservIdWarning } from "./config.defaults.js";
+import { assertProductionSecretsAreSet, DEVELOPMENT_ENVIRONMENTS, escrowAuditKeyWarning, trustedAuthservIdWarning, weakIngestSecretWarning } from "./config.defaults.js";
 import { configMs, DEFAULT_RELEASE_TIMEOUT_MS, drainAndStop, withTimeout } from "./lib/gracefulShutdown.js";
 import { startTelemetryToken } from "./lib/telemetryToken.js";
 import { PluginMongo, MailboxMongo } from "@rapidmx/restapi/mongo";
@@ -52,6 +52,10 @@ if (authservIdWarning) {
 const escrowKeyWarning: string | undefined = escrowAuditKeyWarning(config, process.env.NODE_ENV);
 if (escrowKeyWarning) {
     logger.error(escrowKeyWarning);
+}
+const weakSecretWarning: string | undefined = weakIngestSecretWarning(config, process.env.NODE_ENV);
+if (weakSecretWarning) {
+    logger.error(weakSecretWarning);
 }
 console.log("Log Level=" + logLevel);
 

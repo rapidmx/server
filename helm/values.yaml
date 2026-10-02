@@ -31,7 +31,9 @@ global:
     tls: true
     # With tlsTermination: gateway on a Gateway this chart creates, plain HTTP is redirected (301) to HTTPS rather than served: a
     # request on port 80 would otherwise carry the session cookie and credentials in the clear. cert-manager's HTTP-01
-    # challenge is still answered over HTTP. false serves the API on both.
+    # challenge is still answered over HTTP. false serves the API on both - and is required when something in front ends TLS and
+    # forwards plain HTTP to this Gateway's port 80 (Cloudflare "flexible" SSL, a load balancer's TLS listener), or every request
+    # is redirected back to itself in a loop.
     httpRedirect: true
     tlsTermination: gateway
     tlsExtraDnsNames: []
@@ -99,6 +101,10 @@ global:
     requireTLS: false
     from: ''
   storageClass: ''
+  # Addresses whose X-Forwarded-For is believed (the rate limiter, the Basic sign-in and /internal's failure counts, the audit log).
+  # Only safe where the Gateway sees the real client address (proxy protocol, or externalTrafficPolicy: Local): behind a
+  # load balancer that source-NATs to a private address, a client could name its own address in the header. Narrow this to
+  # the Gateway's pod range there.
   trustedProxies:
     - 10.0.0.0/8
     - 172.16.0.0/12
@@ -116,6 +122,14 @@ mongodb:
   # the root user created on an empty data directory - an existing install's volume would not pick it up - so it stays off.
   networkPolicy:
     allowExternal: false
+  # Not pinned: Bitnami no longer publishes versioned tags on Docker Hub (only `latest`, which this chart defaults to), so a tag
+  # would not pull, and a digest stops pulling once Bitnami replaces the image. Pin `image.digest` (and `redis.image.digest`) from
+  # your own registry mirror to keep a MongoDB major version from changing under an existing data directory.
+  # The mailboxes, folders, message index and escrow audit log live here: like the volumes mail.storage.keepOnUninstall keeps, the
+  # claim stays when the release is uninstalled (helm.sh/resource-policy: keep), or the blobs would outlive the database that
+  # indexes them. This subchart can't read that flag: set it to '' as well when turning it off.
+  persistence:
+    resourcePolicy: keep
   # Minimum requests only, never limits: a limit throttles the pod (CPU) or kills it (memory) even when the node has
   # plenty to spare - MongoDB's liveness probe was timing out at its CPU cap. Bitnami's default "small" preset sets a
   # limit as well as a request, so the preset is turned off and its requests kept.
@@ -275,6 +289,9 @@ authserver:
   mongodb:
     networkPolicy:
       allowExternal: false
+    # Kept on uninstall, like the one above.
+    persistence:
+      resourcePolicy: keep
   postgresql:
     primary:
       networkPolicy:
@@ -316,6 +333,10 @@ postfixBridge:
     resources:
       limits: null
   postfix:
+    # The MTA, pinned to the release `latest` was when this was written (the same image): a node that pulls it again must not
+    # get a different Postfix by surprise.
+    image:
+      tag: 5.1.0
     resources:
       limits: null
   ingestSecret: '{{ .Values.global.mailIngestSecret }}'
@@ -370,8 +391,8 @@ mail:
     # sign-in is a session in the auth-server.
     cacheTtlMs: 300000
     # Failed sign-ins per client address and username together, within 15 minutes, before further attempts get a 429. (Looser
-    # ceilings per address and per username alone - mail:basic_auth:ip_failure_limit / name_failure_limit, 50 - stop a client
-    # trying many names, or a stranger locking someone out from many addresses.)
+    # ceiling per address - mail:basic_auth:ip_failure_limit, 50 - stops a client trying many names; per username from every
+    # address, mail:basic_auth:name_failure_limit only slows further attempts down, so a stranger can't lock someone out.)
     failureLimit: 10
   trustedAuthservId: ''
   relay:
@@ -383,7 +404,9 @@ mail:
     auditHmacKey: ''
   storage:
     # Leave the DKIM keys, blob and PKI volumes in place when the release is uninstalled (helm.sh/resource-policy: keep), so
-    # `helm uninstall` can't destroy mail, DKIM private keys or the encryption CA's key. Delete the claims yourself to remove
+    # `helm uninstall` can't destroy mail, DKIM private keys or the encryption CA's key. The bundled MongoDB's claims (`mongodb`,
+    # which this server's mailboxes and message index live in, and the auth server's own) are kept too, by their
+    # persistence.resourcePolicy below; set those to '' as well when turning this off. Delete the claims yourself to remove
     # the data (kubectl -n <namespace> delete pvc <fullname>-dkim-keys <fullname>-blob-data <fullname>-pki-data), and do so before
     # installing a release of the same name again, since Helm won't adopt a claim it didn't create.
     keepOnUninstall: true
@@ -472,6 +495,11 @@ mail:
       # `stable` moves with ClamAV's releases, which are security fixes to the scanner itself: Always pulls it again whenever the pod
       # starts, instead of keeping whatever copy a node first pulled. Use IfNotPresent with a pinned tag (e.g. 1.5.4).
       pullPolicy: Always
+    # Lines appended to clamd.conf (templates/1_deployments/clamav.yaml sets AlertExceedsMax yes, so an archive past clamd's
+    # limits is quarantined instead of passing as clean, and the stream limit to the 100 MB body limit). Later lines win, so this
+    # can change a limit; `AlertEncrypted yes` would also quarantine password-protected archives. Keep StreamMaxLength at or
+    # above the largest message accepted, and raise the memory request below if you raise it.
+    extraConfig: ''
     resources:
       requests:
         cpu: 200m

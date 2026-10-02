@@ -25,7 +25,7 @@ import {
     type Plugin,
     type PluginNamespace,
 } from "@rapidmx/restapi";
-import { applyPluginSetting, isProtectedPluginSettingKey } from "../config.defaults.js";
+import { applyPluginSetting, isAllowedPluginSettingKey } from "../config.defaults.js";
 import { PluginClassLoader, type PluginUiLoadOptions } from "./PluginClassLoader.js";
 import { PluginInstaller, type PluginInstallerOptions, type PluginInstallResult } from "./PluginInstaller.js";
 import { describeModels } from "./PluginOwnedData.js";
@@ -238,17 +238,20 @@ export class PluginHost {
 
         // Saved settings go into config before any plugin class is instantiated. Settings of plugins that failed to
         // install are left out, since nothing will read them.
-        const installedNames: Set<string> = new Set(installed.map((plugin) => plugin.name));
-        for (const row of enabled.filter((plugin) => installedNames.has(plugin.name))) {
+        const declaredKeys: Map<string, string[]> = new Map(
+            installed.map((plugin) => [plugin.name, (plugin.manifest.settings ?? []).map((setting) => setting.key)]),
+        );
+        for (const row of enabled.filter((plugin) => declaredKeys.has(plugin.name))) {
             for (const [key, value] of Object.entries(row.settings ?? {})) {
                 // An empty value (or null) means "not set": a plugin's manifest may declare "" as a default, which is saved when
                 // the plugin is installed. It must not be applied, or it would hide the deployment's own configuration for the
                 // same key (the Helm chart's bundled coturn sets mail:videoconf:turn:* through the environment, for one). A
                 // value that is set goes in the top configuration layer, so it wins over the environment and the defaults.
                 if (value !== "" && value !== null && value !== undefined) {
-                    // Never the server's own security configuration, which would outrank the environment and the secrets check.
-                    if (isProtectedPluginSettingKey(key)) {
-                        logger.warn(`Plugin ${row.name} saved a setting for ${key}, which is core configuration a plugin may not change; it was ignored.`);
+                    // Only what the installed manifest declares, and never the server's own configuration, which would outrank the
+                    // environment and the secrets check.
+                    if (!isAllowedPluginSettingKey(key, declaredKeys.get(row.name)!)) {
+                        logger.warn(`Plugin ${row.name} saved a setting for ${key}, which its manifest does not declare or is core configuration a plugin may not change; it was ignored.`);
                         continue;
                     }
                     applyPluginSetting(config, key, value);

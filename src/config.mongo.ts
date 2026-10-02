@@ -143,7 +143,7 @@ conf.defaults({
         // A successful login is remembered for `cache_ttl_ms` (never past the token's expiry) because these clients send their
         // credentials with every request; `failure_limit` failed logins within `failure_window_ms` from one client address for one
         // username get a 429 until the window passes, as do `ip_failure_limit` from one address (any names) and `name_failure_limit`
-        // for one username (any addresses) - looser, so a stranger can't lock the owner out. Needs `mail:auth_server_url`. See lib/BasicAuthJWTStrategy.ts.
+        // for one username (any addresses) - looser, and the last only delays (`name_delay_ms` per failure past it, up to ten times that), so a stranger can't lock the owner out. Needs `mail:auth_server_url`. See lib/BasicAuthJWTStrategy.ts.
         basic_auth: {
             enabled: true,
             paths: ["/mapi", "/Microsoft-Server-ActiveSync"],
@@ -153,6 +153,7 @@ conf.defaults({
             failure_limit: 10,
             ip_failure_limit: 50,
             name_failure_limit: 50,
+            name_delay_ms: 1000,
             failure_window_ms: 900_000,
         },
         // `default_quota_bytes` and `auto_provision.enabled`/`quota_bytes` seed the admin-editable mailbox policy

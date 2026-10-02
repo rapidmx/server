@@ -59,4 +59,15 @@ describe.skipIf(!helmAvailable || !depsAvailable)("chart: ClamAV rollout", () =>
         expect(probe(clamav, "startupProbe")).toEqual({ periodSeconds: "10", failureThreshold: "120" });
         expect(probe(clamav, "readinessProbe")).toEqual({ periodSeconds: "20", timeoutSeconds: "5", failureThreshold: "3" });
     });
+
+    it("mounts a clamd.conf that reports an archive past clamd's limits, instead of passing it as clean", () => {
+        const out = render("mail.clamav.extraConfig=AlertEncrypted yes");
+        const clamav = clamavDeployment(out);
+        expect(clamav).toMatch(/mountPath: \/etc\/clamav\/clamd\.conf\n\s+subPath: clamd\.conf\n\s+readOnly: true/);
+        expect(clamav).toMatch(/checksum\/config: \w{64}/);
+        const config = out.split(/^---$/m).find((doc) => /name: clamd-config\n/.test(doc)) ?? "";
+        expect(config).toMatch(/AlertExceedsMax yes/);
+        expect(config).toMatch(/LocalSocket \/tmp\/clamd\.sock\n\s+TCPSocket 3310/);
+        expect(config).toMatch(/AlertEncrypted yes/);
+    });
 });

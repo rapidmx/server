@@ -230,10 +230,11 @@ describe("BasicAuthJWTStrategy", () => {
             expect(fetcher).toHaveBeenCalledTimes(5);
         });
 
-        it("counts a name's failures per address, with a looser ceiling for the name from everywhere, so a stranger can't lock the owner out", async () => {
+        it("counts a name's failures per address, and only slows the name down when they come from everywhere, so a stranger can't lock the owner out", async () => {
             config.set("mail:basic_auth:failure_limit", 3);
             config.set("mail:basic_auth:name_failure_limit", 9);
-            const fetcher = authServer(() => ({ status: 401 }));
+            let good = false;
+            const fetcher = authServer(() => (good ? { status: 200, token: tokenFor() } : { status: 401 }));
             const basicStrategy = await strategy(fetcher);
             const attempt = (address: string, name = "victim") => basicStrategy.authenticate(request("/mapi/emsmdb", { authorization: basic(name, "x") }, address));
             // One address guessing one name is stopped after the per-name limit...
@@ -244,12 +245,22 @@ describe("BasicAuthJWTStrategy", () => {
             // ...but that does not lock the name for anyone else: the owner, from their own address, still signs in.
             await attempt("192.0.2.2");
             expect(fetcher).toHaveBeenCalledTimes(4);
-            // Many addresses together do reach the name's own ceiling (9, of which 4 are used).
+            // Many addresses together slow the name down, but never lock it: the owner's right password still signs in.
             for (const address of ["198.51.100.1", "198.51.100.2", "198.51.100.3", "198.51.100.4", "198.51.100.5"]) {
                 await attempt(address);
             }
-            await expect(attempt("198.51.100.6")).rejects.toMatchObject({ status: 429 });
             expect(fetcher).toHaveBeenCalledTimes(9);
+            good = true;
+            vi.useFakeTimers();
+            let signedIn: any;
+            const owner = attempt("203.0.113.50", "victim").then((result) => (signedIn = result));
+            await vi.advanceTimersByTimeAsync(1);
+            expect(signedIn).toBeUndefined();
+            expect(fetcher).toHaveBeenCalledTimes(9);
+            await vi.advanceTimersByTimeAsync(60_000);
+            await owner;
+            expect(signedIn?.user?.uid).toBe(USER.uid);
+            expect(fetcher).toHaveBeenCalledTimes(10);
         });
 
         it("counts a login as a failure as soon as it starts, so concurrent guesses can't all pass the check before one is recorded", async () => {

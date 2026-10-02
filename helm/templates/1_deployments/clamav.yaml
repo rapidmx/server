@@ -1,3 +1,33 @@
+{{- define "rapidmx.clamdConf" -}}
+LocalSocket /tmp/clamd.sock
+TCPSocket 3310
+User clamav
+LogFile /var/log/clamav/clamd.log
+LogTime yes
+AlertExceedsMax yes
+StreamMaxLength 100M
+MaxFileSize 100M
+MaxScanSize 400M
+MaxRecursion 17
+MaxFiles 10000
+{{- with .Values.mail.clamav.extraConfig }}
+{{ . }}
+{{- end }}
+{{- end }}
+---
+# clamd's own configuration, mounted over the image's (clamav/clamav builds /etc/clamav/clamd.conf from clamd.conf.sample with
+# just the lines below changed from the defaults, and its entrypoint waits for the socket at /tmp/clamd.sock). What it adds is
+# AlertExceedsMax: by default an archive that goes past MaxFileSize, MaxScanSize, MaxRecursion or MaxFiles is answered
+# "stream: OK" with the rest unscanned, so a zip bomb or a deeply nested archive passed as clean. With it, it is reported
+# (Heuristics.Limits.Exceeded FOUND) and the message is quarantined. StreamMaxLength is raised to the server's 100 MB body limit
+# (the default, 25M, quarantined every larger message as an error). mail.clamav.extraConfig is appended.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: clamd-config
+data:
+  clamd.conf: |
+    {{- include "rapidmx.clamdConf" . | nindent 4 }}
 ---
 # Anti-virus scanning (AvScanProvider) - see ClamAvScanProvider. clamd's signature database can take a
 # few minutes to load on first start; the provider fails closed (quarantines) until it's ready - see the
@@ -22,6 +52,9 @@ spec:
     metadata:
       labels:
         app: clamav
+      annotations:
+        # The file is mounted with subPath, which Kubernetes never refreshes in a running pod: a change restarts it instead.
+        checksum/config: {{ include "rapidmx.clamdConf" . | sha256sum }}
     spec:
       # clamd talks to nobody but the server; it has no use for a Kubernetes API token.
       automountServiceAccountToken: false
@@ -34,6 +67,11 @@ spec:
           imagePullPolicy: {{ $.Values.mail.clamav.image.pullPolicy }}
           ports:
             - containerPort: 3310
+          volumeMounts:
+            - name: clamd-config
+              mountPath: /etc/clamav/clamd.conf
+              subPath: clamd.conf
+              readOnly: true
           startupProbe:
             tcpSocket:
               port: 3310
@@ -44,3 +82,7 @@ spec:
             {{- toYaml $.Values.mail.clamav.readinessProbe | nindent 12 }}
           resources:
             {{- toYaml $.Values.mail.clamav.resources | nindent 12 }}
+      volumes:
+        - name: clamd-config
+          configMap:
+            name: clamd-config

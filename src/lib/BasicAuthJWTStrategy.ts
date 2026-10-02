@@ -80,8 +80,9 @@ interface Failures {
  * Repeated failures are throttled, so a guessing client is stopped here rather than spending auth-server's attempts (which it
  * counts against this server's address, not the client's): per client address and username together (`failure_limit`, the strict
  * one), per client address across all names (`ip_failure_limit`) and per username from every address (`name_failure_limit`).
- * The last two are looser on purpose: a stranger guessing at someone's name from many addresses must not be able to lock the owner
- * out, and one office behind a single address has several people mistyping. An attempt is counted when its login starts and taken
+ * The last two are looser on purpose, and the last never refuses: past its limit an attempt is only held up (`name_delay_ms`, more
+ * for each further failure), because a stranger guessing at someone's name from many addresses must not be able to lock the owner
+ * out; one office behind a single address has several people mistyping. An attempt is counted when its login starts and taken
  * back when it succeeds, so a burst of concurrent guesses can't all pass the check before the first failure is recorded.
  *
  * A 401 for those paths carries `WWW-Authenticate: Basic`, which is what makes a client ask for credentials at all.
@@ -113,6 +114,9 @@ export class BasicAuthJWTStrategy implements AuthStrategy {
 
     @Config("mail:basic_auth:name_failure_limit", 50)
     protected nameFailureLimit: number = 50;
+
+    @Config("mail:basic_auth:name_delay_ms", 1000)
+    protected nameDelayMs: number = 1000;
 
     @Config("mail:basic_auth:failure_window_ms", 900_000)
     protected failureWindowMs: number = 900_000;
@@ -206,14 +210,20 @@ export class BasicAuthJWTStrategy implements AuthStrategy {
         const identifiers: Array<[string, number]> = [
             [`ip:${address}`, this.ipFailureLimit],
             [`pair:${address}|${name}`, this.failureLimit],
-            [`name:${name}`, this.nameFailureLimit],
         ];
         if (identifiers.some(([identifier, limit]) => this.isThrottled(identifier, limit))) {
             throw new ApiError(ApiErrors.AUTH_PERMISSION_FAILURE, 429, "Too many failed sign-in attempts. Try again later.");
         }
+        // The name's failures from every address never refuse an attempt (a stranger could then lock the owner out): they slow it down.
+        const nameIdentifier: string = `name:${name}`;
+        const nameDelay: number = this.nameDelay(nameIdentifier);
+        identifiers.push([nameIdentifier, this.nameFailureLimit]);
         // Counted now, before the (slow) login: attempts that are in flight at the same time would otherwise all pass the check above.
         for (const [identifier] of identifiers) {
             this.noteFailure(identifier);
+        }
+        if (nameDelay > 0) {
+            await new Promise<void>((resolve) => setTimeout(resolve, nameDelay));
         }
 
         let token: string | undefined;
@@ -351,6 +361,15 @@ export class BasicAuthJWTStrategy implements AuthStrategy {
         while (this.tokens.size > this.cacheMaxEntries) {
             this.tokens.delete(this.tokens.keys().next().value!);
         }
+    }
+
+    /** How long to hold an attempt at a name that has had `name_failure_limit` failures from everywhere: longer the more there are, never forever. */
+    private nameDelay(identifier: string): number {
+        const failures: Failures | undefined = this.failures.get(identifier);
+        if (!failures || Date.now() - failures.since > this.failureWindowMs || failures.count < this.nameFailureLimit) {
+            return 0;
+        }
+        return Math.min(this.nameDelayMs * (failures.count - this.nameFailureLimit + 1), this.nameDelayMs * 10);
     }
 
     private isThrottled(identifier: string, limit: number): boolean {

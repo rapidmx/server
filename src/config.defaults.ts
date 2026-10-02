@@ -121,15 +121,6 @@ export function assertProductionSecretsAreSet(config: SecretsConfig, environment
         },
     ].filter((entry) => entry.value === entry.expected || String(entry.value ?? "").trim() === "");
 
-    const ingestSecret: string = String(config.get("mail:transport:ingest:secret") ?? "").trim();
-    if (ingestSecret !== "" && ingestSecret !== DEFAULT_MAIL_INGEST_SECRET && ingestSecret.length < MIN_MAIL_INGEST_SECRET_LENGTH) {
-        throw new Error(
-            `Refusing to start (NODE_ENV=${environment ?? "unset"}) with a mail__transport__ingest__secret shorter than ` +
-                `${MIN_MAIL_INGEST_SECRET_LENGTH} characters: it is a bearer secret that can be guessed at over HTTP. Use a random ` +
-                "value, e.g. the output of openssl rand -hex 32.",
-        );
-    }
-
     if (insecureDefaults.length > 0) {
         const names: string = insecureDefaults.map((entry) => entry.envVar).join(", ");
         throw new Error(
@@ -138,6 +129,27 @@ export function assertProductionSecretsAreSet(config: SecretsConfig, environment
                 `NODE_ENV to one of ${SECRETS_GUARD_SKIP_ENVIRONMENTS.join("/")} for local development.`,
         );
     }
+}
+
+/**
+ * The startup warning for a `mail:transport:ingest:secret` shorter than `MIN_MAIL_INGEST_SECRET_LENGTH`, or `undefined` when it is
+ * long enough, empty or the development default (the secrets check handles those). It is a bearer secret that can be guessed at over
+ * HTTP, but it is a warning rather than a refusal to start: an install that already has a short one would otherwise crash-loop on
+ * upgrade, and the secret it has to be rotated to is also in postfix-bridge and ses-bridge.
+ */
+export function weakIngestSecretWarning(config: SecretsConfig, environment: string | undefined): string | undefined {
+    if (environment !== undefined && SECRETS_GUARD_SKIP_ENVIRONMENTS.includes(environment)) {
+        return undefined;
+    }
+    const secret: string = String(config.get("mail:transport:ingest:secret") ?? "").trim();
+    if (secret === "" || secret === DEFAULT_MAIL_INGEST_SECRET || secret.length >= MIN_MAIL_INGEST_SECRET_LENGTH) {
+        return undefined;
+    }
+    return (
+        `mail__transport__ingest__secret (Helm mail.ingestSecret) is shorter than ${MIN_MAIL_INGEST_SECRET_LENGTH} characters: it is a ` +
+        "bearer secret that can be guessed at over HTTP. Replace it, on the server and on every MTA bridge, with a random value, e.g. " +
+        "the output of openssl rand -hex 32. A later release will refuse to start with it."
+    );
 }
 
 /**
@@ -187,11 +199,16 @@ export function escrowAuditKeyWarning(config: SecretsConfig, environment: string
 export const PLUGIN_SETTINGS_STORE = "plugins";
 
 /**
- * Configuration a plugin's saved settings may never set. They are applied in the top configuration layer, which outranks the
- * environment and the defaults and is read after `assertProductionSecretsAreSet()` has run, so a plugin manifest declaring one of
- * these keys (or a row in the plugin table written by someone with database access) could otherwise grant itself trusted roles,
- * reintroduce a default secret, point the server at another datastore or trust any proxy. Each entry is a key or the prefix of a
- * whole group of keys (`auth` covers `auth:secret`, `auth:options:issuer`...).
+ * Configuration a plugin's saved settings may never set, whatever its manifest declares: the backstop under
+ * `isAllowedPluginSettingKey()`. They are applied in the top configuration layer, which outranks the environment and the
+ * defaults and is read after `assertProductionSecretsAreSet()` has run, so a plugin manifest declaring one of these keys (or a
+ * row in the plugin table written by someone with database access) could otherwise grant itself trusted roles, reintroduce a
+ * default secret, point the server at another datastore, run a command (`mail:transport:sendmail:path`), redirect mail,
+ * scanning, DNS or blob storage, or trust any proxy. Each entry is a key or the prefix of a whole group of keys (`auth` covers
+ * `auth:secret`, `auth:options:issuer`...). A plugin's own settings live under its own namespace, like `mail:videoconf:*`.
+ *
+ * `@rapidmx/restapi`'s `PROTECTED_SETTING_NAMESPACES` (`BasePluginRoute`) is the same list, checked when a setting is saved;
+ * it must be kept equal to this one, which is the source of truth, until it can be imported from there.
  */
 export const PROTECTED_PLUGIN_SETTING_KEYS: readonly string[] = [
     "trusted_roles",
@@ -206,23 +223,67 @@ export const PROTECTED_PLUGIN_SETTING_KEYS: readonly string[] = [
     "base_path",
     "rateLimit",
     "telemetry_services",
-    "system:plugins",
-    "mail:transport:ingest",
+    "service_name",
+    "version",
+    "max_body_size",
+    "shutdown",
+    "system",
+    "metrics",
+    "diagnostics",
+    "class_loader",
+    "cluster_url",
+    "react",
+    "static_assets",
+    "giphy",
+    "logs",
+    "mail:transport",
     "mail:internal",
     "mail:escrow",
     "mail:pki",
     "mail:auth_server_url",
     "mail:basic_auth",
     "mail:security",
+    "mail:blob",
+    "mail:scan",
+    "mail:dns",
+    "mail:dkim",
+    "mail:domains",
+    "mail:auto_provision",
+    "mail:default_quota_bytes",
+    "mail:jobs",
+    "mail:compose",
+    "mail:search",
+    "mail:preferences",
+    "mail:autodiscover",
+    "mail:branding",
 ];
+
+function normalizeSettingKey(key: string): string {
+    return key.trim().toLowerCase().replace(/__/g, ":");
+}
 
 /** Whether a plugin may not save a setting under `key` (see `PROTECTED_PLUGIN_SETTING_KEYS`). `__` counts as `:`, as in the environment. */
 export function isProtectedPluginSettingKey(key: string): boolean {
-    const normalized: string = key.trim().toLowerCase().replace(/__/g, ":");
+    const normalized: string = normalizeSettingKey(key);
     return PROTECTED_PLUGIN_SETTING_KEYS.some((protectedKey) => {
         const prefix: string = protectedKey.toLowerCase();
         return normalized === prefix || normalized.startsWith(`${prefix}:`);
     });
+}
+
+/**
+ * Whether a saved plugin setting may be applied: its key is one the installed plugin's manifest declares (`manifest.settings`),
+ * and not one of the server's own (`isProtectedPluginSettingKey`). The settings come from the plugin table, which whoever can
+ * write to the database can put any key in, so what is applied is decided here rather than by what the row holds.
+ */
+export function isAllowedPluginSettingKey(key: string, declaredKeys: Iterable<string>): boolean {
+    const normalized: string = normalizeSettingKey(key);
+    for (const declared of declaredKeys) {
+        if (normalizeSettingKey(declared) === normalized) {
+            return !isProtectedPluginSettingKey(key);
+        }
+    }
+    return false;
 }
 
 /** The part of `nconf` `applyPluginSetting()` needs. */

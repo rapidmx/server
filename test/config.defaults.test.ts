@@ -4,6 +4,7 @@
 import {
     applyPluginSetting,
     isProtectedPluginSettingKey,
+    isAllowedPluginSettingKey,
     assertProductionSecretsAreSet,
     DEFAULT_AUTH_SECRET,
     DEFAULT_COOKIE_SECRET,
@@ -14,6 +15,7 @@ import {
     SecretsConfig,
     escrowAuditKeyWarning,
     trustedAuthservIdWarning,
+    weakIngestSecretWarning,
 } from "../src/config.defaults.js";
 
 type FakeConfigKey = "cookie_secret" | "auth:secret" | "mail:transport:ingest:secret";
@@ -77,10 +79,12 @@ describe("assertProductionSecretsAreSet", () => {
         );
     });
 
-    it("rejects an ingest secret too short to withstand guessing, outside development only", () => {
+    it("does not refuse to start over a short ingest secret, which an upgrade must survive, but warns about it outside development", () => {
         const short = fakeConfig({ ...realSecrets, "mail:transport:ingest:secret": "short" });
-        expect(() => assertProductionSecretsAreSet(short, "production")).toThrow(/mail__transport__ingest__secret shorter than 16/);
-        expect(() => assertProductionSecretsAreSet(short, "development")).not.toThrow();
+        expect(() => assertProductionSecretsAreSet(short, "production")).not.toThrow();
+        expect(weakIngestSecretWarning(short, "production")).toMatch(/mail__transport__ingest__secret.*shorter than 16/);
+        expect(weakIngestSecretWarning(short, "development")).toBeUndefined();
+        expect(weakIngestSecretWarning(fakeConfig(realSecrets), "production")).toBeUndefined();
     });
 
     it("does not throw once all three secrets have been overridden", () => {
@@ -200,6 +204,50 @@ describe("isProtectedPluginSettingKey", () => {
     it("leaves plugins their own settings", () => {
         for (const key of ["mail:eas:sync_window_size", "mail:videoconf:turn:url", "mail:booking:public_url", "authentication_banner", "mail:security_note", "crm:stages"]) {
             expect(isProtectedPluginSettingKey(key), key).toBe(false);
+        }
+    });
+});
+
+describe("isAllowedPluginSettingKey", () => {
+    const declared = ["mail:videoconf:turn:url", "mail:crm:verp", "mail:transport:sendmail:path", "auth:secret"];
+
+    it("allows a key the plugin's manifest declares, however it is spelled", () => {
+        expect(isAllowedPluginSettingKey("mail:videoconf:turn:url", declared)).toBe(true);
+        expect(isAllowedPluginSettingKey("mail__videoconf__turn__url", declared)).toBe(true);
+        expect(isAllowedPluginSettingKey("Mail:CRM:VERP", declared)).toBe(true);
+    });
+
+    it("refuses a key the manifest does not declare, even outside every core namespace", () => {
+        expect(isAllowedPluginSettingKey("mail:videoconf:turn:credential", declared)).toBe(false);
+        expect(isAllowedPluginSettingKey("anything", [])).toBe(false);
+    });
+
+    it("refuses a declared key that lives in core configuration", () => {
+        expect(isAllowedPluginSettingKey("mail:transport:sendmail:path", declared)).toBe(false);
+        expect(isAllowedPluginSettingKey("auth:secret", declared)).toBe(false);
+    });
+
+    it("protects the core namespaces that a plugin setting could use to run commands or redirect mail, scanning, DNS or storage", () => {
+        for (const key of [
+            "mail:transport:sendmail:path",
+            "mail:transport:provider",
+            "mail:blob:s3:secret_access_key",
+            "mail:scan:av:clamav:host",
+            "mail:scan:spam:rspamd:url",
+            "mail:dns:doh:url",
+            "mail:dkim:selector",
+            "mail:auto_provision:enabled",
+            "mail:domains",
+            "metrics:authRequired",
+            "diagnostics:enabled",
+            "class_loader:path",
+            "cluster_url",
+            "react:enabled",
+            "static_assets:path",
+            "giphy:api_key",
+            "cookies:secure",
+        ]) {
+            expect(isProtectedPluginSettingKey(key), key).toBe(true);
         }
     });
 });

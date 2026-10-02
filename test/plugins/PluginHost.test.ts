@@ -271,12 +271,21 @@ describe("PluginHost", () => {
         PluginRegistry.setLoaded([]);
     });
 
-    const installed = (name: string) => ({ name, version: "1.0.0", manifest: MANIFEST, entryUrl: "file:///nope.js" });
+    const installed = (name: string, manifest: any = MANIFEST) => ({ name, version: "1.0.0", manifest, entryUrl: "file:///nope.js" });
+    const declaring = (...keys: string[]) => ({ ...MANIFEST, settings: keys.map((key) => ({ key, label: key, type: "string" })) });
+    const MEET = declaring(
+        "mail:videoconf:public_url",
+        "mail:videoconf:turn:url",
+        "mail:videoconf:turn:username",
+        "mail:videoconf:turn:credential",
+        "trusted_roles",
+        "mail__transport__ingest__secret",
+    );
 
     it("leaves the deployment's own configuration alone for a saved setting that is empty", async () => {
         // The manifest's "" defaults are saved when a plugin is installed; they must not shadow config set another way.
         const rows = [row("@rapidmx/meet", { settings: { "mail:videoconf:turn:url": "", "mail:videoconf:turn:username": "", "mail:videoconf:public_url": "https://mail.example.com/meet" } })];
-        const installer: any = { install: vi.fn(async () => ({ installed: [installed("@rapidmx/meet")], errors: [] })) };
+        const installer: any = { install: vi.fn(async () => ({ installed: [installed("@rapidmx/meet", MEET)], errors: [] })) };
         const config = configWith({ mail: { videoconf: { turn: { url: "turn:mail.example.com:3478" } } } });
         // configWith() stands in for nconf's layers: set() is the top one, so an empty value written there would win.
         await PluginHost.prepare({ config, logger, datastore: "mongo", pluginClass: class {}, appRoot: process.cwd(), store: new MemoryStore(rows), installer });
@@ -305,7 +314,7 @@ describe("PluginHost", () => {
                 "mail:videoconf:turn:credential": "from-admin",
             };
             const rows = [row("@rapidmx/meet", { settings })];
-            const installer: any = { install: vi.fn(async () => ({ installed: [installed("@rapidmx/meet")], errors: [] })) };
+            const installer: any = { install: vi.fn(async () => ({ installed: [installed("@rapidmx/meet", MEET)], errors: [] })) };
             await PluginHost.prepare({ config, logger, datastore: "mongo", pluginClass: class {}, appRoot: process.cwd(), store: new MemoryStore(rows), installer });
 
             expect(config.get("mail:videoconf:public_url")).toBe("https://admin.example.com/meet");
@@ -325,7 +334,7 @@ describe("PluginHost", () => {
 
     it("never applies a saved setting that would change the server's own security configuration, and says so", async () => {
         const rows = [row("@rapidmx/meet", { settings: { "trusted_roles": ["intruder"], "mail__transport__ingest__secret": "x", "mail:videoconf:public_url": "https://mail.example.com/meet" } })];
-        const installer: any = { install: vi.fn(async () => ({ installed: [installed("@rapidmx/meet")], errors: [] })) };
+        const installer: any = { install: vi.fn(async () => ({ installed: [installed("@rapidmx/meet", MEET)], errors: [] })) };
         const config = configWith({ trusted_roles: ["admin"] });
         logger.warn.mockClear();
         await PluginHost.prepare({ config, logger, datastore: "mongo", pluginClass: class {}, appRoot: process.cwd(), store: new MemoryStore(rows), installer });
@@ -334,6 +343,19 @@ describe("PluginHost", () => {
         expect(config.get("mail:transport:ingest:secret")).toBeUndefined();
         expect(config.get("mail:videoconf:public_url")).toBe("https://mail.example.com/meet");
         expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("trusted_roles"));
+    });
+
+    it("applies only the keys the installed manifest declares, and says so for the others", async () => {
+        const rows = [row("@rapidmx/meet", { settings: { "mail:videoconf:public_url": "https://mail.example.com/meet", "mail:videoconf:turn:shared_secret": "undeclared", "mail:transport:sendmail:path": "/bin/sh" } })];
+        const installer: any = { install: vi.fn(async () => ({ installed: [installed("@rapidmx/meet", declaring("mail:videoconf:public_url", "mail:transport:sendmail:path"))], errors: [] })) };
+        const config = configWith({});
+        logger.warn.mockClear();
+        await PluginHost.prepare({ config, logger, datastore: "mongo", pluginClass: class {}, appRoot: process.cwd(), store: new MemoryStore(rows), installer });
+
+        expect(config.get("mail:videoconf:public_url")).toBe("https://mail.example.com/meet");
+        expect(config.get("mail:videoconf:turn:shared_secret")).toBeUndefined();
+        expect(config.get("mail:transport:sendmail:path")).toBeUndefined();
+        expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("mail:videoconf:turn:shared_secret"));
     });
 
     it("installs enabled plugins, applies the settings of installed ones and records their errors", async () => {

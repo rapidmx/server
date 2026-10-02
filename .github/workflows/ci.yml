@@ -114,6 +114,11 @@ jobs:
       - name: Run Lint
         run: helm lint ./helm
 
+      # Lint does not render the templates' `required`/`fail` checks; this does, with the values an install has to give.
+      - name: Render the chart
+        run: |
+          helm template rapidmx ./helm --namespace rapidmx             --set global.domain=example.com --set host=mail.example.com             --set global.mailIngestSecret=0123456789abcdef0123 --set global.jwt.secret=y             --set global.secrets.cookies=c --set global.secrets.sessions=s             --set mail.escrow.auditHmacKey=k --set global.openbao.enabled=false             --set mail.rspamd.controller.password=abcdefghijklmnop1             --set coturn.auth.sharedSecret=abc123 > /dev/null
+
   test-run-mongo:
     runs-on: ubuntu-latest
     needs: test-docker-build
