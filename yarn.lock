@@ -1810,9 +1810,9 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@rapidmx/restapi@npm:^0.28.1":
-  version: 0.28.1
-  resolution: "@rapidmx/restapi@npm:0.28.1"
+"@rapidmx/restapi@npm:^0.29.0":
+  version: 0.29.0
+  resolution: "@rapidmx/restapi@npm:0.29.0"
   dependencies:
     "@peculiar/x509": "npm:^2.1.0"
     acme-client: "npm:^5.4.0"
@@ -1845,7 +1845,7 @@ __metadata:
       optional: true
     pdf-parse:
       optional: true
-  checksum: 10c0/7ef8a46da78daf2d27ee48cbc23a668d19913f2dd6664700d6d82fea3e06cb45817cc7c6b1c2f8593c0216d58d38181a90a00459af953958524159e7231ae1b3
+  checksum: 10c0/2c2318ca7266bb7d7ab5d09eea84533bb84e804ad5511aa9c7c4dc8f893b8cfa4b1e155baeee7a0a34214f32c9f9efddaadfc7a8a263cf10ae3513cc26b49856
   languageName: node
   linkType: hard
 
@@ -9882,7 +9882,7 @@ __metadata:
   resolution: "server@workspace:."
   dependencies:
     "@aws-sdk/client-s3": "npm:^3.906.0"
-    "@rapidmx/restapi": "npm:^0.28.1"
+    "@rapidmx/restapi": "npm:^0.29.0"
     "@rapidmx/web-client": "npm:^0.31.0"
     "@rapidrest/cli": "npm:^2.1.0"
     "@rapidrest/core": "npm:^6.0.0"
