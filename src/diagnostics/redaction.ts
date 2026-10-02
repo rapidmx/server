@@ -12,14 +12,15 @@ import type { DiagnosticsSetting } from "./types.js";
  * client, a saved report, a proxy's logs or a screenshot. The UI's "hidden" text is rendered client-side from `redacted`.
  *
  * Environment variables are allowlist-first (`SHOWN_ENVIRONMENT`): a value is shown only for names known to be harmless
- * (NODE_ENV, TZ, *_HOST, *_PORT, ...). Every other name is hidden, because an unknown variable can hold anything.
+ * (NODE_ENV, TZ, PATH, *_HOST, *_PORT, Kubernetes' service variables, switches, limits, URLs, ...). Every other name is
+ * hidden, because an unknown variable can hold anything.
  *
  * Configuration keys are the server's own settings, so they are shown unless the name is secret-like, but a value that is
  * itself shaped like a secret (private key block, JWT, `password=...`) is hidden, and every shown value is scrubbed (`scrubValue`).
  *
  * A URL loses its `user:password@` part, and a value with a secret-named `name=value` pair is hidden whole. A secret in a
- * URL's path (a webhook) cannot be recognized, so a name containing "webhook" is treated as secret and environment URLs are
- * not allowlisted.
+ * URL's path (a webhook) cannot be recognized, so a name containing "webhook" is treated as secret; URLs are otherwise shown,
+ * as the chart's own service and datastore addresses are the most useful thing the page can say.
  */
 
 /**
@@ -29,21 +30,39 @@ import type { DiagnosticsSetting } from "./types.js";
  * costs much more. `PWD` is not here: it is the working directory on Unix, and `PASSWORD`/`PASSWD` cover the rest.
  */
 const SECRET_NAME =
-    /(SECRET|PASS(WORD|WD|PHRASE)?|TOKEN|KEY|CREDENTIAL|AUTH|PRIVATE|COOKIE|SESSION|SALT|DSN|CONNECTION|CERT|SIGNATURE|BEARER|JWT|OAUTH|WEBHOOK|NONCE|SEED|HASH|OTP|LICENSE)/i;
+    /(SECRET|PASS(WORD|WD|PHRASE)?|TOKEN|KEY|CREDENTIAL|AUTHORIZATION|AUTH[_.-]?(HEADER|KEY|SECRET)|PRIVATE|COOKIE|SESSION|SALT|DSN|CONNECTION|CERT|SIGNATURE|BEARER|JWT|WEBHOOK|NONCE|SEED|HASH|OTP|LICENSE)/i;
 
-/** Whether `name` looks like it holds a secret. The value is never consulted: a secret name wins over everything else. */
+/**
+ * A setting that is about a secret, not one: `allow_simple_password`, `min_password_length`, `password_enabled`, `max_failed_attempts`,
+ * `require_device_encryption`. Judged on the last segment of a name only, so `controller_password` and `audit_hmac_key` are still secrets.
+ */
+const POLICY_NAME = /^(allow|require|min|max|enable|disable|is|has)[_-]|[_-](enabled|disabled|required|length|count|size|attempts|days|seconds|minutes|ms|ttl|policy|mode|type|rounds|iterations)$/i;
+
+/**
+ * Whether `name` looks like it holds a secret. The value is never consulted: a secret name wins over everything else, unless
+ * the last segment of the name says it is a switch, a limit or a policy about the secret rather than the secret itself.
+ */
 export function isSecretName(name: string): boolean {
-    return SECRET_NAME.test(name);
+    if (!SECRET_NAME.test(name)) {
+        return false;
+    }
+    return !POLICY_NAME.test(name.split(/__|:|\./).pop() ?? name);
 }
 
 /** Environment variable names whose value is shown (when the name is not secret-like either). Everything else is hidden. */
 const SHOWN_ENVIRONMENT: RegExp[] = [
-    /^(NODE_ENV|TZ|LANG|LANGUAGE|PORT|HOSTNAME|HOST|PWD|SHLVL|TERM|NODE_VERSION|YARN_VERSION)$/i,
+    /^(NODE_ENV|TZ|LANG|LANGUAGE|PORT|HOSTNAME|HOST|PWD|SHLVL|TERM|NODE_VERSION|YARN_VERSION|PATH|HOME|USER|LOGNAME|SHELL|TMPDIR)$/i,
     /^LC_[A-Z_]+$/i,
-    // Hosts and ports, the chart's `service__name__host` style included: "HOST", "SMTP_HOST", "KUBERNETES_SERVICE_PORT".
-    /(^|_)(HOST|HOSTNAME|PORT)$/i,
-    // Plain switches and selectors in the `a__b__enabled` / `datastores__cache__type` convention.
-    /(^|_)(ENABLED|DISABLED|TYPE|DATABASE|DOMAIN|SYNCHRONIZE|REGION|LEVEL|NAMESPACE)$/i,
+    // Hosts, ports and addresses, the chart's `service__name__host` style included: "HOST", "SMTP_HOST", "KUBERNETES_SERVICE_PORT".
+    /(^|_)(HOST|HOSTNAME|PORT|ADDR|ADDRESS|PROTO|PROTOCOL)$/i,
+    // Kubernetes service discovery: `REDIS_PORT_6379_TCP_ADDR`, `MONGODB_SERVICE_PORT_MONGODB`, `POSTFIX_BRIDGE_SERVICE_PORT_SMTP_DELIVERY`.
+    /_PORT_\d+_(TCP|UDP)(_(ADDR|PORT|PROTO))?$/i,
+    /_SERVICE_PORT_[A-Z0-9_]+$/i,
+    // Plain switches, selectors and limits in the `a__b__enabled` / `datastores__cache__type` convention.
+    /(^|_)(ENABLED|DISABLED|TYPE|DATABASE|DOMAIN|SYNCHRONIZE|REGION|LEVEL|NAMESPACE|REALM|AUDIENCE|ISSUER|EXPIRESIN|EXPIRES_IN|ORIGINS|BACKEND|CLIENT_ID|CONTACT_EMAIL|SCHEDULE|TIMEOUT|TTL|TTL_MS|LIMIT|INTERVAL|MODE|FORMAT|ID)$/i,
+    /(^|_)(MAX|MIN)_[A-Z0-9_]+$/i,
+    // Addresses of services, scrubbed like any other value (a `user:password@` or a `password=` hides the whole value).
+    /(^|_)(URL|URI|ENDPOINT)$/i,
 ];
 
 /** A private key block, or three base64url parts joined with dots (a JWT): never shown even under an innocent name. */

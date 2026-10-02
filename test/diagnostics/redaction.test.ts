@@ -239,11 +239,59 @@ describe("describeEnvironment", () => {
     });
 
     it("never shows a secret-named variable even when its name also matches the allowlist", () => {
-        const result = describeEnvironment({ AUTH_HOST: "auth-internal", TOKEN_PORT: "1234" });
+        const result = describeEnvironment({ SECRET_HOST: "auth-internal", TOKEN_PORT: "1234" });
         expect(result).toEqual([
-            { name: "AUTH_HOST", redacted: true },
+            { name: "SECRET_HOST", redacted: true },
             { name: "TOKEN_PORT", redacted: true },
         ]);
+    });
+
+    it("shows the harmless variables of a cluster: service discovery, addresses, switches, limits and the auth settings that are not secrets", () => {
+        const env = {
+            CLAMAV_PORT: "tcp://10.43.73.82:3310",
+            CLAMAV_PORT_3310_TCP_ADDR: "10.43.73.82",
+            CLAMAV_PORT_3310_TCP_PROTO: "tcp",
+            POSTFIX_BRIDGE_SERVICE_PORT_SMTP_DELIVERY: "2525",
+            PATH: "/usr/local/bin:/usr/bin",
+            auth__options__audience: "mail.example.com",
+            auth__options__expiresIn: "1h",
+            mail__basic_auth__enabled: "true",
+            mail__basic_auth__realm: "Mail",
+            mail__basic_auth__failure_limit: "10",
+            mail__booking__public_url: "https://mail.example.com/book",
+            datastores__mongo__url: "mongodb://mongodb:27017/rrst",
+            cors__origins: "https://mail.example.com",
+        };
+        for (const setting of describeEnvironment(env)) {
+            expect(setting.redacted, setting.name).toBe(false);
+            expect(setting.value, setting.name).toBe((env as Record<string, string>)[setting.name]);
+        }
+    });
+
+    it("still hides the secrets among them, and a URL's credentials", () => {
+        const result = Object.fromEntries(
+            describeEnvironment({
+                auth__secret: "s3cret-value",
+                cookie_secret: "c",
+                mail__scan__spam__rspamd__controller_password: "pw",
+                mail__videoconf__turn__shared_secret: "x",
+                mail__escrow__audit_hmac_key: "k",
+                datastores__cache__url: "redis://:hunter2@cache:6379",
+            }).map((s) => [s.name, s]),
+        );
+        for (const name of ["auth__secret", "cookie_secret", "mail__scan__spam__rspamd__controller_password", "mail__videoconf__turn__shared_secret", "mail__escrow__audit_hmac_key"]) {
+            expect(result[name], name).toEqual({ name, redacted: true });
+        }
+        expect(result.datastores__cache__url.value).toBe("redis://cache:6379");
+    });
+
+    it("shows a setting about a secret (a switch, a limit, a policy) but not the secret", () => {
+        for (const name of ["mail:eas:provision:allow_simple_password", "mail:eas:provision:min_password_length", "mail:eas:provision:password_enabled", "mail:eas:provision:require_device_encryption", "x__api_key_length"]) {
+            expect(isSecretName(name), name).toBe(false);
+        }
+        for (const name of ["password", "mail:escrow:audit_hmac_key", "controller_password", "mail:transport:ingest:secret", "datastores:mongo:options:ssl_key"]) {
+            expect(isSecretName(name), name).toBe(true);
+        }
     });
 });
 
@@ -291,11 +339,11 @@ describe("describeConfiguration", () => {
         expect(byName["mail:callback"]).toEqual({ name: "mail:callback", redacted: true });
         expect(byName["mail:banner"]).toEqual({ name: "mail:banner", redacted: true });
         expect(byName["mail:missing"]).toBeUndefined();
-        for (const name of ["cookie_secret", "datastores:mongo:password", "datastores:mongo:options:ssl_key", "mail:transport:ingest:secret", "auth"]) {
+        for (const name of ["cookie_secret", "datastores:mongo:password", "datastores:mongo:options:ssl_key", "mail:transport:ingest:secret", "auth:secret", "auth:cookie"]) {
             expect(byName[name]).toEqual({ name, redacted: true });
         }
         // The subtree of a secret-named key is one hidden entry: not even its shape is listed.
-        expect(Object.keys(byName).some((name) => name.startsWith("auth:"))).toBe(false);
+        expect(Object.keys(byName).some((name) => name.startsWith("auth:cookie:"))).toBe(false);
         // Command-line positionals and script are not settings.
         expect(byName._).toBeUndefined();
         expect(byName.$0).toBeUndefined();
