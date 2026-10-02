@@ -201,8 +201,15 @@ describe("isProtectedPluginSettingKey", () => {
         }
     });
 
+    it("still protects the server's own jobs, but not a job a plugin adds", () => {
+        for (const key of ["mail:jobs:scan_queue:schedule", "mail:jobs:data_export:schedule", "mail:jobs:scheduled_send"]) {
+            expect(isProtectedPluginSettingKey(key), key).toBe(true);
+        }
+        expect(isProtectedPluginSettingKey("mail:jobs:eas_device_cleanup:schedule")).toBe(false);
+    });
+
     it("leaves plugins their own settings", () => {
-        for (const key of ["mail:eas:sync_window_size", "mail:videoconf:turn:url", "mail:booking:public_url", "authentication_banner", "mail:security_note", "crm:stages"]) {
+        for (const key of ["mail:eas:sync_window_size", "mail:videoconf:turn:url", "mail:booking:public_url", "authentication_banner", "mail:security_note", "crm:stages", "mail:eas:sync_window_size", "mail:eas:provision:password_enabled", "mail:jobs:eas_device_cleanup:device_ttl_days", "mail:autodiscover:public_url", "mail:booking:public_url", "mail:crm:public_url", "mail:crm:verp", "mail:videoconf:public_url", "mail:videoconf:turn:shared_secret", "mail:videoconf:relay:enabled"]) {
             expect(isProtectedPluginSettingKey(key), key).toBe(false);
         }
     });
