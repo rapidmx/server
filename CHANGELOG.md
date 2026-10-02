@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.33] - 2026-10-02
+
+### Changed
+- Protect the server's own jobs by name rather than every job, and no longer the autodiscover settings, so the ActiveSync and autodiscover plugins still load
+- Show the values of the environment variables and settings in the Diagnostics that are harmless, such as the service variables of Kubernetes, addresses, switches, limits and URLs, and no longer hide every name that contains auth
+- Show a setting that is about a secret, such as a minimum password length or whether passwords are allowed, and keep hiding the secret itself
+- Hide in the Diagnostics only the settings named on a list, and show every other environment variable and setting, scrubbing the credentials from the value of each
+- Hide the settings that a plugin's manifest marks as secret
+- Update @rapidmx/restapi to 0.28.1
+- Update the auth-server helm dependency to 1.0.0-beta.31
+
 ## [1.0.0-beta.32] - 2026-10-02
 
 ### Changed
@@ -1142,7 +1153,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed test from .dockerignore, fixing yarn build's lint step failing outright when the build context is missing the test directory its tsconfig.eslint.json requires
 - Removed docker-compose.mail.yml's partial server: service block, since include: only supports merging resources that don't already exist in the including file and hard-errors ("services.server conflicts with imported resource") on a Compose version newer than whatever this had only ever been tested against locally
 
-[Unreleased]: https://github.com/rapidmx/server/compare/v1.0.0-beta.32...HEAD
+[Unreleased]: https://github.com/rapidmx/server/compare/v1.0.0-beta.33...HEAD
+[1.0.0-beta.33]: https://github.com/rapidmx/server/compare/v1.0.0-beta.32...v1.0.0-beta.33
 [1.0.0-beta.32]: https://github.com/rapidmx/server/compare/v1.0.0-beta.31...v1.0.0-beta.32
 [1.0.0-beta.31]: https://github.com/rapidmx/server/compare/v1.0.0-beta.30...v1.0.0-beta.31
 [1.0.0-beta.30]: https://github.com/rapidmx/server/compare/v1.0.0-beta.29...v1.0.0-beta.30
