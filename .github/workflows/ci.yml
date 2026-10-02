@@ -114,6 +114,14 @@ jobs:
       - name: Run Lint
         run: helm lint ./helm
 
+      - name: Add helm repos
+        run: |
+          helm repo add bitnami https://charts.bitnami.com/bitnami
+
+      - name: Update dependencies
+        run: |
+          helm dep up ./helm
+
       # Lint does not render the templates' `required`/`fail` checks; this does, with the values an install has to give.
       - name: Render the chart
         run: |
