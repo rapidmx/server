@@ -208,7 +208,7 @@ export function withPluginPurge<B extends RouteBase>(Base: B, binding: { datasto
                 wasEnabled: existing.enabled,
             });
             getPluginPurger()?.kick();
-            const status: PluginStatusResponse = await super.status().catch(() => ({ hash: "", instances: [] }));
+            const status: Pick<PluginStatusResponse, "hash" | "instances"> = await super.status().catch(() => ({ hash: "", instances: [] }));
             return { purgeScheduled: true, purge: toPurgeInfo(record, status) };
         }
 

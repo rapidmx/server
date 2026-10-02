@@ -124,6 +124,15 @@ conf.defaults({
             // DEFAULT_MAX_INSTALL_BYTES for the default (500MB) and full rationale (bounds what a malicious or
             // compromised registry package can pull onto disk). 0 disables the check.
             max_install_bytes: 500 * 1024 * 1024,
+            // Installing a plugin by uploading its `npm pack` file (.tgz), which an elevated administrator may do (it skips the
+            // allow-list above: they vouch for that code). The packs are stored in the blob store (mail:blob) and every copy
+            // installs them from there at startup, so the blob store has to be shared when there is more than one copy.
+            uploads: {
+                // Turned off, the upload route answers 403 and uploaded plugins already installed stop loading (reported in the status).
+                enabled: true,
+                // The largest pack accepted, in bytes. Raise `max_body_size` and any proxy's body limit with it.
+                max_bytes: 50 * 1024 * 1024,
+            },
             // How server copies restart to apply a plugin change (see src/plugins/PluginWatcher.ts).
             restart: {
                 // How long a copy reports itself not ready (GET /api/status answers 503) before it stops, so the load

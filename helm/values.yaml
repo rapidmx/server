@@ -221,6 +221,8 @@ service:
     metrics: true
     releaseNotes: true
     mail__auth_server_url: '{{ include "rapidmx.authServerURL" . }}'
+    system__plugins__uploads__enabled: '{{ .Values.plugins.uploads.enabled }}'
+    system__plugins__uploads__max_bytes: '{{ int64 .Values.plugins.uploads.maxBytes }}'
     mail__basic_auth__enabled: '{{ .Values.mail.basicAuth.enabled }}'
     mail__basic_auth__realm: '{{ .Values.mail.basicAuth.realm }}'
     mail__basic_auth__cache_ttl_ms: '{{ .Values.mail.basicAuth.cacheTtlMs }}'
@@ -365,6 +367,21 @@ postfixBridge:
       existingClaim: >-
         {{ ternary .Release.Name (printf "%s-server" .Release.Name) (contains
         "server" .Release.Name) }}-dkim-keys
+# Plugins an administrator installs from the admin console.
+plugins:
+  uploads:
+    # Whether an elevated administrator may install a plugin by uploading its `npm pack` file (.tgz) - to try a build before it is
+    # released, or one that isn't on a registry. An uploaded plugin skips the allow-list (system:plugins:allowed_packages and the
+    # namespaces), because the administrator vouches for that code: it runs with the server's full rights, like any plugin. Turn
+    # this off to allow only registry plugins; uploads already installed then stop loading and say so in the plugin status.
+    # The packs are kept in the same blob store as mail (mail.blob), so with more than one replica that has to be shared
+    # (backend "s3", or ReadWriteMany storage).
+    enabled: true
+    # The largest pack accepted, in bytes (50 MiB). The request body also has to pass every limit in front of the server: its own
+    # max_body_size (100 MiB by default, above this) and the Gateway's. Envoy Gateway has no body limit by default; nginx-based
+    # gateways (nginx-gateway-fabric's ClientSettingsPolicy maxBodySize, ingress-nginx's proxy-body-size) default to 1 MiB and
+    # must be raised to at least this, and a request timeout shorter than a slow client's upload will cut it off.
+    maxBytes: 52428800
 mail:
   ingestSecret: '{{ .Values.global.mailIngestSecret }}'
   transport:

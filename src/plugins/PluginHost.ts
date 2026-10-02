@@ -28,7 +28,7 @@ import {
 import { applyPluginSetting, isAllowedPluginSettingKey } from "../config.defaults.js";
 import { hideSettings } from "../diagnostics/hiddenSettings.js";
 import { PluginClassLoader, type PluginUiLoadOptions } from "./PluginClassLoader.js";
-import { PluginInstaller, type PluginInstallerOptions, type PluginInstallResult } from "./PluginInstaller.js";
+import { PluginInstaller, type DesiredPlugin, type PluginInstallerOptions, type PluginInstallResult } from "./PluginInstaller.js";
 import { describeModels } from "./PluginOwnedData.js";
 import { clearRemovedPluginSettings, findAllPlugins, pluginRepository, PluginStateStore, type DefaultPlugin } from "./PluginStateStore.js";
 import { clearStarting, markStarting, RedisPurgeCoordination } from "./PluginPurgeCoordination.js";
@@ -38,6 +38,7 @@ import { PluginPurgeStore } from "./PluginPurgeStore.js";
 import { DEFAULT_PURGE_CHECK_MS, DEFAULT_PURGE_GRACE_MS, PluginPurger, setPluginPurger } from "./PluginPurger.js";
 import type { PluginOwnedModel } from "./PluginPurgeTypes.js";
 import { PluginUiBuilder, type PluginUiBuildResult } from "./PluginUiBuilder.js";
+import { prepareUploadedPlugins, type UploadBlobStore } from "./PluginUploads.js";
 import { webClientReservedMounts } from "./reservedMounts.js";
 import type { PluginUiHostClasses } from "./PluginUiRoutes.js";
 import {
@@ -93,6 +94,8 @@ export interface PluginHostOptions {
     purgeCoordination?: { configured: boolean; snapshot(): Promise<any> };
     /** Replaces running a plugin's purge hook from a scratch install (see `InstallingPurgeHookRunner`). */
     purgeHooks?: PurgeHookRunner;
+    /** Replaces the configured blob store the uploaded plugin packs are read from (see `openConfiguredBlobStore()`). */
+    blobStore?: UploadBlobStore;
 }
 
 /** The restart lock and the cache connection holding it, opened before plugins install. */
@@ -194,7 +197,9 @@ export class PluginHost {
         // The plugin table is writable by anyone who can write to the database, and a plugin runs with this server's own
         // rights: a row is only installed when its package passes the allow-list the plugins route applies when one is added
         // (system:plugins:allowed_packages plus every configured namespace) - or the operator named it in the configuration
-        // themself (system:plugins:sources or system:plugins:defaults).
+        // themself (system:plugins:sources or system:plugins:defaults). A plugin an administrator uploaded as a pack is the one
+        // exception: the elevated administrator who uploaded it vouched for that code, so only its package name must be valid
+        // (the pack itself is checked below).
         const allowedPackages: string[] = [
             ...normalizeAllowedPackages(config.get("system:plugins:allowed_packages") ?? DEFAULT_ALLOWED_PLUGIN_PACKAGES, logger),
             ...namespaces.map((namespace) => `${namespace.name}/*`),
@@ -202,7 +207,7 @@ export class PluginHost {
         const configured: Set<string> = new Set([...Object.keys(sources), ...defaults.map((plugin) => plugin.name)]);
         const enabled: Plugin[] = [];
         for (const row of rows.filter((candidate) => candidate.enabled && !candidate.removed)) {
-            if (configured.has(row.name) || (isValidPackageName(row.name) && matchesAllowedPackage(row.name, allowedPackages))) {
+            if (row.source === "upload" || configured.has(row.name) || (isValidPackageName(row.name) && matchesAllowedPackage(row.name, allowedPackages))) {
                 enabled.push(row);
                 continue;
             }
@@ -211,6 +216,17 @@ export class PluginHost {
             errors.push({ name: row.name, message });
         }
         const pluginsDir: string = config.get("system:plugins:dir") || path.join(appRoot, "plugins");
+        // Uploaded packs are fetched, verified and cached before anything is installed; one that can't be skipped alone.
+        const uploads: Map<string, DesiredPlugin> = new Map();
+        if (known) {
+            const prepared = await prepareUploadedPlugins(
+                enabled.filter((row) => row.source === "upload"),
+                { config, logger, pluginsDir, configuredSources: new Set(Object.keys(sources)), blobStore: options.blobStore },
+            );
+            prepared.desired.forEach((plugin, name) => uploads.set(name, plugin));
+            errors.push(...prepared.errors);
+            enabled.splice(0, enabled.length, ...enabled.filter((row) => row.source !== "upload" || uploads.has(row.name)));
+        }
         const installerOptions: PluginInstallerOptions = {
             dir: pluginsDir,
             appRoot,
@@ -226,7 +242,7 @@ export class PluginHost {
         };
         const installer: PluginInstaller = options.installer ?? new PluginInstaller(installerOptions);
         const result: PluginInstallResult = known
-            ? await installer.install(enabled.map((row) => ({ name: row.name, packageVersion: row.packageVersion, integrity: row.integrity })))
+            ? await installer.install(enabled.map((row) => uploads.get(row.name) ?? { name: row.name, packageVersion: row.packageVersion, integrity: row.integrity }))
             : { installed: [], errors: [] };
         // A plugin whose required plugins didn't all install, in range, is skipped too - and so is anything requiring it.
         // What's left loads in dependency order, so a plugin's requirements are registered before it.

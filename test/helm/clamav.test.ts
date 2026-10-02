@@ -23,6 +23,8 @@ const BASE = [
     "global.openbao.enabled=false",
     "mail.rspamd.controller.password=abcdefghijklmnop1",
     "coturn.auth.sharedSecret=abc123",
+    "authserver.service.config.auth__oauth_server__keys__encryption_key=" + "0123456789abcdef".repeat(4),
+    "authserver.service.config.auth__totp__encryption_key=" + "fedcba9876543210".repeat(4),
 ];
 
 function render(...sets: string[]): string {

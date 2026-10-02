@@ -17,8 +17,13 @@ export const SHARED_PLUGIN_PEERS = ["@rapidrest/core", "@rapidrest/service-core"
 export interface DesiredPlugin {
     name: string;
     packageVersion: string;
-    /** The registry's integrity hash recorded when the plugin was added; checked against what npm installed. */
+    /** The registry's integrity hash recorded when the plugin was added; checked against what npm installed. For an
+     * uploaded pack (`pack`) it is the hash of the pack's own bytes. */
     integrity?: string;
+    /** The absolute path of a local `npm pack` file (`.tgz`) to install instead of the registry's version: an uploaded
+     * plugin, already fetched, verified and cached by `PluginUploads.ts`. Unlike a `sources` tarball, what npm installed
+     * is still checked against `integrity` and `packageVersion`. */
+    pack?: string;
 }
 
 /** One of a plugin's UI apps (its manifest's `ui.apps`), with the directories it's built and rendered from. */
@@ -293,7 +298,7 @@ export class PluginInstaller {
         // the same package. (A local `sources` tarball has none, and isn't checked.)
         const plugins: DesiredPlugin[] = [];
         for (const plugin of desired) {
-            if (this.options.requireIntegrity !== false && !this.options.sources?.[plugin.name] && !plugin.integrity) {
+            if (this.options.requireIntegrity !== false && !this.options.sources?.[plugin.name] && !plugin.pack && !plugin.integrity) {
                 errors.push({
                     name: plugin.name,
                     message: "No integrity hash was recorded when the plugin was added, so the installed package can't be verified. Update or re-add the plugin.",
@@ -305,7 +310,7 @@ export class PluginInstaller {
 
         const dependencies: Record<string, string> = {};
         for (const plugin of plugins) {
-            const source: string | undefined = this.options.sources?.[plugin.name];
+            const source: string | undefined = plugin.pack ?? this.options.sources?.[plugin.name];
             dependencies[plugin.name] = source ? `file:${path.resolve(source)}` : plugin.packageVersion;
         }
         const manifest = { name: "rapidmx-plugins", private: true, dependencies };
@@ -483,9 +488,19 @@ export class PluginInstaller {
             throw new Error("The package was not installed.");
         }
         const pkg: any = JSON.parse(fs.readFileSync(packageJson, "utf8"));
-        const sourced: boolean = !!this.options.sources?.[plugin.name];
+        const sourced: boolean = !!this.options.sources?.[plugin.name] || !!plugin.pack;
 
-        if (!sourced) {
+        if (plugin.pack) {
+            // An uploaded pack is installed from a local file, so npm's lockfile records the SHA-512 of that exact file: it
+            // has to be the one the pack was verified against, and the package has to be the version the row names.
+            if (pkg.version !== plugin.packageVersion) {
+                throw new Error(`Expected version ${plugin.packageVersion}, but ${pkg.version} was installed.`);
+            }
+            const installedIntegrity: string | undefined = lock.packages?.[`node_modules/${plugin.name}`]?.integrity;
+            if (installedIntegrity && installedIntegrity !== plugin.integrity) {
+                throw new Error("The installed package's integrity hash doesn't match the uploaded pack's.");
+            }
+        } else if (!sourced) {
             if (pkg.version !== plugin.packageVersion) {
                 throw new Error(`Expected version ${plugin.packageVersion}, but ${pkg.version} was installed.`);
             }
