@@ -1810,9 +1810,9 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@rapidmx/restapi@npm:^0.27.1":
-  version: 0.27.1
-  resolution: "@rapidmx/restapi@npm:0.27.1"
+"@rapidmx/restapi@npm:^0.28.0":
+  version: 0.28.0
+  resolution: "@rapidmx/restapi@npm:0.28.0"
   dependencies:
     "@peculiar/x509": "npm:^2.1.0"
     acme-client: "npm:^5.4.0"
@@ -1845,13 +1845,13 @@ __metadata:
       optional: true
     pdf-parse:
       optional: true
-  checksum: 10c0/7844c4c92edd4e1fd7cadc1089ddec1d14968d3939919eeac6712fd1fb61c9ec5fad07973fc2962ba45df2b67379db3ecc2da5c323c2461444d3c537d2ae4bfb
+  checksum: 10c0/1e671dedecec9b3f98308d0f494d3e88241c1872438919897e1fa36644c061c3a9e23af07de203921b5681030f63258ffe318cbf730b4dd6300a6d5eb3f7932c
   languageName: node
   linkType: hard
 
-"@rapidmx/web-client@npm:^0.30.0":
-  version: 0.30.0
-  resolution: "@rapidmx/web-client@npm:0.30.0"
+"@rapidmx/web-client@npm:^0.31.0":
+  version: 0.31.0
+  resolution: "@rapidmx/web-client@npm:0.31.0"
   dependencies:
     "@dnd-kit/core": "npm:^6.3.1"
     "@emoji-mart/data": "npm:^1.2.1"
@@ -1880,7 +1880,7 @@ __metadata:
     "@rapidrest/react": ">=2.1.0 <3"
     react: 19.x
     react-dom: 19.x
-  checksum: 10c0/72b4cf420d60f8cc381882177d875349f7ecd3be0b5e38bcbb17cf2122545fb284a6a4011a41db3a38fefa10e31b8564685af3e7c0e0cef0f847fb8d7deb844f
+  checksum: 10c0/a80ab9e7a4f3189ab51886d52a232c1f2dba7ad39bb84effe2c960ae89a94dcdc53273f7ed7ffaaa1e16b35233fc0044e13cb07ddfdf298076ff018d88d611a3
   languageName: node
   linkType: hard
 
@@ -9875,8 +9875,8 @@ __metadata:
   resolution: "server@workspace:."
   dependencies:
     "@aws-sdk/client-s3": "npm:^3.906.0"
-    "@rapidmx/restapi": "npm:^0.27.1"
-    "@rapidmx/web-client": "npm:^0.30.0"
+    "@rapidmx/restapi": "npm:^0.28.0"
+    "@rapidmx/web-client": "npm:^0.31.0"
     "@rapidrest/cli": "npm:^2.1.0"
     "@rapidrest/core": "npm:^6.0.0"
     "@rapidrest/react": "npm:2.1.0"

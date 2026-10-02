@@ -131,9 +131,11 @@ describe("PluginRoute over HTTP (MongoDB)", () => {
         expect(await plugins().countDocuments({ removed: false })).toBe(1);
     });
 
-    it("keeps uninstalling as it was for a caller who sends no purgeData - trusted role alone is enough", async () => {
+    it("keeps uninstalling as it was for a caller who sends no purgeData - an elevated administrator is enough, an unelevated one is refused", async () => {
         await installRow("row-1");
-        const reply = await call("DELETE", "/api/system/plugins/row-1", tokens.admin);
+        expect((await call("DELETE", "/api/system/plugins/row-1", tokens.admin)).status).toBe(403);
+        expect(await plugins().findOne({ uid: "row-1" })).toEqual(expect.objectContaining({ removed: false }));
+        const reply = await call("DELETE", "/api/system/plugins/row-1", tokens.elevatedAdmin);
         expect(reply.status).toBe(200);
         expect(reply.body).toEqual({ purgeScheduled: false });
         expect(await plugins().findOne({ uid: "row-1" })).toEqual(expect.objectContaining({ removed: true, enabled: false }));
@@ -220,7 +222,7 @@ describe("PluginRoute over HTTP (MongoDB)", () => {
         const status = await call("GET", "/api/system/plugins/status", tokens.admin);
         expect(status.body.purges).toEqual([]);
         // The body reaches the add (the override keeps restapi's parameters): no name is restapi's own 400.
-        const add = await call("POST", "/api/system/plugins", tokens.admin, {});
+        const add = await call("POST", "/api/system/plugins", tokens.elevatedAdmin, {});
         expect(add.status).toBe(400);
     });
 });
