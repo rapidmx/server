@@ -7,6 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.32] - 2026-10-02
+
+### Changed
+- Hide the whole credential part of a URL in the Diagnostics environment and configuration, up to its last at sign, and hide a value with whitespace in it, instead of showing the tail of a password
+- Keep the values of environment variables out of the Diagnostics configuration list, whatever shape their value takes
+- Stop a very long configuration value from making the Diagnostics redaction take seconds
+- Leave an inline image out of a sent message when the body no longer refers to it
+- Install helm in the single node installer from a pinned release of its install script
+- Show a configuration or environment value in the Diagnostics only when it is exactly right, hiding the whole of it when it has a password, token, signature or other credential in a URL, a connection string, a header or a query string, and stop a URL with an at sign in its path from losing its host
+- Keep a plugin's own settings in the Diagnostics configuration list when an environment variable starts with their name
+- Let a signed or encrypted message through when the only inline image left on the draft is one its body no longer refers to
+- Make ClamAV pods ready only once the scanner answers, giving them a start-up allowance of ten minutes, and keep the old pod until then
+- Answer 404 for /internal at the public gateway again, turn away /internal requests that carry proxy headers, and lock out an address after ten wrong secrets
+- Refuse an ingest secret shorter than sixteen characters in production
+- Admit only the pods that ask to the bundled MongoDB and PostgreSQL, and to those of the auth server
+- Generate the escrow audit key again for installs without OpenBao, and log an error in production when it is empty
+- Pass the stored secret to the JWT secret helper, and refuse to render an empty JWT secret when the auth server is part of the release
+- Leave out of the plugins to install any enabled one that the allowed packages or namespaces do not name
+- Refuse a plugin page on a path the console already uses, taking those paths from the installed web client
+- Keep a plugin's saved settings from overriding core configuration
+- Redirect http to https at the gateway when it ends TLS
+- Leave localhost:3000 out of the allowed origins in production
+- Judge a local host name by its ending rather than by containing .local
+- Keep the mail, key and certificate volumes when the release is uninstalled, and ask for --yes before the installer uninstalls
+- Pin the versions of k3s, cert-manager and the AWS controllers the installers fetch, and default the AWS stack to the current chart
+- Count wrong Basic auth passwords per address and user so that a stranger cannot lock the owner out, and count an attempt when it starts
+- Require sign in to read the OpenAPI description
+- Pin the images of the init and test pods, stop mounting a service account into rspamd, ClamAV and the test pod, and always pull ClamAV
+- Switch off the coturn command line and limit the allocations of a user
+- Give the CI jobs read only permissions and the token that makes the chart public
+- Pin the Node base image by digest
+- Never refuse a correct ingest secret, count the wrong ones by the real address of the caller, and answer a proxied /internal request with a status the mail bridges retry
+- Delay a login for a user that is under attack rather than locking the user out
+- Apply a plugin's saved settings only for the keys its manifest declares and outside the server's own configuration, and widen the protected keys
+- Keep the bundled MongoDB volumes when the release is uninstalled
+- Mount a ClamAV configuration that alerts on archives and files over the limits
+- Pin the Postfix image
+- Warn instead of failing the start when the ingest secret is short
+- Say in the chart values how to turn off the https redirect behind a front that ends TLS, which proxies to trust and what a hand made OpenBao path needs
+- Render the chart in CI
+- Fetch the dependencies of the chart before the CI job renders it
+- Update @rapidmx/restapi to 0.28.0 and @rapidmx/web-client to 0.31.0
+- Ask for an elevated administrator in the plugin route tests, which restapi now requires to add or remove a plugin
+
 ## [1.0.0-beta.31] - 2026-10-01
 
 ### Changed
@@ -1098,7 +1142,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed test from .dockerignore, fixing yarn build's lint step failing outright when the build context is missing the test directory its tsconfig.eslint.json requires
 - Removed docker-compose.mail.yml's partial server: service block, since include: only supports merging resources that don't already exist in the including file and hard-errors ("services.server conflicts with imported resource") on a Compose version newer than whatever this had only ever been tested against locally
 
-[Unreleased]: https://github.com/rapidmx/server/compare/v1.0.0-beta.31...HEAD
+[Unreleased]: https://github.com/rapidmx/server/compare/v1.0.0-beta.32...HEAD
+[1.0.0-beta.32]: https://github.com/rapidmx/server/compare/v1.0.0-beta.31...v1.0.0-beta.32
 [1.0.0-beta.31]: https://github.com/rapidmx/server/compare/v1.0.0-beta.30...v1.0.0-beta.31
 [1.0.0-beta.30]: https://github.com/rapidmx/server/compare/v1.0.0-beta.29...v1.0.0-beta.30
 [1.0.0-beta.29]: https://github.com/rapidmx/server/compare/v1.0.0-beta.28...v1.0.0-beta.29
