@@ -165,14 +165,40 @@ spec:
     backendRefs:
     - name: {{ include "rrst.fullname" . }}-services
       port: 80
-    {{- if not $.Values.global.gateway.hsts }}
-    # Standard Gateway API filter, so it works on any implementation (Envoy Gateway, nginx-gateway-fabric, ...).
+    # Baseline security response headers for every served response (the app's HTML shell, the static bundles and the API).
+    # A standard Gateway API filter, so it works on any implementation (Envoy Gateway, nginx-gateway-fabric, ...). In
+    # tlsTermination: pod mode the gateway only passes TLS bytes through and cannot add these (see the TLSRoute below); the
+    # pod has to set them itself there.
     filters:
     - type: ResponseHeaderModifier
       responseHeaderModifier:
+        set:
+        # Stops a browser from MIME-sniffing a response into a type it wasn't sent as (e.g. treating a text body as a script).
+        - name: X-Content-Type-Options
+          value: nosniff
+        - name: Referrer-Policy
+          value: strict-origin-when-cross-origin
+        {{- if $.Values.global.gateway.hsts }}
+        # HTTPS is enforced for two years. `host` has no sub-names of its own, so includeSubDomains costs nothing here and is
+        # kept for when it does. `preload` is deliberately not set: that submits the name to browsers' preload list, which is
+        # slow to undo, so it's left to the operator.
+        - name: Strict-Transport-Security
+          value: max-age=63072000; includeSubDomains
+        {{- end }}
+        add:
+        # Added, not set, so it layers with - never replaces - the stricter `default-src 'none'; sandbox` CSP the app already
+        # sends on the routes that render untrusted content (attachments, message bodies, branding); a browser enforces every
+        # CSP it receives, so the most restrictive one still wins on those routes. `frame-ancestors 'self'` blocks cross-origin
+        # framing (clickjacking) while still letting the reading pane frame its own same-origin `/messages/:id/content`; a blunt
+        # `X-Frame-Options: DENY` would break that same-origin iframe, so it is deliberately not used. A `script-src` policy is
+        # not set here: it needs per-response nonces threaded through the SSR shell (a separate change), and an un-nonced
+        # `script-src` would break the app.
+        - name: Content-Security-Policy
+          value: "frame-ancestors 'self'; object-src 'none'; base-uri 'self'"
+        {{- if not $.Values.global.gateway.hsts }}
         remove:
         - Strict-Transport-Security
-    {{- end }}
+        {{- end }}
   {{- end }}
 {{- if $redirectHTTP }}
 ---

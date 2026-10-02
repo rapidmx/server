@@ -27,6 +27,12 @@ export const CORE_HIDDEN_SETTINGS: readonly string[] = [
     "mail:pki:openbao:token",
     "giphy:api_key",
     "system:plugins:registry_token",
+    // Static object-store credentials for a deployment that sets them (backend "s3"/SES, not the default "local"): opaque
+    // high-entropy values under innocent key names, so the value-scrubber cannot catch them - they must be listed here.
+    "mail:blob:s3:access_key_id",
+    "mail:blob:s3:secret_access_key",
+    // The plugin namespaces list may carry an inline npm `token` for a private scope; hide the subtree so that token cannot leak.
+    "system:plugins:namespaces",
     // The video conferencing plugin's (meet-plugin) secrets, until its manifest says so with `secret: true`.
     "mail:videoconf:turn:credential",
     "mail:videoconf:turn:shared_secret",
