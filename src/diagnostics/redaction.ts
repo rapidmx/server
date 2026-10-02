@@ -1,69 +1,26 @@
 ///////////////////////////////////////////////////////////////////////////////
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 ///////////////////////////////////////////////////////////////////////////////
+import { isHiddenSetting } from "./hiddenSettings.js";
 import type { DiagnosticsSetting } from "./types.js";
 
 /**
- * What the Diagnostics "Information" page may show of the server's environment variables and configuration. The page exists
- * for support, so it is deliberately allowed to be wrong in the direction of hiding too much, never too little.
+ * What the Diagnostics "Information" page may show of the server's environment variables and configuration: every value except
+ * those of the names on the explicit list in `hiddenSettings.ts`, which are listed by name only. A hidden setting's value is
+ * never put in the response, so it cannot leak through the client, a saved report, a proxy's logs or a screenshot. The UI's
+ * "hidden" text is rendered client-side from `redacted`.
  *
- * A name that looks like a secret is ALWAYS hidden (`isSecretName`), whatever its value and even if it is also on the
- * allowlist. A hidden setting is listed by name only: its value is never put in the response, so it cannot leak through the
- * client, a saved report, a proxy's logs or a screenshot. The UI's "hidden" text is rendered client-side from `redacted`.
- *
- * Environment variables are allowlist-first (`SHOWN_ENVIRONMENT`): a value is shown only for names known to be harmless
- * (NODE_ENV, TZ, PATH, *_HOST, *_PORT, Kubernetes' service variables, switches, limits, URLs, ...). Every other name is
- * hidden, because an unknown variable can hold anything.
- *
- * Configuration keys are the server's own settings, so they are shown unless the name is secret-like, but a value that is
- * itself shaped like a secret (private key block, JWT, `password=...`) is hidden, and every shown value is scrubbed (`scrubValue`).
- *
- * A URL loses its `user:password@` part, and a value with a secret-named `name=value` pair is hidden whole. A secret in a
- * URL's path (a webhook) cannot be recognized, so a name containing "webhook" is treated as secret; URLs are otherwise shown,
- * as the chart's own service and datastore addresses are the most useful thing the page can say.
+ * Whatever is shown is scrubbed by its value (`scrubValue`): a URL loses its `user:password@` part, and a value with a
+ * secret-named `name=value` pair, a `Bearer`/`Basic` token, a private key or a JWT is hidden whole, under any name.
  */
 
 /**
- * Names (an environment variable, or one segment of a configuration key) that are treated as holding a secret. A substring
- * match, case-insensitive and unanchored, so `mail__transport__ingest__secret`, `apiKey` and `DB_PASSWD` all match. It
- * over-matches on purpose (`auth:*` settings, `KEYBOARD`): hiding a harmless value costs a support question, leaking a secret
- * costs much more. `PWD` is not here: it is the working directory on Unix, and `PASSWORD`/`PASSWD` cover the rest.
+ * Names of the `name=value` pairs inside a value (a query parameter, a connection-string setting) that mean the value holds a
+ * secret. This is about the inside of one value, not about which settings are hidden (`hiddenSettings.ts`): a connection string
+ * with `password=...` in it is hidden whole whatever its setting is called. A substring match, case-insensitive.
  */
 const SECRET_NAME =
     /(SECRET|PASS(WORD|WD|PHRASE)?|TOKEN|KEY|CREDENTIAL|AUTHORIZATION|AUTH[_.-]?(HEADER|KEY|SECRET)|PRIVATE|COOKIE|SESSION|SALT|DSN|CONNECTION|CERT|SIGNATURE|BEARER|JWT|WEBHOOK|NONCE|SEED|HASH|OTP|LICENSE)/i;
-
-/**
- * A setting that is about a secret, not one: `allow_simple_password`, `min_password_length`, `password_enabled`, `max_failed_attempts`,
- * `require_device_encryption`. Judged on the last segment of a name only, so `controller_password` and `audit_hmac_key` are still secrets.
- */
-const POLICY_NAME = /^(allow|require|min|max|enable|disable|is|has)[_-]|[_-](enabled|disabled|required|length|count|size|attempts|days|seconds|minutes|ms|ttl|policy|mode|type|rounds|iterations)$/i;
-
-/**
- * Whether `name` looks like it holds a secret. The value is never consulted: a secret name wins over everything else, unless
- * the last segment of the name says it is a switch, a limit or a policy about the secret rather than the secret itself.
- */
-export function isSecretName(name: string): boolean {
-    if (!SECRET_NAME.test(name)) {
-        return false;
-    }
-    return !POLICY_NAME.test(name.split(/__|:|\./).pop() ?? name);
-}
-
-/** Environment variable names whose value is shown (when the name is not secret-like either). Everything else is hidden. */
-const SHOWN_ENVIRONMENT: RegExp[] = [
-    /^(NODE_ENV|TZ|LANG|LANGUAGE|PORT|HOSTNAME|HOST|PWD|SHLVL|TERM|NODE_VERSION|YARN_VERSION|PATH|HOME|USER|LOGNAME|SHELL|TMPDIR)$/i,
-    /^LC_[A-Z_]+$/i,
-    // Hosts, ports and addresses, the chart's `service__name__host` style included: "HOST", "SMTP_HOST", "KUBERNETES_SERVICE_PORT".
-    /(^|_)(HOST|HOSTNAME|PORT|ADDR|ADDRESS|PROTO|PROTOCOL)$/i,
-    // Kubernetes service discovery: `REDIS_PORT_6379_TCP_ADDR`, `MONGODB_SERVICE_PORT_MONGODB`, `POSTFIX_BRIDGE_SERVICE_PORT_SMTP_DELIVERY`.
-    /_PORT_\d+_(TCP|UDP)(_(ADDR|PORT|PROTO))?$/i,
-    /_SERVICE_PORT_[A-Z0-9_]+$/i,
-    // Plain switches, selectors and limits in the `a__b__enabled` / `datastores__cache__type` convention.
-    /(^|_)(ENABLED|DISABLED|TYPE|DATABASE|DOMAIN|SYNCHRONIZE|REGION|LEVEL|NAMESPACE|REALM|AUDIENCE|ISSUER|EXPIRESIN|EXPIRES_IN|ORIGINS|BACKEND|CLIENT_ID|CONTACT_EMAIL|SCHEDULE|TIMEOUT|TTL|TTL_MS|LIMIT|INTERVAL|MODE|FORMAT|ID)$/i,
-    /(^|_)(MAX|MIN)_[A-Z0-9_]+$/i,
-    // Addresses of services, scrubbed like any other value (a `user:password@` or a `password=` hides the whole value).
-    /(^|_)(URL|URI|ENDPOINT)$/i,
-];
 
 /** A private key block, or three base64url parts joined with dots (a JWT): never shown even under an innocent name. */
 const SECRET_VALUE = /-----BEGIN [A-Z0-9 ]*(PRIVATE KEY|CERTIFICATE)|\beyJ[\w-]{5,}\.[\w-]{5,}\.[\w-]*/;
@@ -147,7 +104,7 @@ function stripUrlCredentials(value: string): string | undefined {
 /** Whether a `name=value` pair in `value` has a secret-like name and a non-empty value. */
 function hasSecretPair(value: string): boolean {
     for (const match of value.matchAll(NAME_VALUE_PAIR)) {
-        if (match[2] !== "" && (isSecretName(match[1]) || SECRET_PAIR_NAME.test(match[1]))) {
+        if (match[2] !== "" && (SECRET_NAME.test(match[1]) || SECRET_PAIR_NAME.test(match[1]))) {
             return true;
         }
     }
@@ -182,15 +139,14 @@ function shown(name: string, value: string): DiagnosticsSetting {
 
 const byName = (a: DiagnosticsSetting, b: DiagnosticsSetting) => a.name.localeCompare(b.name);
 
-/** The process environment, sorted by name: secret-like and unknown names listed without a value, allowlisted ones scrubbed. */
+/** The process environment, sorted by name: the names on the hidden list without a value, every other one scrubbed. */
 export function describeEnvironment(env: NodeJS.ProcessEnv): DiagnosticsSetting[] {
     const settings: DiagnosticsSetting[] = [];
     for (const [name, value] of Object.entries(env)) {
         if (value === undefined) {
             continue;
         }
-        const allowed = !isSecretName(name) && SHOWN_ENVIRONMENT.some((pattern) => pattern.test(name));
-        settings.push(allowed ? shown(name, value) : hidden(name));
+        settings.push(isHiddenSetting(name) ? hidden(name) : shown(name, value));
     }
     return settings.sort(byName);
 }
@@ -201,7 +157,7 @@ const MAX_SETTINGS = 5000;
 
 /**
  * Flattens a configuration tree into `a:b:c` names (nconf's own separator, so the names are what `@Config("a:b:c")` reads). A
- * secret-named key hides its whole subtree as one entry, so not even the shape of the secret is listed.
+ * hidden name hides its whole subtree as one entry, so not even the shape of the secret is listed.
  */
 function flatten(node: unknown, prefix: string, depth: number, seen: Set<unknown>, out: DiagnosticsSetting[]): void {
     if (out.length >= MAX_SETTINGS) {
@@ -231,7 +187,7 @@ function flatten(node: unknown, prefix: string, depth: number, seen: Set<unknown
     }
     for (const [key, child] of entries) {
         const name = `${prefix}:${key}`;
-        if (isSecretName(key)) {
+        if (isHiddenSetting(name)) {
             out.push(hidden(name));
         } else {
             flatten(child, name, depth + 1, seen, out);
@@ -243,7 +199,7 @@ function flatten(node: unknown, prefix: string, depth: number, seen: Set<unknown
 /**
  * The effective configuration (every nconf layer merged: arguments, environment, runtime and plugin settings, defaults),
  * flattened and sorted. The merged tree also holds every environment variable as a top-level key of its own name (nconf's env
- * layer); those are what the Environment list already covers, under its stricter allowlist, so a scalar top-level key that is
+ * layer); those are what the Environment list already covers, so a scalar top-level key that is
  * an environment variable and not one of the `declared` defaults is dropped rather than shown twice and unfiltered. That holds
  * whatever the value: `parseValues` turns a JSON value into an object, and the `__` separator turns `FOO__BAR` into a
  * `FOO` subtree, so a key is also dropped when it is the first segment of an environment name. Names compare case-insensitively.
@@ -267,7 +223,7 @@ export function describeConfiguration(tree: unknown, env: NodeJS.ProcessEnv, dec
         if (!known.has(key) && environment.has(key.toLowerCase())) {
             continue;
         }
-        if (isSecretName(key)) {
+        if (isHiddenSetting(key)) {
             out.push(hidden(key));
         } else {
             flatten(child, key, 1, new Set(), out);

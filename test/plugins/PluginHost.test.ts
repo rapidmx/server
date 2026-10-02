@@ -9,6 +9,7 @@ import nconf from "nconf";
 import { computePluginStateHash, PluginRegistry } from "@rapidmx/restapi";
 import { FolderSQL, PluginSQL } from "@rapidmx/restapi/sql";
 import { ConnectionManager, ObjectFactory } from "@rapidrest/service-core";
+import { isHiddenSetting, resetHiddenSettings } from "../../src/diagnostics/hiddenSettings.js";
 import { installRetryDelayMs, PLUGIN_SAFE_MODE_ENV, PluginHost } from "../../src/plugins/PluginHost.js";
 import { MONGO_PLUGIN_UI_HOSTS } from "../../src/plugins/hosts/mongo.js";
 import { resolvePluginUiApps } from "../../src/plugins/PluginInstaller.js";
@@ -265,6 +266,7 @@ describe("PluginStateStore", () => {
 
 describe("PluginHost", () => {
     afterEach(() => {
+        resetHiddenSettings();
         delete process.env[PLUGIN_SAFE_MODE_ENV];
         delete process.env[SAFE_MODE_BASELINE_ENV];
         delete process.env[SAFE_MODE_ATTEMPT_ENV];
@@ -356,6 +358,23 @@ describe("PluginHost", () => {
         expect(config.get("mail:videoconf:turn:shared_secret")).toBeUndefined();
         expect(config.get("mail:transport:sendmail:path")).toBeUndefined();
         expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("mail:videoconf:turn:shared_secret"));
+    });
+
+    it("hides in the Diagnostics the settings an installed manifest declares secret: true, and only those", async () => {
+        const manifest = { ...MANIFEST, settings: [
+            { key: "mail:hosted:api_token", label: "Token", type: "string", secret: true },
+            { key: "mail:hosted:region", label: "Region", type: "string" },
+            { key: "mail:hosted:flag", label: "Flag", type: "boolean", secret: false },
+        ] };
+        const installer: any = { install: vi.fn(async () => ({ installed: [installed("@rapidmx/hosted", manifest), installed("@rapidmx/plain", { apiVersion: 1, displayName: "Plain" })], errors: [] })) };
+        resetHiddenSettings();
+        expect(isHiddenSetting("mail:hosted:api_token")).toBe(false);
+        await PluginHost.prepare({ config: configWith({}), logger, datastore: "mongo", pluginClass: class {}, appRoot: process.cwd(), store: new MemoryStore([]), installer });
+
+        expect(isHiddenSetting("mail:hosted:api_token")).toBe(true);
+        expect(isHiddenSetting("mail__hosted__API_TOKEN")).toBe(true);
+        expect(isHiddenSetting("mail:hosted:region")).toBe(false);
+        expect(isHiddenSetting("mail:hosted:flag")).toBe(false);
     });
 
     it("installs enabled plugins, applies the settings of installed ones and records their errors", async () => {

@@ -26,6 +26,7 @@ import {
     type PluginNamespace,
 } from "@rapidmx/restapi";
 import { applyPluginSetting, isAllowedPluginSettingKey } from "../config.defaults.js";
+import { hideSettings } from "../diagnostics/hiddenSettings.js";
 import { PluginClassLoader, type PluginUiLoadOptions } from "./PluginClassLoader.js";
 import { PluginInstaller, type PluginInstallerOptions, type PluginInstallResult } from "./PluginInstaller.js";
 import { describeModels } from "./PluginOwnedData.js";
@@ -241,6 +242,8 @@ export class PluginHost {
         const declaredKeys: Map<string, string[]> = new Map(
             installed.map((plugin) => [plugin.name, (plugin.manifest.settings ?? []).map((setting) => setting.key)]),
         );
+        // The settings a plugin's manifest marks `secret: true` are the ones the Diagnostics never shows.
+        hideSettings(installed.flatMap((plugin) => (plugin.manifest.settings ?? []).filter((setting) => setting.secret === true).map((setting) => setting.key)));
         for (const row of enabled.filter((plugin) => declaredKeys.has(plugin.name))) {
             for (const [key, value] of Object.entries(row.settings ?? {})) {
                 // An empty value (or null) means "not set": a plugin's manifest may declare "" as a default, which is saved when

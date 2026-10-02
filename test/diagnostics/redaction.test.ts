@@ -2,11 +2,11 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 ///////////////////////////////////////////////////////////////////////////////
 import nconf from "nconf";
+import { CORE_HIDDEN_SETTINGS, hideSettings, isHiddenSetting, resetHiddenSettings } from "../../src/diagnostics/hiddenSettings.js";
 import { DiagnosticsCollector } from "../../src/diagnostics/DiagnosticsCollector.js";
 import {
     describeConfiguration,
     describeEnvironment,
-    isSecretName,
     MAX_VALUE_LENGTH,
     scrubValue,
 } from "../../src/diagnostics/redaction.js";
@@ -30,34 +30,6 @@ function expectNoSecrets(value: unknown) {
         expect(json).not.toContain(secret);
     }
 }
-
-describe("isSecretName", () => {
-    it.each([
-        "DB_PASSWORD",
-        "db_passwd",
-        "API_KEY",
-        "apiKey",
-        "GITHUB_TOKEN",
-        "mail__transport__ingest__secret",
-        "AWS_SECRET_ACCESS_KEY",
-        "auth__secret",
-        "cookie_secret",
-        "PRIVATE_KEY",
-        "SESSION_ID",
-        "PASSWORD_SALT",
-        "SENTRY_DSN",
-        "MONGO_CONNECTION_STRING",
-        "TLS_CERT",
-        "SLACK_WEBHOOK_URL",
-        "CREDENTIALS",
-    ])("treats %s as a secret", (name) => {
-        expect(isSecretName(name)).toBe(true);
-    });
-
-    it.each(["NODE_ENV", "TZ", "PORT", "HOSTNAME", "PWD", "LANG", "datastores:cache:type"])("does not treat %s as a secret", (name) => {
-        expect(isSecretName(name)).toBe(false);
-    });
-});
 
 describe("scrubValue", () => {
     it("strips the credentials of a URL", () => {
@@ -194,7 +166,11 @@ describe("scrubValue: round-2 findings", () => {
     });
 });
 
+const asEnvironment = (name: string) => name.replace(/:/g, "__");
+
 describe("describeEnvironment", () => {
+    afterEach(() => resetHiddenSettings());
+
     const env = {
         NODE_ENV: "production",
         TZ: "UTC",
@@ -202,21 +178,21 @@ describe("describeEnvironment", () => {
         SMTP_HOST: "smtp.example.com",
         LC_ALL: "C.UTF-8",
         datastores__cache__type: "redis",
-        DB_PASSWORD: "hunter2-password-value",
-        GITHUB_TOKEN: "s3cr3t-token-value",
-        AWS_ACCESS_KEY_ID: "AKIAIOSFODNN7EXAMPLE",
-        SLACK_WEBHOOK_URL: "https://hooks.example.com/webhook-path-secret",
-        SESSION_STORE: "sessionid-secret-value",
-        // Not on the allowlist and not secret-named: hidden because it is unknown.
-        MY_APP_SETTING: "urlpass-secret",
-        // On the allowlist by name, but the value is a private key: hidden.
+        // On the list by name: hidden whatever the value looks like.
+        auth__secret: "hunter2-password-value",
+        cookie_secret: "s3cr3t-token-value",
+        giphy__api_key: "AKIAIOSFODNN7EXAMPLE",
+        mail__pki__openbao__token: "webhook-path-secret",
+        session__secret: "sessionid-secret-value",
+        // Not on the list, but the value is shaped like a credential: hidden by value.
         SOME_HOST: "-----BEGIN PRIVATE KEY-----",
-        // On the allowlist by name, with credentials in the value: scrubbed.
+        SOME_JWT: "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.c2lnbmF0dXJl",
+        // Not on the list, with credentials in the value: scrubbed.
         REPLICA_HOST: "mongodb://u:urlpass-secret@replica",
         UNSET: undefined,
     };
 
-    it("shows allowlisted names and withholds every other value", () => {
+    it("hides the names on the list and shows every other value", () => {
         const result = describeEnvironment(env);
         const byName = Object.fromEntries(result.map((s) => [s.name, s]));
         expect(byName.NODE_ENV).toEqual({ name: "NODE_ENV", value: "production", redacted: false });
@@ -226,8 +202,8 @@ describe("describeEnvironment", () => {
         expect(byName.LC_ALL.value).toBe("C.UTF-8");
         expect(byName.datastores__cache__type.value).toBe("redis");
         expect(byName.REPLICA_HOST.value).toBe("mongodb://replica");
-        for (const name of ["DB_PASSWORD", "GITHUB_TOKEN", "AWS_ACCESS_KEY_ID", "SLACK_WEBHOOK_URL", "SESSION_STORE", "MY_APP_SETTING", "SOME_HOST"]) {
-            expect(byName[name]).toEqual({ name, redacted: true });
+        for (const name of ["auth__secret", "cookie_secret", "giphy__api_key", "mail__pki__openbao__token", "session__secret", "SOME_HOST", "SOME_JWT"]) {
+            expect(byName[name], name).toEqual({ name, redacted: true });
         }
         expect(byName.UNSET).toBeUndefined();
     });
@@ -238,26 +214,37 @@ describe("describeEnvironment", () => {
         expectNoSecrets(result);
     });
 
-    it("never shows a secret-named variable even when its name also matches the allowlist", () => {
-        const result = describeEnvironment({ SECRET_HOST: "auth-internal", TOKEN_PORT: "1234" });
-        expect(result).toEqual([
-            { name: "SECRET_HOST", redacted: true },
-            { name: "TOKEN_PORT", redacted: true },
-        ]);
+    it.each(CORE_HIDDEN_SETTINGS)("hides %s in its configuration, environment and any-case spelling, and everything below it", (name) => {
+        const spellings = [name, asEnvironment(name), name.toUpperCase(), asEnvironment(name).toUpperCase()];
+        const children = spellings.map((spelling) => `${spelling}${spelling.includes("__") ? "__" : ":"}child`);
+        for (const spelling of [...spellings, ...children]) {
+            expect(isHiddenSetting(spelling), spelling).toBe(true);
+            expect(describeEnvironment({ [spelling]: "plain-visible-value" }), spelling).toEqual([{ name: spelling, redacted: true }]);
+        }
+        // A name that only starts with a listed one is not beneath it.
+        expect(isHiddenSetting(`${name}x`)).toBe(false);
+        expect(isHiddenSetting(`x${name}`)).toBe(false);
     });
 
     it("shows the harmless variables of a cluster: service discovery, addresses, switches, limits and the auth settings that are not secrets", () => {
         const env = {
+            NODE_ENV: "production",
+            PATH: "/usr/local/bin:/usr/bin",
+            KUBERNETES_SERVICE_HOST: "10.43.0.1",
+            KUBERNETES_SERVICE_PORT: "443",
+            KUBERNETES_PORT: "tcp://10.43.0.1:443",
             CLAMAV_PORT: "tcp://10.43.73.82:3310",
             CLAMAV_PORT_3310_TCP_ADDR: "10.43.73.82",
             CLAMAV_PORT_3310_TCP_PROTO: "tcp",
             POSTFIX_BRIDGE_SERVICE_PORT_SMTP_DELIVERY: "2525",
-            PATH: "/usr/local/bin:/usr/bin",
             auth__options__audience: "mail.example.com",
             auth__options__expiresIn: "1h",
             mail__basic_auth__enabled: "true",
             mail__basic_auth__realm: "Mail",
             mail__basic_auth__failure_limit: "10",
+            mail__eas__provision__allow_simple_password: "false",
+            mail__eas__provision__min_password_length: "8",
+            mail__eas__provision__password_enabled: "true",
             mail__booking__public_url: "https://mail.example.com/book",
             datastores__mongo__url: "mongodb://mongodb:27017/rrst",
             cors__origins: "https://mail.example.com",
@@ -268,34 +255,49 @@ describe("describeEnvironment", () => {
         }
     });
 
-    it("still hides the secrets among them, and a URL's credentials", () => {
+    it("shows a name that merely looks secret-like, because the list is the contract, but still scrubs its value", () => {
         const result = Object.fromEntries(
             describeEnvironment({
-                auth__secret: "s3cret-value",
-                cookie_secret: "c",
-                mail__scan__spam__rspamd__controller_password: "pw",
-                mail__videoconf__turn__shared_secret: "x",
-                mail__escrow__audit_hmac_key: "k",
-                datastores__cache__url: "redis://:hunter2@cache:6379",
+                MY_API_KEY: "plain-visible-value",
+                DB_PASSWORD: "plain-password-value",
+                DB_URL: "redis://:hunter2@cache:6379",
+                MY_TOKEN: "Bearer abc123",
+                MY_PRIVATE_KEY: "-----BEGIN PRIVATE KEY-----",
+                MY_JWT: "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.c2lnbmF0dXJl",
+                MY_DSN: "host=x;password=hunter2",
             }).map((s) => [s.name, s]),
         );
-        for (const name of ["auth__secret", "cookie_secret", "mail__scan__spam__rspamd__controller_password", "mail__videoconf__turn__shared_secret", "mail__escrow__audit_hmac_key"]) {
+        expect(result.MY_API_KEY).toEqual({ name: "MY_API_KEY", value: "plain-visible-value", redacted: false });
+        expect(result.DB_PASSWORD.value).toBe("plain-password-value");
+        expect(result.DB_URL.value).toBe("redis://cache:6379");
+        for (const name of ["MY_TOKEN", "MY_PRIVATE_KEY", "MY_JWT", "MY_DSN"]) {
             expect(result[name], name).toEqual({ name, redacted: true });
         }
-        expect(result.datastores__cache__url.value).toBe("redis://cache:6379");
     });
 
-    it("shows a setting about a secret (a switch, a limit, a policy) but not the secret", () => {
-        for (const name of ["mail:eas:provision:allow_simple_password", "mail:eas:provision:min_password_length", "mail:eas:provision:password_enabled", "mail:eas:provision:require_device_encryption", "x__api_key_length"]) {
-            expect(isSecretName(name), name).toBe(false);
-        }
-        for (const name of ["password", "mail:escrow:audit_hmac_key", "controller_password", "mail:transport:ingest:secret", "datastores:mongo:options:ssl_key"]) {
-            expect(isSecretName(name), name).toBe(true);
-        }
+    it("hides a setting a plugin declares secret, in both spellings, until the declarations are reset", () => {
+        const env = { mail__hosted__api_token: "x", MAIL__HOSTED__API_TOKEN__EXTRA: "y", mail__hosted__region: "eu" };
+        expect(describeEnvironment(env).every((s) => !s.redacted)).toBe(true);
+        hideSettings(["mail:hosted:api_token", "  ", ""]);
+        expect(isHiddenSetting("mail:hosted:api_token")).toBe(true);
+        expect(isHiddenSetting("mail__hosted__API_TOKEN")).toBe(true);
+        expect(describeEnvironment(env)).toEqual([
+            { name: "mail__hosted__api_token", redacted: true },
+            { name: "MAIL__HOSTED__API_TOKEN__EXTRA", redacted: true },
+            { name: "mail__hosted__region", value: "eu", redacted: false },
+        ]);
+        expect(isHiddenSetting("")).toBe(false);
+        resetHiddenSettings();
+        expect(isHiddenSetting("mail:hosted:api_token")).toBe(false);
+        expect(describeEnvironment(env).every((s) => !s.redacted)).toBe(true);
+        // The server's own list survives a reset.
+        expect(isHiddenSetting("auth:secret")).toBe(true);
     });
 });
 
 describe("describeConfiguration", () => {
+    afterEach(() => resetHiddenSettings());
+
     const tree = {
         service_name: "rapidmx",
         cookie_secret: "hunter2-password-value",
@@ -307,7 +309,7 @@ describe("describeConfiguration", () => {
         $0: "node",
         datastores: {
             cache: { type: "redis", url: "redis://default:urlpass-secret@cache:6379" },
-            mongo: { type: "mongodb", host: "db", password: "hunter2-password-value", options: { ssl_key: "-----BEGIN PRIVATE KEY-----" } },
+            mongo: { type: "mongodb", host: "db", password: "shown-because-unlisted", options: { ssl_key: "-----BEGIN PRIVATE KEY-----" } },
         },
         mail: {
             transport: { ingest: { secret: "s3cr3t-token-value" }, host: "mx" },
@@ -319,6 +321,7 @@ describe("describeConfiguration", () => {
             missing: undefined,
         },
         auth: { secret: "hunter2-password-value", cookie: { domain: ".example.com" } },
+        default_accounts: { admin: { password: "hunter2-password-value" } },
     };
 
     it("flattens the tree with nconf-style names and withholds secrets", () => {
@@ -339,16 +342,32 @@ describe("describeConfiguration", () => {
         expect(byName["mail:callback"]).toEqual({ name: "mail:callback", redacted: true });
         expect(byName["mail:banner"]).toEqual({ name: "mail:banner", redacted: true });
         expect(byName["mail:missing"]).toBeUndefined();
-        for (const name of ["cookie_secret", "datastores:mongo:password", "datastores:mongo:options:ssl_key", "mail:transport:ingest:secret", "auth:secret", "auth:cookie"]) {
-            expect(byName[name]).toEqual({ name, redacted: true });
+        for (const name of ["cookie_secret", "datastores:mongo:options:ssl_key", "mail:transport:ingest:secret", "auth:secret", "default_accounts"]) {
+            expect(byName[name], name).toEqual({ name, redacted: true });
         }
-        // The subtree of a secret-named key is one hidden entry: not even its shape is listed.
-        expect(Object.keys(byName).some((name) => name.startsWith("auth:cookie:"))).toBe(false);
+        // An unlisted name is shown even when it looks secret-like; a sibling of a hidden one is shown too.
+        expect(byName["datastores:mongo:password"].value).toBe("shown-because-unlisted");
+        expect(byName["auth:cookie:domain"]).toEqual({ name: "auth:cookie:domain", value: ".example.com", redacted: false });
+        // The subtree of a listed key is one hidden entry: not even its shape is listed.
+        expect(Object.keys(byName).some((name) => name.startsWith("default_accounts:"))).toBe(false);
         // Command-line positionals and script are not settings.
         expect(byName._).toBeUndefined();
         expect(byName.$0).toBeUndefined();
         expect(byName["_:0"]).toBeUndefined();
         expectNoSecrets(result);
+    });
+
+    it("hides a listed name at the top level and a plugin-declared one deep in the tree", () => {
+        hideSettings(["mail:hosted:api_token"]);
+        const result = describeConfiguration(
+            { cookie_secret: "x", mail: { hosted: { api_token: { a: "y" }, region: "eu" } } },
+            {},
+        );
+        expect(result).toEqual([
+            { name: "cookie_secret", redacted: true },
+            { name: "mail:hosted:api_token", redacted: true },
+            { name: "mail:hosted:region", value: "eu", redacted: false },
+        ]);
     });
 
     it("drops a scalar top-level key that only copies an environment variable, unless the defaults declare it", () => {
@@ -431,19 +450,20 @@ describe("describeConfiguration", () => {
 describe("DiagnosticsCollector.information", () => {
     it("combines the environment and configuration it is given, with no secret in the JSON", () => {
         const collector = new DiagnosticsCollector({
-            env: { NODE_ENV: "production", DB_PASSWORD: "hunter2-password-value", OTHER: "urlpass-secret" },
+            env: { NODE_ENV: "production", auth__secret: "hunter2-password-value", OTHER: "mongodb://u:urlpass-secret@db" },
             configuration: () => ({
-                tree: { cookie_secret: "s3cr3t-token-value", service_name: "rapidmx", DB_PASSWORD: "hunter2-password-value" },
-                declared: ["service_name"],
+                tree: { cookie_secret: "s3cr3t-token-value", service_name: "rapidmx", auth: { secret: "hunter2-password-value" } },
+                declared: ["service_name", "auth"],
             }),
         });
         const information = collector.information();
         expect(information.environment).toEqual([
-            { name: "DB_PASSWORD", redacted: true },
+            { name: "auth__secret", redacted: true },
             { name: "NODE_ENV", value: "production", redacted: false },
-            { name: "OTHER", redacted: true },
+            { name: "OTHER", value: "mongodb://db", redacted: false },
         ]);
         expect(information.configuration).toEqual([
+            { name: "auth:secret", redacted: true },
             { name: "cookie_secret", redacted: true },
             { name: "service_name", value: "rapidmx", redacted: false },
         ]);
@@ -451,20 +471,20 @@ describe("DiagnosticsCollector.information", () => {
     });
 
     it("reads process.env and the shared nconf by default", () => {
-        const previous = process.env.RAPIDMX_TEST_PASSWORD;
-        process.env.RAPIDMX_TEST_PASSWORD = "hunter2-password-value";
+        const previous = process.env.COOKIE_SECRET;
+        process.env.COOKIE_SECRET = "hunter2-password-value";
         try {
             const information = new DiagnosticsCollector().information();
-            expect(information.environment.find((s) => s.name === "RAPIDMX_TEST_PASSWORD")).toEqual({
-                name: "RAPIDMX_TEST_PASSWORD",
+            expect(information.environment.find((s) => s.name === "COOKIE_SECRET")).toEqual({
+                name: "COOKIE_SECRET",
                 redacted: true,
             });
             expectNoSecrets(information);
         } finally {
             if (previous === undefined) {
-                delete process.env.RAPIDMX_TEST_PASSWORD;
+                delete process.env.COOKIE_SECRET;
             } else {
-                process.env.RAPIDMX_TEST_PASSWORD = previous;
+                process.env.COOKIE_SECRET = previous;
             }
         }
     });
