@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.34] - 2026-10-02
+
+### Added
+- Added Strict-Transport-Security, a baseline Content-Security-Policy, X-Content-Type-Options and Referrer-Policy to the gateway's response headers
+
+### Changed
+- Hide the object storage access key and secret key and the plugin namespaces list in the Diagnostics so an opaque credential under an unlisted setting name is no longer shown in cleartext
+- Update the auth-server helm dependency to 1.0.0-beta.32
+- Set the auth-server OAuth and TOTP encryption keys in the Helm render CI step so the bundled subchart templates without cluster access
+
 ## [1.0.0-beta.33] - 2026-10-02
 
 ### Changed
@@ -1153,7 +1163,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed test from .dockerignore, fixing yarn build's lint step failing outright when the build context is missing the test directory its tsconfig.eslint.json requires
 - Removed docker-compose.mail.yml's partial server: service block, since include: only supports merging resources that don't already exist in the including file and hard-errors ("services.server conflicts with imported resource") on a Compose version newer than whatever this had only ever been tested against locally
 
-[Unreleased]: https://github.com/rapidmx/server/compare/v1.0.0-beta.33...HEAD
+[Unreleased]: https://github.com/rapidmx/server/compare/v1.0.0-beta.34...HEAD
+[1.0.0-beta.34]: https://github.com/rapidmx/server/compare/v1.0.0-beta.33...v1.0.0-beta.34
 [1.0.0-beta.33]: https://github.com/rapidmx/server/compare/v1.0.0-beta.32...v1.0.0-beta.33
 [1.0.0-beta.32]: https://github.com/rapidmx/server/compare/v1.0.0-beta.31...v1.0.0-beta.32
 [1.0.0-beta.31]: https://github.com/rapidmx/server/compare/v1.0.0-beta.30...v1.0.0-beta.31
