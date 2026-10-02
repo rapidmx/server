@@ -137,6 +137,18 @@ tls.key: {{ $cert.Key | b64enc }}
 {{- end -}}
 
 {{/*
+The annotation that makes Helm leave a volume claim behind when the release is uninstalled (mail.storage.keepOnUninstall).
+Empty - so rendering `nindent 2` of it leaves a blank line out - when that is off. Usage:
+include "rapidmx.pvcKeepAnnotation" . | nindent 2, directly under `metadata:`
+*/}}
+{{- define "rapidmx.pvcKeepAnnotation" -}}
+{{-   if .Values.mail.storage.keepOnUninstall -}}
+annotations:
+  helm.sh/resource-policy: keep
+{{-   end -}}
+{{- end -}}
+
+{{/*
 "true" when `host` can get a real certificate: not localhost, *.localhost or *.local. Usage: include "rrst.publicHost" "example.com"
 */}}
 {{- define "rrst.publicHost" -}}
@@ -152,7 +164,7 @@ include "rrst.certificate" $
 */}}
 {{- define "rrst.certificate" -}}
 {{-   $host := include "rrst.render" (dict "value" .Values.host "context" .) -}}
-{{-   if and .Values.global.gateway.tls (ne $host "localhost") (not (contains ".local" $host)) -}}
+{{-   if and .Values.global.gateway.tls (include "rrst.publicHost" $host) -}}
 true
 {{-   end -}}
 {{- end -}}

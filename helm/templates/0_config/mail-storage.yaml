@@ -1,3 +1,8 @@
+{{- /*
+These volumes hold what can't be recreated: the DKIM private keys (the DNS records published for them stop matching), the
+messages' blobs, and the encryption CA's key. mail.storage.keepOnUninstall makes Helm leave them in place when the release is
+uninstalled, so removing the release can't destroy mail by itself. Delete them by hand to really remove the data.
+*/}}
 ---
 # DKIM keys written by the main service Deployment (1_deployments/service.yaml, FsDkimKeyProvider). The bundled
 # postfixBridge's Postfix signs from this same claim (its dkim.storage.existingClaim); a postfix-bridge installed as its
@@ -6,6 +11,7 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: {{ include "rrst.fullname" . }}-dkim-keys
+  {{- include "rapidmx.pvcKeepAnnotation" . | nindent 2 }}
 spec:
   accessModes:
     - {{ .Values.mail.dkim.storage.accessMode }}
@@ -24,6 +30,7 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: {{ include "rrst.fullname" . }}-blob-data
+  {{- include "rapidmx.pvcKeepAnnotation" . | nindent 2 }}
 spec:
   accessModes:
     - {{ .Values.mail.blob.storage.accessMode }}
@@ -43,6 +50,7 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: {{ include "rrst.fullname" . }}-pki-data
+  {{- include "rapidmx.pvcKeepAnnotation" . | nindent 2 }}
 spec:
   accessModes:
     - {{ .Values.mail.pki.storage.accessMode }}

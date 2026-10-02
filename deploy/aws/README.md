@@ -30,7 +30,7 @@ Manager. The stack only reports success once the whole install finished, so a fa
 | `MailHost` / `AuthHost` | `mail` / `auth` | The two host labels within the domain. |
 | `AcmeEmail` | `admin@<domain>` | Let's Encrypt account address. |
 | `HostedZoneId` | *(none)* | A Route 53 zone for `<domain>`, which the instance writes the `mail` and `auth` records into, so certificates are issued on first boot. Without it, create those records yourself. |
-| `ChartVersion` | `1.0.0-beta.3` | The published chart version to install. |
+| `ChartVersion` | `1.0.0-beta.31` | The published chart version to install. |
 | `InstanceType` | `t3.large` | Everything runs on this one instance; 8 GiB of memory is the practical minimum. |
 | `VolumeSize` | `60` | Root volume (GiB). Message, DKIM and PKI storage are separate EBS volumes. |
 | `KeyName` | *(none)* | Optional SSH key. Session Manager works without one. |

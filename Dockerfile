@@ -1,4 +1,10 @@
-FROM node:lts-trixie-slim AS builder
+# The Node.js base image, pinned by digest (the multi-architecture index of node:lts-trixie-slim, which is also node:24-trixie-slim
+# when this was pinned) so a rebuild can't pick up a different image than the one tested. Both stages use it; bump it deliberately,
+# e.g. `docker buildx imagetools inspect node:lts-trixie-slim`, or override with --build-arg NODE_IMAGE=... (apt upgrade below
+# still applies the current Debian security fixes on top of it).
+ARG NODE_IMAGE=node:lts-trixie-slim@sha256:8ec5d7557396cfe32d21c3f9c13072355ceab22b584578ca4bb28af31120cffe
+
+FROM ${NODE_IMAGE} AS builder
 
 # Set the working directory to /app
 WORKDIR /app
@@ -23,7 +29,7 @@ RUN yarn build
 FROM builder AS prod-deps
 RUN yarn workspaces focus --production
 
-FROM node:lts-trixie-slim AS runner
+FROM ${NODE_IMAGE} AS runner
 WORKDIR /app
 COPY --from=builder --chown=node:node /app/package.json /app/yarn.lock /app/.yarnrc.yml /app/tsconfig.json /app/RELEASE_NOTES.md ./
 COPY --from=builder --chown=node:node /app/.yarn/releases ./.yarn/releases

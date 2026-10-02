@@ -20,6 +20,7 @@ const BASE = [
     "global.jwt.secret=y",
     "global.secrets.cookies=c",
     "global.secrets.sessions=s",
+    "mail.escrow.auditHmacKey=k",
     "global.openbao.enabled=false",
     "mail.rspamd.controller.password=abcdefghijklmnop1",
     "coturn.auth.sharedSecret=abc123",

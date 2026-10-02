@@ -63,8 +63,11 @@ describe("BasicAuthJWTStrategy", () => {
 
     afterEach(() => {
         vi.useRealTimers();
-        for (const key of ["enabled", "cache_ttl_ms", "failure_limit", "paths"]) {
-            config.set(`mail:basic_auth:${key}`, { enabled: true, cache_ttl_ms: 300_000, failure_limit: 10, paths: [...DEFAULT_BASIC_AUTH_PATHS] }[key]);
+        for (const key of ["enabled", "cache_ttl_ms", "failure_limit", "ip_failure_limit", "name_failure_limit", "paths"]) {
+            config.set(
+                `mail:basic_auth:${key}`,
+                { enabled: true, cache_ttl_ms: 300_000, failure_limit: 10, ip_failure_limit: 50, name_failure_limit: 50, paths: [...DEFAULT_BASIC_AUTH_PATHS] }[key],
+            );
         }
     });
 
@@ -205,9 +208,10 @@ describe("BasicAuthJWTStrategy", () => {
             expect((basicStrategy as any).failures.get("name:jp").count).toBe(1);
         });
 
-        it("stops asking auth-server after too many failures from one address or for one name, then allows it again", async () => {
+        it("stops asking auth-server after too many failures from one address, then allows it again", async () => {
             vi.useFakeTimers();
             config.set("mail:basic_auth:failure_limit", 3);
+            config.set("mail:basic_auth:ip_failure_limit", 3);
             const fetcher = authServer(() => ({ status: 401 }));
             const basicStrategy = await strategy(fetcher);
             // Three different names from one address.
@@ -217,18 +221,66 @@ describe("BasicAuthJWTStrategy", () => {
             expect(fetcher).toHaveBeenCalledTimes(3);
             await expect(basicStrategy.authenticate(request("/mapi/emsmdb", { authorization: basic("d", "x") }))).rejects.toMatchObject({ status: 429 });
             expect(fetcher).toHaveBeenCalledTimes(3);
-            // Another address is not held back by it...
+            // Another address is not held back by it.
             await basicStrategy.authenticate(request("/mapi/emsmdb", { authorization: basic("e", "x") }, "198.51.100.7"));
             expect(fetcher).toHaveBeenCalledTimes(4);
-            // ...but one name tried from three addresses is.
-            for (const address of ["192.0.2.1", "192.0.2.2", "192.0.2.3"]) {
-                await basicStrategy.authenticate(request("/mapi/emsmdb", { authorization: basic("victim", "x") }, address));
-            }
-            await expect(basicStrategy.authenticate(request("/mapi/emsmdb", { authorization: basic("victim", "x") }, "192.0.2.4"))).rejects.toBeInstanceOf(ApiError);
             // The window passes.
             vi.advanceTimersByTime(900_001);
             await basicStrategy.authenticate(request("/mapi/emsmdb", { authorization: basic("d", "x") }));
-            expect(fetcher).toHaveBeenCalledTimes(8);
+            expect(fetcher).toHaveBeenCalledTimes(5);
+        });
+
+        it("counts a name's failures per address, with a looser ceiling for the name from everywhere, so a stranger can't lock the owner out", async () => {
+            config.set("mail:basic_auth:failure_limit", 3);
+            config.set("mail:basic_auth:name_failure_limit", 9);
+            const fetcher = authServer(() => ({ status: 401 }));
+            const basicStrategy = await strategy(fetcher);
+            const attempt = (address: string, name = "victim") => basicStrategy.authenticate(request("/mapi/emsmdb", { authorization: basic(name, "x") }, address));
+            // One address guessing one name is stopped after the per-name limit...
+            for (let i = 0; i < 3; i++) {
+                await attempt("192.0.2.1");
+            }
+            await expect(attempt("192.0.2.1")).rejects.toMatchObject({ status: 429 });
+            // ...but that does not lock the name for anyone else: the owner, from their own address, still signs in.
+            await attempt("192.0.2.2");
+            expect(fetcher).toHaveBeenCalledTimes(4);
+            // Many addresses together do reach the name's own ceiling (9, of which 4 are used).
+            for (const address of ["198.51.100.1", "198.51.100.2", "198.51.100.3", "198.51.100.4", "198.51.100.5"]) {
+                await attempt(address);
+            }
+            await expect(attempt("198.51.100.6")).rejects.toMatchObject({ status: 429 });
+            expect(fetcher).toHaveBeenCalledTimes(9);
+        });
+
+        it("counts a login as a failure as soon as it starts, so concurrent guesses can't all pass the check before one is recorded", async () => {
+            config.set("mail:basic_auth:failure_limit", 2);
+            const release: Array<() => void> = [];
+            const fetcher = vi.fn(
+                () =>
+                    new Promise<Response>((resolve) => {
+                        release.push(() => resolve(new Response("{}", { status: 401 })));
+                    }),
+            );
+            const basicStrategy = await strategy(fetcher);
+            const attempts = Array.from({ length: 6 }, (_, i) =>
+                basicStrategy.authenticate(request("/mapi/emsmdb", { authorization: basic("jp", `guess${i}`) })).then(
+                    () => "refused",
+                    (err) => err.status,
+                ),
+            );
+            // Only the attempts the limit allows reach auth-server; the rest are turned away before it is asked.
+            await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(2));
+            release.forEach((fn) => fn());
+            expect((await Promise.all(attempts)).sort()).toEqual([429, 429, 429, 429, "refused", "refused"].sort());
+            expect(fetcher).toHaveBeenCalledTimes(2);
+        });
+
+        it("hands auth-server the client's real address, not the network its failures are counted under", async () => {
+            const fetcher = authServer(() => ({ status: 401 }));
+            const basicStrategy = await strategy(fetcher);
+            await basicStrategy.authenticate(request("/mapi/emsmdb", { authorization: basic("jp", "x") }, "2001:db8:1:2:3:4:5:6"));
+            expect((fetcher.mock.calls[0] as any[])[1].headers["X-Forwarded-For"]).toBe("2001:db8:1:2:3:4:5:6");
+            expect((basicStrategy as any).failures.has("ip:2001:db8:1:2:0:0:0:0/64")).toBe(true);
         });
 
         it("clears a name's failures once it signs in", async () => {

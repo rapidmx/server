@@ -258,7 +258,7 @@ spec:
         {{- if $.Values.redis.create }}
         {{- $redisHost := (include "rrst.render" (dict "value" .Values.global.cache.url "context" $) | replace "redis://" "") }}
         - name: redis-probe
-          image: busybox
+          image: {{ $.Values.service.probeImage }}
           {{- with $.Values.service.securityContext }}
           securityContext:
             {{- toYaml . | nindent 12 }}
@@ -273,7 +273,7 @@ spec:
         {{- end }}
         {{- if $.Values.mongodb.create }}
         - name: mongo-probe
-          image: busybox
+          image: {{ $.Values.service.probeImage }}
           {{- with $.Values.service.securityContext }}
           securityContext:
             {{- toYaml . | nindent 12 }}
@@ -285,7 +285,7 @@ spec:
         {{- end }}
         {{- if $.Values.postgresql.create }}
         - name: postgres-probe
-          image: busybox
+          image: {{ $.Values.service.probeImage }}
           {{- with $.Values.service.securityContext }}
           securityContext:
             {{- toYaml . | nindent 12 }}

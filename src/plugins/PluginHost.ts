@@ -7,10 +7,14 @@ import path from "path";
 import { ConnectionManager, ObjectFactory } from "@rapidrest/service-core";
 import {
     computePluginStateHash,
+    DEFAULT_ALLOWED_PLUGIN_PACKAGES,
     DEFAULT_PLUGIN_NAMESPACES,
     DEFAULT_PLUGIN_REGISTRY,
     findPluginNamespace,
     findPluginUiMountConflicts,
+    isValidPackageName,
+    matchesAllowedPackage,
+    normalizeAllowedPackages,
     normalizePluginNamespaces,
     NpmRegistryClient,
     orderByDependencies,
@@ -21,7 +25,7 @@ import {
     type Plugin,
     type PluginNamespace,
 } from "@rapidmx/restapi";
-import { applyPluginSetting } from "../config.defaults.js";
+import { applyPluginSetting, isProtectedPluginSettingKey } from "../config.defaults.js";
 import { PluginClassLoader, type PluginUiLoadOptions } from "./PluginClassLoader.js";
 import { PluginInstaller, type PluginInstallerOptions, type PluginInstallResult } from "./PluginInstaller.js";
 import { describeModels } from "./PluginOwnedData.js";
@@ -33,6 +37,7 @@ import { PluginPurgeStore } from "./PluginPurgeStore.js";
 import { DEFAULT_PURGE_CHECK_MS, DEFAULT_PURGE_GRACE_MS, PluginPurger, setPluginPurger } from "./PluginPurger.js";
 import type { PluginOwnedModel } from "./PluginPurgeTypes.js";
 import { PluginUiBuilder, type PluginUiBuildResult } from "./PluginUiBuilder.js";
+import { webClientReservedMounts } from "./reservedMounts.js";
 import type { PluginUiHostClasses } from "./PluginUiRoutes.js";
 import {
     createWatcherRedisClient,
@@ -185,7 +190,25 @@ export class PluginHost {
             }
         }
 
-        const enabled: Plugin[] = rows.filter((row) => row.enabled && !row.removed);
+        // The plugin table is writable by anyone who can write to the database, and a plugin runs with this server's own
+        // rights: a row is only installed when its package passes the allow-list the plugins route applies when one is added
+        // (system:plugins:allowed_packages plus every configured namespace) - or the operator named it in the configuration
+        // themself (system:plugins:sources or system:plugins:defaults).
+        const allowedPackages: string[] = [
+            ...normalizeAllowedPackages(config.get("system:plugins:allowed_packages") ?? DEFAULT_ALLOWED_PLUGIN_PACKAGES, logger),
+            ...namespaces.map((namespace) => `${namespace.name}/*`),
+        ];
+        const configured: Set<string> = new Set([...Object.keys(sources), ...defaults.map((plugin) => plugin.name)]);
+        const enabled: Plugin[] = [];
+        for (const row of rows.filter((candidate) => candidate.enabled && !candidate.removed)) {
+            if (configured.has(row.name) || (isValidPackageName(row.name) && matchesAllowedPackage(row.name, allowedPackages))) {
+                enabled.push(row);
+                continue;
+            }
+            const message: string = "Its package isn't allowed (system:plugins:allowed_packages and system:plugins:namespaces), so it wasn't installed.";
+            logger.error(`Plugin ${row.name} was not loaded: ${message}`);
+            errors.push({ name: row.name, message });
+        }
         const pluginsDir: string = config.get("system:plugins:dir") || path.join(appRoot, "plugins");
         const installerOptions: PluginInstallerOptions = {
             dir: pluginsDir,
@@ -223,6 +246,11 @@ export class PluginHost {
                 // same key (the Helm chart's bundled coturn sets mail:videoconf:turn:* through the environment, for one). A
                 // value that is set goes in the top configuration layer, so it wins over the environment and the defaults.
                 if (value !== "" && value !== null && value !== undefined) {
+                    // Never the server's own security configuration, which would outrank the environment and the secrets check.
+                    if (isProtectedPluginSettingKey(key)) {
+                        logger.warn(`Plugin ${row.name} saved a setting for ${key}, which is core configuration a plugin may not change; it was ignored.`);
+                        continue;
+                    }
                     applyPluginSetting(config, key, value);
                 }
             }
@@ -296,6 +324,22 @@ export class PluginHost {
             const message: string = `Its UI app at ${conflict.mount} isn't served: ${conflict.message}`;
             logger.error(`Plugin ${plugin.name}: ${message}`);
             errors.push({ name: plugin.name, message });
+        }
+
+        // restapi's reserved list is maintained by hand and has drifted from what the web client serves: a plugin mounted at a
+        // page the web client really has would take it over (the more specific route wins), so the installed pages are checked too.
+        const webClientMounts: Set<string> = webClientReservedMounts(appRoot);
+        for (const plugin of installed) {
+            for (const app of plugin.uiApps ?? []) {
+                if (!webClientMounts.has(app.mount.toLowerCase().replace(/\/+$/, ""))) {
+                    continue;
+                }
+                plugin.uiApps = plugin.uiApps!.filter((candidate) => candidate !== app);
+                ui.refusedMounts!.set(plugin.name, [...(ui.refusedMounts!.get(plugin.name) ?? []), app.mount]);
+                const message: string = `Its UI app at ${app.mount} isn't served: the web client already has a page there.`;
+                logger.error(`Plugin ${plugin.name}: ${message}`);
+                errors.push({ name: plugin.name, message });
+            }
         }
 
         const configuredManifest: string = config.get("react:manifestPath") || "dist/public/.vite/manifest.json";

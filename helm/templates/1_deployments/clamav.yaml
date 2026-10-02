@@ -23,9 +23,15 @@ spec:
       labels:
         app: clamav
     spec:
+      # clamd talks to nobody but the server; it has no use for a Kubernetes API token.
+      automountServiceAccountToken: false
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: clamav
           image: {{ $.Values.mail.clamav.image.registry }}/{{ $.Values.mail.clamav.image.repository }}:{{ $.Values.mail.clamav.image.tag }}
+          imagePullPolicy: {{ $.Values.mail.clamav.image.pullPolicy }}
           ports:
             - containerPort: 3310
           startupProbe:

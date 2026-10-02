@@ -373,7 +373,7 @@ Best for one Linux server. A single script installs k3s (a small Kubernetes), HT
 | `--tls false` | No certificates: plain HTTP, for testing |
 | `--openbao false` | Keep secrets in Kubernetes Secrets instead of OpenBao |
 | `--version <version>` | Install a specific release |
-| `--uninstall` | Remove what the script installed |
+| `--uninstall --yes` | Remove what the script installed, including the mail data (`--uninstall` alone removes nothing). The chart itself leaves its DKIM, blob and encryption CA volumes behind on `helm uninstall` (`mail.storage.keepOnUninstall`) |
 | `--help` | List everything |
 
 > **Good to know:**

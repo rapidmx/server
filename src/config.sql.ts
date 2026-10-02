@@ -221,8 +221,9 @@ conf.defaults({
         // Nowhere else accepts Basic - an app password skips the second factor and is meant for exactly these clients. A 401 on
         // these paths carries `WWW-Authenticate: Basic realm="<realm>"`, which is what makes a client ask for credentials.
         // A successful login is remembered for `cache_ttl_ms` (never past the token's expiry) because these clients send their
-        // credentials with every request; `failure_limit` failed logins within `failure_window_ms`, per client address or per
-        // username, get a 429 until the window passes. Needs `mail:auth_server_url`. See lib/BasicAuthJWTStrategy.ts.
+        // credentials with every request; `failure_limit` failed logins within `failure_window_ms` from one client address for one
+        // username get a 429 until the window passes, as do `ip_failure_limit` from one address (any names) and `name_failure_limit`
+        // for one username (any addresses) - looser, so a stranger can't lock the owner out. Needs `mail:auth_server_url`. See lib/BasicAuthJWTStrategy.ts.
         basic_auth: {
             enabled: true,
             paths: ["/mapi", "/Microsoft-Server-ActiveSync"],
@@ -230,6 +231,8 @@ conf.defaults({
             cache_ttl_ms: 300_000,
             cache_max_entries: 5000,
             failure_limit: 10,
+            ip_failure_limit: 50,
+            name_failure_limit: 50,
             failure_window_ms: 900_000,
         },
         // `default_quota_bytes` and `auto_provision.enabled`/`quota_bytes` seed the admin-editable mailbox policy

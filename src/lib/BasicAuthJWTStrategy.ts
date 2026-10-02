@@ -77,8 +77,12 @@ interface Failures {
  * A logged-in credential is remembered for `cache_ttl_ms` (never past the token's own expiry), keyed by a hash of the header,
  * because these clients send their credentials with every request and each login is a session in auth-server.
  *
- * Repeated failures are throttled per client address and per username, so a guessing client is stopped here rather than
- * spending auth-server's attempts (which it counts against this server's address, not the client's).
+ * Repeated failures are throttled, so a guessing client is stopped here rather than spending auth-server's attempts (which it
+ * counts against this server's address, not the client's): per client address and username together (`failure_limit`, the strict
+ * one), per client address across all names (`ip_failure_limit`) and per username from every address (`name_failure_limit`).
+ * The last two are looser on purpose: a stranger guessing at someone's name from many addresses must not be able to lock the owner
+ * out, and one office behind a single address has several people mistyping. An attempt is counted when its login starts and taken
+ * back when it succeeds, so a burst of concurrent guesses can't all pass the check before the first failure is recorded.
  *
  * A 401 for those paths carries `WWW-Authenticate: Basic`, which is what makes a client ask for credentials at all.
  */
@@ -104,6 +108,12 @@ export class BasicAuthJWTStrategy implements AuthStrategy {
     @Config("mail:basic_auth:failure_limit", 10)
     protected failureLimit: number = 10;
 
+    @Config("mail:basic_auth:ip_failure_limit", 50)
+    protected ipFailureLimit: number = 50;
+
+    @Config("mail:basic_auth:name_failure_limit", 50)
+    protected nameFailureLimit: number = 50;
+
     @Config("mail:basic_auth:failure_window_ms", 900_000)
     protected failureWindowMs: number = 900_000;
 
@@ -119,7 +129,7 @@ export class BasicAuthJWTStrategy implements AuthStrategy {
     /** Access token per hash of the `Authorization` header that produced it, with when to stop trusting it. */
     private readonly tokens: Map<string, { token: string; until: number }> = new Map();
 
-    /** Failed logins, per client address and per lower-cased username, in the current window. */
+    /** Failed logins, per client address (`ip:`), per address and lower-cased username (`pair:`) and per username (`name:`), in the current window. */
     private readonly failures: Map<string, Failures> = new Map();
 
     private mailboxRepo?: RepoUtils<any>;
@@ -192,22 +202,41 @@ export class BasicAuthJWTStrategy implements AuthStrategy {
         this.trustedList ??= trustedProxyList(this.trustedProxies);
         const resolved: string | undefined = clientAddress(req, this.trustedList);
         const address: string = resolved ? rateLimitAddress(resolved) : "unknown";
-        const identifiers: string[] = [`ip:${address}`, `name:${credentials.name.toLowerCase()}`];
-        if (identifiers.some((identifier) => this.isThrottled(identifier))) {
+        const name: string = credentials.name.toLowerCase();
+        const identifiers: Array<[string, number]> = [
+            [`ip:${address}`, this.ipFailureLimit],
+            [`pair:${address}|${name}`, this.failureLimit],
+            [`name:${name}`, this.nameFailureLimit],
+        ];
+        if (identifiers.some(([identifier, limit]) => this.isThrottled(identifier, limit))) {
             throw new ApiError(ApiErrors.AUTH_PERMISSION_FAILURE, 429, "Too many failed sign-in attempts. Try again later.");
         }
+        // Counted now, before the (slow) login: attempts that are in flight at the same time would otherwise all pass the check above.
+        for (const [identifier] of identifiers) {
+            this.noteFailure(identifier);
+        }
 
-        const token: string | undefined = await this.login(req, header, credentials.name, address);
-        const result: AuthResult | undefined = token ? await this.verify(req, token) : undefined;
-        if (!result?.user) {
-            for (const identifier of identifiers) {
-                this.noteFailure(identifier);
+        let token: string | undefined;
+        let result: AuthResult | undefined;
+        try {
+            token = await this.login(req, header, credentials.name, resolved ?? address);
+            result = token ? await this.verify(req, token) : undefined;
+        } catch (err) {
+            // auth-server couldn't be asked, which says nothing about the credentials: the attempt isn't held against the client.
+            for (const [identifier] of identifiers) {
+                this.forgiveFailure(identifier);
             }
+            throw err;
+        }
+        if (!result?.user) {
             this.challenge(res);
             return undefined;
         }
 
-        this.failures.delete(identifiers[1]);
+        // A sign-in that worked clears the pair and the name (whose failures may have come from anyone) and takes back this attempt.
+        this.failures.delete(identifiers[1][0]);
+        this.failures.delete(identifiers[2][0]);
+        this.forgiveFailure(identifiers[0][0]);
         this.remember(key, token!, result);
         return result;
     }
@@ -324,7 +353,7 @@ export class BasicAuthJWTStrategy implements AuthStrategy {
         }
     }
 
-    private isThrottled(identifier: string): boolean {
+    private isThrottled(identifier: string, limit: number): boolean {
         const failures: Failures | undefined = this.failures.get(identifier);
         if (!failures) {
             return false;
@@ -333,7 +362,15 @@ export class BasicAuthJWTStrategy implements AuthStrategy {
             this.failures.delete(identifier);
             return false;
         }
-        return failures.count >= this.failureLimit;
+        return failures.count >= limit;
+    }
+
+    /** Takes back one failure counted ahead of a login that turned out not to be one. */
+    private forgiveFailure(identifier: string): void {
+        const failures: Failures | undefined = this.failures.get(identifier);
+        if (failures && --failures.count <= 0) {
+            this.failures.delete(identifier);
+        }
     }
 
     private noteFailure(identifier: string): void {

@@ -1,8 +1,9 @@
 {{- if $.Values.mail.ingestService.enabled }}
 ---
 # The MTA hand-off API (/internal/mta) for an MTA that runs outside the cluster: ses-bridge's Lambda, which SES invokes
-# for each received message. The public Gateway answers 404 for /internal (3_gateways/api.yaml), and this Service is
-# meant to be an internal load balancer (values.yaml's mail.ingestService.annotations), reachable from inside the VPC
+# for each received message. The public Gateway answers 404 for /internal (3_gateways/service.yaml) and the server refuses
+# a /internal request that carries proxy headers unless mail__internal__allow_forwarded is set (see values.yaml). This
+# Service is meant to be an internal load balancer (values.yaml's mail.ingestService.annotations), reachable from inside the VPC
 # only - callers still authenticate with mail.ingestSecret. It serves the whole API, not just /internal, so keep it off
 # the public internet.
 apiVersion: v1

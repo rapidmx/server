@@ -25,6 +25,9 @@ export const DEFAULT_AUTH_SECRET = "MyPasswordIsSecure";
  * through the public ingress.
  */
 export const DEFAULT_MAIL_INGEST_SECRET = "ChangeMeIngestSecret";
+
+/** The shortest `mail:transport:ingest:secret` a production deployment may use: it is a bearer secret that can be guessed at over HTTP. */
+export const MIN_MAIL_INGEST_SECRET_LENGTH = 16;
 /**
  * Giphy's public Search API key, used by `BaseGiphySearchRoute`'s server-side GIF-search proxy (see
  * `giphy:api_key`). Unlike the three secrets above, a missing/placeholder value here doesn't expose an
@@ -118,6 +121,15 @@ export function assertProductionSecretsAreSet(config: SecretsConfig, environment
         },
     ].filter((entry) => entry.value === entry.expected || String(entry.value ?? "").trim() === "");
 
+    const ingestSecret: string = String(config.get("mail:transport:ingest:secret") ?? "").trim();
+    if (ingestSecret !== "" && ingestSecret !== DEFAULT_MAIL_INGEST_SECRET && ingestSecret.length < MIN_MAIL_INGEST_SECRET_LENGTH) {
+        throw new Error(
+            `Refusing to start (NODE_ENV=${environment ?? "unset"}) with a mail__transport__ingest__secret shorter than ` +
+                `${MIN_MAIL_INGEST_SECRET_LENGTH} characters: it is a bearer secret that can be guessed at over HTTP. Use a random ` +
+                "value, e.g. the output of openssl rand -hex 32.",
+        );
+    }
+
     if (insecureDefaults.length > 0) {
         const names: string = insecureDefaults.map((entry) => entry.envVar).join(", ");
         throw new Error(
@@ -147,6 +159,25 @@ export function trustedAuthservIdWarning(config: SecretsConfig): string | undefi
 }
 
 /**
+ * The startup warning for an empty `mail:escrow:audit_hmac_key`, or `undefined` when it's set (or in a development
+ * environment, where the unkeyed fallback is expected). Without it the escrow audit log's hash chain is plain SHA-256, which
+ * anyone with write access to the database can recompute after editing an entry - the log then proves nothing.
+ */
+export function escrowAuditKeyWarning(config: SecretsConfig, environment: string | undefined): string | undefined {
+    if (String(config.get("mail:escrow:audit_hmac_key") ?? "").trim() !== "") {
+        return undefined;
+    }
+    if (environment !== undefined && SECRETS_GUARD_SKIP_ENVIRONMENTS.includes(environment)) {
+        return undefined;
+    }
+    return (
+        "mail:escrow:audit_hmac_key (env mail__escrow__audit_hmac_key, Helm mail.escrow.auditHmacKey) is not set, so the escrow audit " +
+        "log's hash chain is unkeyed SHA-256 that anyone with write access to the database can rewrite undetected. Set it to a " +
+        "random value (it must be the same on every replica and must never change afterwards: entries chained under an old key stop verifying)."
+    );
+}
+
+/**
  * The name of the nconf layer that holds the settings an administrator saved on plugins. It is the first layer, ahead of the
  * command line, the environment and the defaults, so a setting saved in the admin console always wins - the environment
  * (the Helm chart's, for one) is what applies until one is saved, and Reset in the console goes back to it.
@@ -154,6 +185,45 @@ export function trustedAuthservIdWarning(config: SecretsConfig): string | undefi
  * deployment itself configures.
  */
 export const PLUGIN_SETTINGS_STORE = "plugins";
+
+/**
+ * Configuration a plugin's saved settings may never set. They are applied in the top configuration layer, which outranks the
+ * environment and the defaults and is read after `assertProductionSecretsAreSet()` has run, so a plugin manifest declaring one of
+ * these keys (or a row in the plugin table written by someone with database access) could otherwise grant itself trusted roles,
+ * reintroduce a default secret, point the server at another datastore or trust any proxy. Each entry is a key or the prefix of a
+ * whole group of keys (`auth` covers `auth:secret`, `auth:options:issuer`...).
+ */
+export const PROTECTED_PLUGIN_SETTING_KEYS: readonly string[] = [
+    "trusted_roles",
+    "trusted_proxies",
+    "auth",
+    "cookie_secret",
+    "cookies",
+    "session",
+    "cors",
+    "ssl",
+    "datastores",
+    "base_path",
+    "rateLimit",
+    "telemetry_services",
+    "system:plugins",
+    "mail:transport:ingest",
+    "mail:internal",
+    "mail:escrow",
+    "mail:pki",
+    "mail:auth_server_url",
+    "mail:basic_auth",
+    "mail:security",
+];
+
+/** Whether a plugin may not save a setting under `key` (see `PROTECTED_PLUGIN_SETTING_KEYS`). `__` counts as `:`, as in the environment. */
+export function isProtectedPluginSettingKey(key: string): boolean {
+    const normalized: string = key.trim().toLowerCase().replace(/__/g, ":");
+    return PROTECTED_PLUGIN_SETTING_KEYS.some((protectedKey) => {
+        const prefix: string = protectedKey.toLowerCase();
+        return normalized === prefix || normalized.startsWith(`${prefix}:`);
+    });
+}
 
 /** The part of `nconf` `applyPluginSetting()` needs. */
 export interface LayeredConfig {

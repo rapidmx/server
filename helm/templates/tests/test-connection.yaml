@@ -7,9 +7,14 @@ metadata:
   annotations:
     "helm.sh/hook": test-success
 spec:
+  # Only talks to the Service: it needs no Kubernetes API token.
+  automountServiceAccountToken: false
+  securityContext:
+    seccompProfile:
+      type: RuntimeDefault
   containers:
     - name: wget
-      image: busybox
+      image: {{ .Values.service.probeImage }}
       command: ['wget']
-      args:  ['{{ include "rrst.fullname" . }}']
+      args:  ['{{ include "rrst.fullname" . }}-services']
   restartPolicy: Never

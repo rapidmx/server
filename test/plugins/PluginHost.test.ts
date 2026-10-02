@@ -323,6 +323,19 @@ describe("PluginHost", () => {
         }
     });
 
+    it("never applies a saved setting that would change the server's own security configuration, and says so", async () => {
+        const rows = [row("@rapidmx/meet", { settings: { "trusted_roles": ["intruder"], "mail__transport__ingest__secret": "x", "mail:videoconf:public_url": "https://mail.example.com/meet" } })];
+        const installer: any = { install: vi.fn(async () => ({ installed: [installed("@rapidmx/meet")], errors: [] })) };
+        const config = configWith({ trusted_roles: ["admin"] });
+        logger.warn.mockClear();
+        await PluginHost.prepare({ config, logger, datastore: "mongo", pluginClass: class {}, appRoot: process.cwd(), store: new MemoryStore(rows), installer });
+
+        expect(config.get("trusted_roles")).toEqual(["admin"]);
+        expect(config.get("mail:transport:ingest:secret")).toBeUndefined();
+        expect(config.get("mail:videoconf:public_url")).toBe("https://mail.example.com/meet");
+        expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("trusted_roles"));
+    });
+
     it("installs enabled plugins, applies the settings of installed ones and records their errors", async () => {
         const rows = [
             row("@rapidmx/activesync", { settings: { "mail:eas:sync_window_size": 42 } }),
@@ -352,6 +365,19 @@ describe("PluginHost", () => {
         await host.stop();
     });
 
+    it("drops an enabled row whose package isn't allowed or is in no configured namespace, instead of installing it", async () => {
+        // The plugin table is writable by anyone with database access: its rows must pass the same allow-list the plugins route applies.
+        const rows = [row("@rapidmx/activesync"), row("@evil/pwn"), row("not a package"), row("@acme/ok"), row("@local/sourced")];
+        const installer: any = { install: vi.fn(async () => ({ installed: [], errors: [] })) };
+        const config = configWith({ system: { plugins: { namespaces: ["@rapidmx", "@acme"], sources: { "@local/sourced": "/tmp/x.tgz" } } } });
+        logger.error.mockClear();
+        const host = await PluginHost.prepare({ config, logger, datastore: "mongo", pluginClass: class {}, appRoot: process.cwd(), store: new MemoryStore(rows), installer });
+
+        expect(installer.install.mock.calls[0][0].map((plugin: any) => plugin.name)).toEqual(["@rapidmx/activesync", "@acme/ok", "@local/sourced"]);
+        expect(logger.error).toHaveBeenCalledWith(expect.stringContaining("@evil/pwn"));
+        expect((host as any).errors.map((error: any) => error.name).sort()).toEqual(["@evil/pwn", "not a package"]);
+    });
+
     it("loads required plugins first, and skips plugins whose requirements didn't load, cascading", async () => {
         const requiring = (name: string, requires: Record<string, string>, version = "1.0.0") => ({
             ...installed(name),
@@ -372,7 +398,9 @@ describe("PluginHost", () => {
                 errors: [{ name: "broken", message: "boom" }],
             })),
         };
-        const host = await PluginHost.prepare({ config: configWith({}), logger, datastore: "mongo", pluginClass: class {}, appRoot: process.cwd(), store: new MemoryStore(rows), installer });
+        const allowed = rows.map((plugin) => plugin.name);
+        const config = configWith({ system: { plugins: { allowed_packages: allowed } } });
+        const host = await PluginHost.prepare({ config, logger, datastore: "mongo", pluginClass: class {}, appRoot: process.cwd(), store: new MemoryStore(rows), installer });
 
         expect((host.classLoader as any).plugins.map((plugin: any) => plugin.name)).toEqual(["activesync", "mapi", "autodiscover"]);
         expect(PluginRegistry.list().map((plugin) => plugin.name)).toEqual(["activesync", "mapi", "autodiscover"]);
@@ -555,7 +583,7 @@ describe("PluginHost", () => {
                 datastore: "mongo",
                 pluginClass: class {},
                 appRoot: process.cwd(),
-                store: new MemoryStore([row("first"), row("second"), row("backend")]),
+                store: new MemoryStore([row("@rapidmx/first"), row("@rapidmx/second"), row("@rapidmx/backend")]),
                 uiHosts: MONGO_PLUGIN_UI_HOSTS,
                 ...overrides,
             });
@@ -579,6 +607,21 @@ describe("PluginHost", () => {
             expect(ui.hosts).toBe(MONGO_PLUGIN_UI_HOSTS);
             expect(ui.refusedMounts).toEqual(new Map([["second", ["/book"]]]));
             expect((host as any).errors).toEqual([{ name: "second", message: expect.stringMatching(/^Its UI app at \/book isn't served: /) }]);
+        });
+
+        it("refuses a UI app mounted where the web client serves a page, even one restapi's reserved list lacks", async () => {
+            const claiming = uiPlugin("first", [
+                { id: "diag", host: "admin", mount: "/admin/diagnostics" },
+                { id: "fine", host: "admin", mount: "/admin/fine-reports" },
+            ]);
+            const installer: any = { install: vi.fn(async () => ({ installed: [claiming], errors: [] })) };
+            const uiBuilder = { build: vi.fn(async () => ({ built: ["first"], failed: [] })) };
+            const host = await prepare({ installer, uiBuilder });
+
+            const [plugins] = (uiBuilder.build.mock.calls as any[])[0];
+            expect(plugins[0].uiApps.map((app: any) => app.mount)).toEqual(["/admin/fine-reports"]);
+            expect((host.classLoader as any).ui.refusedMounts).toEqual(new Map([["first", ["/admin/diagnostics"]]]));
+            expect((host as any).errors).toEqual([{ name: "first", message: expect.stringMatching(/^Its UI app at \/admin\/diagnostics isn't served: .*web client/) }]);
         });
 
         it("records plugins whose UI didn't build, keeping the prebuilt bundles, and never fails the start when building throws", async () => {

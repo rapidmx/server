@@ -75,7 +75,7 @@ Parameters:
   ChartVersion:
     Type: String
     Description: The version of the RapidMX server Helm chart to install.
-    Default: 1.0.0-beta.3
+    Default: 1.0.0-beta.31
   InstanceType:
     Type: String
     Description: >-

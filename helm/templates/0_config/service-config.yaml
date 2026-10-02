@@ -10,6 +10,10 @@ data:
   {{-   $schemes = ternary (list "https") (list "http" "https") .Values.global.gateway.hsts }}
   {{- end }}
   {{- $hosts := concat (dig "corsHosts" list ($.Values.global | default dict)) (list $.Values.host) }}
+  {{- /* The development server's origin is only trusted outside production. */}}
+  {{- if ne $.Values.environment "production" }}
+  {{-   $hosts = append $hosts "localhost:3000" }}
+  {{- end }}
   {{- $origins := list }}
   {{- range $host := $hosts }}
   {{-   range $scheme := $schemes }}

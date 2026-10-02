@@ -24,6 +24,10 @@ CHART=${CHART:-oci://ghcr.io/rapidmx/charts/server}
 # Helm release (https://github.com/helm/helm/releases) whose get-helm-3 installer script is run when helm is missing and snap
 # is unavailable. Pinned to a tag so the script that runs as root can't change underneath us; it still installs helm itself.
 HELM_SCRIPT_VERSION=${HELM_SCRIPT_VERSION:-v3.19.0}
+# k3s release (the stable channel's at the time of writing) and cert-manager chart, pinned like everything else this installs, so
+# a run later on can't pull in a release that was never tested with the chart. Only used when this script installs them.
+K3S_VERSION=${K3S_VERSION:-v1.36.5+k3s1}
+CERT_MANAGER_VERSION=${CERT_MANAGER_VERSION:-v1.21.2}
 # Envoy Gateway release (https://github.com/envoyproxy/gateway/releases). Pinned: v0.0.0-latest tracks main.
 ENVOY_GATEWAY_VERSION=${ENVOY_GATEWAY_VERSION:-v1.9.1}
 # External Secrets release (https://github.com/external-secrets/external-secrets), which the charts' OpenBao support
@@ -57,6 +61,8 @@ OPENBAO_PKI_ROLE=${OPENBAO_PKI_ROLE:-rapidmx-encryption}
 # admin console works without a restart or a re-run.
 MAIL_DOMAINS=""
 UNINSTALL=false
+# --yes: confirms --uninstall, which deletes the cluster (or the release) with its mail, DKIM keys and encryption CA.
+CONFIRM_UNINSTALL=false
 SKIP_K3S=false
 # The user the kubeconfig is installed for: the one who ran `sudo ./single_node_install.sh`, or the current user.
 INSTALL_USER=${SUDO_USER:-`id -un`}
@@ -654,6 +660,12 @@ EOF
 }
 
 function uninstall() {
+  # This removes the mail itself (blobs), the DKIM private keys and the encryption CA's key, and none of it can be recovered.
+  if [[ "$CONFIRM_UNINSTALL" != "true" ]]; then
+    echo "--uninstall permanently deletes this installation's data: the mailboxes' messages, the DKIM keys and the encryption CA's key"
+    echo "(with k3s, the whole cluster). Run it again with --yes to confirm, after backing up what you need."
+    exit 1
+  fi
   if [[ -z "$KUBECONFIG" && -f "$USER_KUBECONFIG" ]]; then
     export KUBECONFIG="$USER_KUBECONFIG"
   fi
@@ -672,6 +684,8 @@ function uninstall() {
     if [[ -n "$release" ]]; then
       echo "Removing the RapidMX server release (including its data volumes)..."
       helm uninstall "$release" -n "$release"
+      # The chart keeps its DKIM, blob and PKI volumes when uninstalled (mail.storage.keepOnUninstall); --yes asked for them to go.
+      kubectl -n "$release" delete pvc --all --ignore-not-found
       kubectl -n "$release" delete clienttrafficpolicy --all --ignore-not-found
     fi
     if [[ "`installedBy cluster_issuer`" = "true" ]]; then
@@ -758,7 +772,7 @@ function uninstall() {
   echo "Uninstall complete! $USER_KUBECONFIG was left in place; delete it if it only held this cluster."
 }
 
-GETOPT=$(getopt -o h --long domain:,mail-host:,auth-host:,mail-domains:,version:,tls:,gateway:,openbao:,email:,uninstall,install-cert-manager,skip-k3s,help -- "$@")
+GETOPT=$(getopt -o h --long domain:,mail-host:,auth-host:,mail-domains:,version:,tls:,gateway:,openbao:,email:,uninstall,yes,install-cert-manager,skip-k3s,help -- "$@")
 if [ $? -ne 0 ]; then
   exit 1
 fi
@@ -777,6 +791,7 @@ do
         --email) ACME_EMAIL=$2; shift 2;;
         --skip-k3s) SKIP_K3S=true; shift;;
         --uninstall) UNINSTALL=true; shift;;
+        --yes) CONFIRM_UNINSTALL=true; shift;;
         --install-cert-manager) TLS=true; shift;;
         -h | --help)
           echo "This scripts sets up a complete single-node k3s (Kubernetes) cluster. No arguments will do an install"
@@ -805,7 +820,8 @@ do
           echo -e "\t\t\t\t(default true; false keeps them in Kubernetes Secrets)"
           echo -e "\t--email <email>\t\tThe Let's Encrypt account email (default admin@<domain>)"
           echo -e "\t--skip-k3s\t\tSkips installation of k3s"
-          echo -e "\t--uninstall\t\tUninstalls what this script installed (recorded in $STATE_FILE)"
+          echo -e "\t--uninstall\t\tUninstalls what this script installed (recorded in $STATE_FILE), including the mail data"
+          echo -e "\t--yes\t\t\tConfirms --uninstall; without it nothing is removed"
           echo "Environment:"
           echo -e "\tCHART\t\t\tThe chart to install (default $CHART), e.g. ./helm for a local checkout"
           echo -e "\tEXTERNAL_SECRETS_VERSION\tThe external-secrets release to install (default $EXTERNAL_SECRETS_VERSION)"
@@ -924,7 +940,7 @@ if [[ "$SKIP_K3S" = "false" ]]; then
   else
     # Install k3s. Its kubeconfig (cluster-admin) stays root-only; the user gets a private copy below.
     echo "Installing k3s..."
-    curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="$K3S_OPTIONS" sh -
+    curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION="$K3S_VERSION" INSTALL_K3S_EXEC="$K3S_OPTIONS" sh -
     if [ $? -ne 0 ]; then
       echo "There was a problem installing k3s."
       exit 1
@@ -992,7 +1008,7 @@ run_step "Installing cert-manager"
 if ! helm status cert-manager -n cert-manager >/dev/null 2>&1; then
   CERT_MANAGER_NEW=true
 fi
-helm upgrade --install cert-manager oci://quay.io/jetstack/charts/cert-manager --namespace cert-manager --create-namespace \
+helm upgrade --install cert-manager oci://quay.io/jetstack/charts/cert-manager --version "$CERT_MANAGER_VERSION" --namespace cert-manager --create-namespace \
       --set config.apiVersion="controller.config.cert-manager.io/v1alpha1" \
       --set config.kind="ControllerConfiguration" \
       --set config.enableGatewayAPI=true \
@@ -1113,8 +1129,8 @@ if [[ "$TLS" = "true" && "$SERVER_HOST" != "localhost" && ! "$SERVER_HOST" =~ \.
   GATEWAY_TLS=true
   HTTPS_LISTENER="https"
   AUTODISCOVER_HTTPS_LISTENER="https-autodiscover"
-  # The auth-server subchart only issues a certificate for a host that doesn't contain ".local".
-  if [[ "$AUTH_HOST" != *.local* ]]; then
+  # The auth-server subchart only issues a certificate for a host that isn't localhost, *.local or *.localhost.
+  if [[ "$AUTH_HOST" != "localhost" && ! "$AUTH_HOST" =~ \.(local|localhost)$ ]]; then
     AUTH_HTTPS_LISTENER="https-auth"
   fi
 fi

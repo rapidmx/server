@@ -35,10 +35,8 @@ data:
   {{- $mongoDatabaseACL := include "rrst.render" (dict "value" $.Values.service.datastores.mongodb.acl.name "context" $) | default "rrst_acls" }}
   {{- $mongoHost := $.Values.service.datastores.mongodb.mongo.host | default $.Values.mongodb.fullnameOverride }}
   {{- $mongoHostACL := $.Values.service.datastores.mongodb.acl.host | default $.Values.mongodb.fullnameOverride }}
+  {{- /* Always plain mongodb://: a mongodb+srv:// URL needs SRV and TXT DNS records the bundled replica set doesn't publish, and an earlier `$mongoProtocol :=` inside an `if` here (a new variable, never the outer one) never took effect anyway. Set global.database.url for another protocol. */}}
   {{- $mongoProtocol := "mongodb" }}
-  {{- if (eq $.Values.mongodb.architecture "replicaset") }}
-  {{-   $mongoProtocol := "mongodb+srv" }}
-  {{- end }}
   {{- if and $.Values.mongodb.create $.Values.mongodb.auth.enabled }}
   {{-   $mongoSecret := (lookup "v1" "Secret" $.Release.Namespace $.Values.mongodb.fullnameOverride) | default dict }}
   {{-   $mongoSecretData := (get $mongoSecret "data") | default dict }}

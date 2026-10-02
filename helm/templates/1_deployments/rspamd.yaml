@@ -35,6 +35,11 @@ spec:
         # The password is only read when the pod starts.
         checksum/secrets: {{ include (print $.Template.BasePath "/0_config/rspamd-secret.yaml") . | sha256sum }}
     spec:
+      # rspamd talks to the server and Redis only; it has no use for a Kubernetes API token.
+      automountServiceAccountToken: false
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
       volumes:
         # Where the init container writes worker-controller.inc and classifier-bayes.conf, and rspamd reads them from.
         - name: local-d

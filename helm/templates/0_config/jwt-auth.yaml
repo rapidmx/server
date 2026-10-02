@@ -10,8 +10,16 @@ type: Opaque
 data:
   {{- $secret := (lookup "v1" "Secret" .Release.Namespace (printf "%s-jwt-auth" (include "rrst.fullname" .))) | default dict }}
   {{- $secretData := (get $secret "data") | default dict }}
+  {{- /*
+  The server and the auth-server must sign and verify with the same secret, but each chart keeps its own Secret: with no
+  global.jwt.secret each would generate a different one and every token would be rejected. So it is required whenever the
+  auth-server is part of this release. (Stored-value preservation below is for a release that serves tokens from elsewhere.)
+  */}}
+  {{- if and (not (tpl (.Values.global.jwt.secret | default "" | toString) .)) .Values.authserver.create (not .Values.global.secrets.existingSecret) }}
+  {{-   fail (printf "global.jwt.secret is required: the server and the bundled auth-server must share one JWT secret. Set it to a random value; to keep the one this release already uses, read it with: kubectl -n %s get secret %s-jwt-auth -o jsonpath='{.data.auth__secret}' | base64 -d" .Release.Namespace (include "rrst.fullname" .)) }}
+  {{- end }}
   {{- /* Generated once and kept: the stored value wins over the default, an explicit auth.secret wins over both. */}}
-  {{- $jwtSecret := include "rrst.persistedSecret" (dict "value" .Values.global.jwt.secret "stored" $secretData "context" .) | quote }}
+  {{- $jwtSecret := include "rrst.persistedSecret" (dict "value" .Values.global.jwt.secret "stored" (get $secretData "auth__secret") "context" .) | quote }}
   auth__options__audience: {{ include "rrst.render" ( dict "value" .Values.global.jwt.audience "context" $) | b64enc | quote }}
   auth__options__issuer: {{ include "rrst.render" ( dict "value" .Values.global.jwt.issuer "context" $) | b64enc | quote }}
   auth__options__expiresIn: {{ include "rrst.render" ( dict "value" .Values.global.jwt.expiresIn "context" $) | b64enc | quote }}

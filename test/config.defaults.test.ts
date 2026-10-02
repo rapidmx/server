@@ -3,6 +3,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 import {
     applyPluginSetting,
+    isProtectedPluginSettingKey,
     assertProductionSecretsAreSet,
     DEFAULT_AUTH_SECRET,
     DEFAULT_COOKIE_SECRET,
@@ -11,6 +12,7 @@ import {
     PLUGIN_SETTINGS_STORE,
     SECRETS_GUARD_SKIP_ENVIRONMENTS,
     SecretsConfig,
+    escrowAuditKeyWarning,
     trustedAuthservIdWarning,
 } from "../src/config.defaults.js";
 
@@ -75,6 +77,12 @@ describe("assertProductionSecretsAreSet", () => {
         );
     });
 
+    it("rejects an ingest secret too short to withstand guessing, outside development only", () => {
+        const short = fakeConfig({ ...realSecrets, "mail:transport:ingest:secret": "short" });
+        expect(() => assertProductionSecretsAreSet(short, "production")).toThrow(/mail__transport__ingest__secret shorter than 16/);
+        expect(() => assertProductionSecretsAreSet(short, "development")).not.toThrow();
+    });
+
     it("does not throw once all three secrets have been overridden", () => {
         expect(() => assertProductionSecretsAreSet(fakeConfig(realSecrets), "production")).not.toThrow();
         expect(() => assertProductionSecretsAreSet(fakeConfig(realSecrets), undefined)).not.toThrow();
@@ -99,6 +107,24 @@ describe("trustedAuthservIdWarning", () => {
 
     it("says nothing once it is set", () => {
         expect(trustedAuthservIdWarning(configWith("mx.example.com"))).toBeUndefined();
+    });
+});
+
+describe("escrowAuditKeyWarning", () => {
+    const configWith = (value: unknown): SecretsConfig => ({
+        get: (key: string) => (key === "mail:escrow:audit_hmac_key" ? value : undefined),
+    });
+
+    it("warns in production while the key is empty, blank or missing", () => {
+        for (const value of ["", "  ", undefined]) {
+            expect(escrowAuditKeyWarning(configWith(value), "production")).toMatch(/mail__escrow__audit_hmac_key.*unkeyed SHA-256/);
+            expect(escrowAuditKeyWarning(configWith(value), undefined)).toBeDefined();
+        }
+    });
+
+    it("says nothing once it is set, or in development", () => {
+        expect(escrowAuditKeyWarning(configWith("abc"), "production")).toBeUndefined();
+        expect(escrowAuditKeyWarning(configWith(""), "development")).toBeUndefined();
     });
 });
 
@@ -148,6 +174,32 @@ describe("ensurePushDatastore", () => {
                 expect(conf.get("datastores:notifications")).toEqual({ type: "redis", url: "redis://push-host:6390/4" });
                 expect(conf.get("datastores:events:url")).toBe("redis://push-host:6390/4");
             });
+        }
+    });
+});
+
+describe("isProtectedPluginSettingKey", () => {
+    it("protects the core configuration a plugin could use to take over the server, however it is spelled", () => {
+        for (const key of [
+            "trusted_roles",
+            "trusted_proxies",
+            "mail:transport:ingest:secret",
+            "mail__transport__ingest__secret",
+            "auth:secret",
+            "auth:options:issuer",
+            "cookie_secret",
+            "session:secret",
+            "Datastores:mongo:url",
+            "mail:escrow:audit_hmac_key",
+            "system:plugins:sources",
+        ]) {
+            expect(isProtectedPluginSettingKey(key), key).toBe(true);
+        }
+    });
+
+    it("leaves plugins their own settings", () => {
+        for (const key of ["mail:eas:sync_window_size", "mail:videoconf:turn:url", "mail:booking:public_url", "authentication_banner", "mail:security_note", "crm:stages"]) {
+            expect(isProtectedPluginSettingKey(key), key).toBe(false);
         }
     });
 });

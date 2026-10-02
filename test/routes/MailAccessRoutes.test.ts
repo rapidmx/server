@@ -36,7 +36,7 @@ const SERVER_ROUTES: Record<string, string> = {
     GiphySearchRoute: "user: proxies a GIF search, no mailbox data",
     DiagnosticsRoute: "admin: versions, Kubernetes runtime and resource usage (@RequiresTrustedRole, elevated token)",
     MetricsRoute: "admin: metrics, token-gated",
-    OpenAPIRoute: "public: the API description",
+    OpenAPIRoute: "user: the API description, signed-in callers only",
     PublicPageRoute: "public: the public web pages",
     StaticAssetRoute: "public: static files",
     StatusRoute: "public: readiness",

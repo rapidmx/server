@@ -3,6 +3,13 @@
 {{- $certificate := eq (include "rrst.certificate" $) "true" }}
 {{- $podTLS := eq (include "rrst.podTLS" $) "true" }}
 {{- $autodiscoverHost := include "rapidmx.autodiscoverHost" $ }}
+{{- /*
+Plain HTTP is redirected to HTTPS when this chart owns the Gateway and terminates TLS on it: the http and https listeners are
+named here, so the redirect can be attached to the http ones only (a Gateway it doesn't own names its own listeners, which
+this can't tell apart). cert-manager's HTTP-01 solver route matches its own /.well-known/acme-challenge/<token> path exactly,
+which wins over this route's `/` prefix, so certificates are still issued over HTTP.
+*/}}
+{{- $redirectHTTP := and $ownsGateway $certificate (not $podTLS) $.Values.global.gateway.httpRedirect }}
 {{- if $ownsGateway }}
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
@@ -103,12 +110,14 @@ metadata:
 spec:
   parentRefs:
   {{- if $ownsGateway }}
+  {{- if not $redirectHTTP }}
   - name: {{ tpl $.Values.global.gateway.name $ }}
     namespace: {{ tpl $.Values.global.gateway.namespace $ }}
     sectionName: http
   - name: {{ tpl $.Values.global.gateway.name $ }}
     namespace: {{ tpl $.Values.global.gateway.namespace $ }}
     sectionName: http-autodiscover
+  {{- end }}
   {{- if and (not $podTLS) $certificate }}
   - name: {{ tpl $.Values.global.gateway.name $ }}
     namespace: {{ $.Release.Namespace }}
@@ -128,6 +137,14 @@ spec:
   - {{ (include "rrst.render" (dict "value" $.Values.host "context" $)) | quote }}
   - {{ $autodiscoverHost | quote }}
   rules:
+  # /internal/* (the MTA hand-off API postfix-bridge calls inside the cluster, authenticated by mail.ingestSecret) is
+  # never served publicly: a rule with no backendRefs and no filters answers 404. It shares the server's port with the
+  # public API, so a NetworkPolicy can't separate the two - this rule, the server's own refusal of /internal requests
+  # that arrive through a proxy (see InternalCallerGuard) and the ingest secret are the protection.
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /internal
   {{- if $podTLS }}
   # The pod only speaks TLS once its ssl config is set (see 1_deployments/service.yaml), so plain HTTP arriving on
   # this listener can no longer be forwarded to it - send it to the https listener instead.
@@ -157,6 +174,36 @@ spec:
         - Strict-Transport-Security
     {{- end }}
   {{- end }}
+{{- if $redirectHTTP }}
+---
+# Sends everything arriving over plain HTTP to the same address over HTTPS. The API route above is attached to the https
+# listeners only, so no request is served in the clear (global.gateway.httpRedirect: false serves both).
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ include "rrst.fullname" . }}-httproute-redirect
+spec:
+  parentRefs:
+  - name: {{ tpl $.Values.global.gateway.name $ }}
+    namespace: {{ tpl $.Values.global.gateway.namespace $ }}
+    sectionName: http
+  - name: {{ tpl $.Values.global.gateway.name $ }}
+    namespace: {{ tpl $.Values.global.gateway.namespace $ }}
+    sectionName: http-autodiscover
+  hostnames:
+  - {{ (include "rrst.render" (dict "value" $.Values.host "context" $)) | quote }}
+  - {{ $autodiscoverHost | quote }}
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /
+    filters:
+    - type: RequestRedirect
+      requestRedirect:
+        scheme: https
+        statusCode: 301
+{{- end }}
 {{- if $podTLS }}
 ---
 # Passes the raw TLS bytes on to the pod by SNI hostname instead of decrypting them - the pod terminates TLS itself

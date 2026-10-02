@@ -125,6 +125,14 @@ spec:
             {{- end }}
             - --no-tcp-relay
             - --no-multicast-peers
+            # The telnet admin CLI (port 5766) is never used here, and its password is the image's default.
+            - --no-cli
+            {{- if $c.userQuota }}
+            - --user-quota={{ int $c.userQuota }}
+            {{- end }}
+            {{- if $c.totalQuota }}
+            - --total-quota={{ int $c.totalQuota }}
+            {{- end }}
             {{- range $c.deniedPeerIps }}
             - --denied-peer-ip={{ . }}
             {{- end }}

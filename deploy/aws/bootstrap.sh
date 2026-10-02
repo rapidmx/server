@@ -27,7 +27,7 @@
 #   RAPIDMX_TLS              "true" (default) issues certificates through Let's Encrypt; "false" serves plain HTTP.
 #   RAPIDMX_NAMESPACE        Release name and namespace (default rapidmx-server).
 #   RAPIDMX_CHART            Chart reference (default oci://ghcr.io/rapidmx/charts/server).
-#   RAPIDMX_CHART_VERSION    Chart version (default 1.0.0-beta.3).
+#   RAPIDMX_CHART_VERSION    Chart version (default 1.0.0-beta.31).
 #   RAPIDMX_AUTH_SECRET      JWT secret shared with auth-server (default: generated).
 #   RAPIDMX_INGEST_SECRET    /internal/mta bearer secret, shared with ses-bridge (default: generated).
 #   RAPIDMX_HOSTED_ZONE_ID   Route 53 hosted zone to write the domain's records into (default: none - do it yourself).
@@ -59,7 +59,7 @@ AUTH_HOST=${RAPIDMX_AUTH_HOST:-auth}
 TLS=${RAPIDMX_TLS:-true}
 NAMESPACE=${RAPIDMX_NAMESPACE:-rapidmx-server}
 CHART=${RAPIDMX_CHART:-oci://ghcr.io/rapidmx/charts/server}
-CHART_VERSION=${RAPIDMX_CHART_VERSION:-1.0.0-beta.3}
+CHART_VERSION=${RAPIDMX_CHART_VERSION:-1.0.0-beta.31}
 HOSTED_ZONE_ID=${RAPIDMX_HOSTED_ZONE_ID:-}
 INGEST_CIDRS=${RAPIDMX_INGEST_CIDRS:-}
 WEB_CIDRS=${RAPIDMX_WEB_CIDRS:-0.0.0.0/0}
@@ -81,6 +81,14 @@ OPENBAO_KV_MOUNT=${OPENBAO_KV_MOUNT:-secret}
 OPENBAO_PKI_MOUNT=${OPENBAO_PKI_MOUNT:-pki}
 OPENBAO_PKI_ROLE=${OPENBAO_PKI_ROLE:-rapidmx-encryption}
 CLUSTER_NAME=${RAPIDMX_CLUSTER_NAME:-rapidmx}
+# Everything this script installs is pinned, so a run months from now (or a re-run) can't pull in a newer release that was never
+# tested with the chart. k3s is the stable channel's release at the time of writing; get-helm-3 is the script as tagged in helm's
+# own repository (it still installs the latest helm 3 itself).
+K3S_VERSION=${K3S_VERSION:-v1.36.5+k3s1}
+HELM_SCRIPT_VERSION=${HELM_SCRIPT_VERSION:-v3.19.0}
+CERT_MANAGER_VERSION=${CERT_MANAGER_VERSION:-v1.21.2}
+AWS_CCM_VERSION=${AWS_CCM_VERSION:-0.0.12}
+AWS_EBS_CSI_VERSION=${AWS_EBS_CSI_VERSION:-2.66.0}
 ENVOY_GATEWAY_VERSION=${ENVOY_GATEWAY_VERSION:-v1.9.1}
 EXTERNAL_SECRETS_VERSION=${EXTERNAL_SECRETS_VERSION:-2.10.0}
 SUMMARY_FILE=${RAPIDMX_SUMMARY_FILE:-/var/lib/rapidmx-installer/summary.txt}
@@ -489,7 +497,7 @@ else
   log "Installing k3s..."
   # No ServiceLB and no in-tree cloud controller: aws-cloud-controller-manager below answers LoadBalancer Services with
   # real load balancers. The node name must be the instance's private DNS name, which is how it finds the instance.
-  curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="--disable=traefik --disable=servicelb --disable-cloud-controller --kubelet-arg=cloud-provider=external --node-name=$NODE_NAME" sh - \
+  curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION="$K3S_VERSION" INSTALL_K3S_EXEC="--disable=traefik --disable=servicelb --disable-cloud-controller --kubelet-arg=cloud-provider=external --node-name=$NODE_NAME" sh - \
     || fail "k3s install failed."
 fi
 chmod 600 "$K3S_KUBECONFIG" 2>/dev/null
@@ -506,7 +514,7 @@ done
 # --- helm --------------------------------------------------------------------------------------
 if ! command -v helm >/dev/null 2>&1; then
   log "Installing helm..."
-  curl -sfL https://raw.githubusercontent.com/helm/helm/master/scripts/get-helm-3 | bash >/dev/null \
+  curl -sfL "https://raw.githubusercontent.com/helm/helm/$HELM_SCRIPT_VERSION/scripts/get-helm-3" | bash >/dev/null \
     || fail "helm install failed."
 fi
 
@@ -519,12 +527,12 @@ helm repo add aws-cloud-controller-manager "$AWS_CCM_REPO" >/dev/null 2>&1
 helm repo add aws-ebs-csi-driver "$AWS_EBS_CSI_REPO" >/dev/null 2>&1
 helm repo update aws-cloud-controller-manager aws-ebs-csi-driver >/dev/null || fail "couldn't update the helm repos."
 if ! helm status aws-cloud-controller-manager -n kube-system >/dev/null 2>&1; then
-  helm install aws-cloud-controller-manager aws-cloud-controller-manager/aws-cloud-controller-manager -n kube-system \
+  helm install aws-cloud-controller-manager aws-cloud-controller-manager/aws-cloud-controller-manager -n kube-system --version "$AWS_CCM_VERSION" \
     --set args="{--v=2,--cloud-provider=aws,--configure-cloud-routes=false,--cluster-name=$CLUSTER_NAME}" \
     || fail "aws-cloud-controller-manager install failed."
 fi
 if ! helm status aws-ebs-csi-driver -n kube-system >/dev/null 2>&1; then
-  helm install aws-ebs-csi-driver aws-ebs-csi-driver/aws-ebs-csi-driver -n kube-system \
+  helm install aws-ebs-csi-driver aws-ebs-csi-driver/aws-ebs-csi-driver -n kube-system --version "$AWS_EBS_CSI_VERSION" \
     || fail "aws-ebs-csi-driver install failed."
 fi
 waitForDeployments kube-system
@@ -698,7 +706,7 @@ fi
 # --- cert-manager ---------------------------------------------------------------------------------
 if [[ "$TLS" = "true" ]]; then
   log "Installing cert-manager..."
-  helm upgrade --install cert-manager oci://quay.io/jetstack/charts/cert-manager --namespace cert-manager \
+  helm upgrade --install cert-manager oci://quay.io/jetstack/charts/cert-manager --version "$CERT_MANAGER_VERSION" --namespace cert-manager \
     --create-namespace --set config.apiVersion="controller.config.cert-manager.io/v1alpha1" \
     --set config.kind="ControllerConfiguration" --set config.enableGatewayAPI=true --set crds.enabled=true \
     || fail "cert-manager install failed."

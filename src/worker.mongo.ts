@@ -24,7 +24,7 @@ import { enableBasicAuthIfApplicable } from "./lib/enableBasicAuth.js";
 
 import * as fs from "fs";
 import { readFile } from "fs/promises";
-import { assertProductionSecretsAreSet, DEVELOPMENT_ENVIRONMENTS, trustedAuthservIdWarning } from "./config.defaults.js";
+import { assertProductionSecretsAreSet, DEVELOPMENT_ENVIRONMENTS, escrowAuditKeyWarning, trustedAuthservIdWarning } from "./config.defaults.js";
 import { configMs, DEFAULT_RELEASE_TIMEOUT_MS, drainAndStop, withTimeout } from "./lib/gracefulShutdown.js";
 import { startTelemetryToken } from "./lib/telemetryToken.js";
 import { PluginMongo, MailboxMongo } from "@rapidmx/restapi/mongo";
@@ -47,6 +47,11 @@ const logger = Logger(logLevel, config.get("logger:file"));
 const authservIdWarning: string | undefined = trustedAuthservIdWarning(config);
 if (authservIdWarning) {
     logger.warn(authservIdWarning);
+}
+// An empty mail:escrow:audit_hmac_key leaves the escrow audit log's hash chain unkeyed, so it can be rewritten undetected.
+const escrowKeyWarning: string | undefined = escrowAuditKeyWarning(config, process.env.NODE_ENV);
+if (escrowKeyWarning) {
+    logger.error(escrowKeyWarning);
 }
 console.log("Log Level=" + logLevel);
 

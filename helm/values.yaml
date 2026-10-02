@@ -11,8 +11,9 @@ global:
   # Browser origins each service accepts credentialed cross-origin calls from. Shared with the auth-server subchart, where it
   # is both its CORS list and the list of origins a sign-in's ?return_to= may send the browser back to - so the server's host
   # has to be here for sign-out, the profile lookup and the return to the mail app to work. Every service adds its own host.
+  # localhost:3000 (the dev server) is not allowed by default: with `environment` other than production the server adds it to its own
+  # list (service-config.yaml); the auth-server reads only this list.
   corsHosts:
-    - localhost:3000
     - mail.{{ tpl (toString .Values.global.domain) . }}
     - auth.{{ tpl (toString .Values.global.domain) . }}
   database:
@@ -28,6 +29,10 @@ global:
     className: envoy
     hsts: true
     tls: true
+    # With tlsTermination: gateway on a Gateway this chart creates, plain HTTP is redirected (301) to HTTPS rather than served: a
+    # request on port 80 would otherwise carry the session cookie and credentials in the clear. cert-manager's HTTP-01
+    # challenge is still answered over HTTP. false serves the API on both.
+    httpRedirect: true
     tlsTermination: gateway
     tlsExtraDnsNames: []
     # Envoy Gateway compresses the API's JSON and the pages' HTML in transit (a BackendTrafficPolicy on this chart's route). The
@@ -105,6 +110,12 @@ mongodb:
   fullnameOverride: mongodb
   auth:
     enabled: false
+  # Without a password anything that can reach port 27017 reads and writes all of the data, so only pods labelled
+  # "mongodb-client" may: the server and auth-server pods carry that label (1_deployments/service.yaml). Left to the
+  # Bitnami default (allowExternal: true) the policy admitted every pod in every namespace. Enabling auth on top of this needs
+  # the root user created on an empty data directory - an existing install's volume would not pick it up - so it stays off.
+  networkPolicy:
+    allowExternal: false
   # Minimum requests only, never limits: a limit throttles the pod (CPU) or kills it (memory) even when the node has
   # plenty to spare - MongoDB's liveness probe was timing out at its CPU cap. Bitnami's default "small" preset sets a
   # limit as well as a request, so the preset is turned off and its requests kept.
@@ -139,6 +150,13 @@ postgresql:
   auth:
     enablePostgresUser: false
     database: rrst_auth
+  # Only pods labelled "postgresql-client" (the server and auth-server pods) may connect, as for mongodb above.
+  primary:
+    networkPolicy:
+      allowExternal: false
+  readReplicas:
+    networkPolicy:
+      allowExternal: false
 redis:
   create: true
   architecture: standalone
@@ -166,6 +184,9 @@ service:
     repository: rapidmx/server
     tag: 1.0.0-beta.31
   replicas: 1
+  # The image of the init containers that wait for the datastores (a TCP check with nc) and of `helm test`'s pod. Pinned, like the
+  # other images, so a pull can't bring a different one.
+  probeImage: busybox:1.37.0
   resources:
     requests:
       cpu: 100m
@@ -190,6 +211,10 @@ service:
     mail__basic_auth__realm: '{{ .Values.mail.basicAuth.realm }}'
     mail__basic_auth__cache_ttl_ms: '{{ .Values.mail.basicAuth.cacheTtlMs }}'
     mail__basic_auth__failure_limit: '{{ .Values.mail.basicAuth.failureLimit }}'
+    # /internal/mta refuses a request that carries proxy headers (X-Forwarded-For, ...), which keeps one that came in through the
+    # public Gateway out. An internal load balancer for ses-bridge (mail.ingestService) may add them, so they are accepted then -
+    # except with pod-terminated TLS, where the Gateway can't answer 404 for /internal itself and the server's refusal is all there is.
+    mail__internal__allow_forwarded: '{{ and .Values.mail.ingestService.enabled (ne (include "rrst.podTLS" .) "true") }}'
     mail__security__trusted_authserv_id: '{{ include "rapidmx.trustedAuthservId" . }}'
     mail__dns__mx_hostname: >-
       {{ .Values.mail.mxHostname | default (include "rrst.render" (dict "value"
@@ -246,6 +271,17 @@ service:
     failureThreshold: 22
 authserver:
   create: true
+  # The auth-server subchart renders its own copy of these datastores (same names as the ones above): keep them identical.
+  mongodb:
+    networkPolicy:
+      allowExternal: false
+  postgresql:
+    primary:
+      networkPolicy:
+        allowExternal: false
+    readReplicas:
+      networkPolicy:
+        allowExternal: false
   service:
     config:
       auth__allowRegistration: false
@@ -290,9 +326,8 @@ postfixBridge:
       }}-mail-ingest-secret{{ end }}
   ingestBaseUrl: >-
     {{ if and .Values.global.gateway.tls (eq
-    .Values.global.gateway.tlsTermination "pod") (ne (toString
-    .Values.global.domain) "localhost") (not (contains ".local" (toString
-    .Values.global.domain))) }}https{{ else }}http{{ end }}://{{ ternary
+    .Values.global.gateway.tlsTermination "pod") (include "rrst.publicHost"
+    (toString .Values.global.domain)) }}https{{ else }}http{{ end }}://{{ ternary
     .Release.Name (printf "%s-server" .Release.Name) (contains "server"
     .Release.Name) }}-services/internal/mta
   hostname: mail.{{ .Values.global.domain }}
@@ -334,7 +369,9 @@ mail:
     # How long a successful sign-in is remembered, in ms - these clients send their credentials with every request, and each
     # sign-in is a session in the auth-server.
     cacheTtlMs: 300000
-    # Failed sign-ins per client address or per username, within 15 minutes, before further attempts get a 429.
+    # Failed sign-ins per client address and username together, within 15 minutes, before further attempts get a 429. (Looser
+    # ceilings per address and per username alone - mail:basic_auth:ip_failure_limit / name_failure_limit, 50 - stop a client
+    # trying many names, or a stranger locking someone out from many addresses.)
     failureLimit: 10
   trustedAuthservId: ''
   relay:
@@ -344,6 +381,12 @@ mail:
     fromAddress: ''
   escrow:
     auditHmacKey: ''
+  storage:
+    # Leave the DKIM keys, blob and PKI volumes in place when the release is uninstalled (helm.sh/resource-policy: keep), so
+    # `helm uninstall` can't destroy mail, DKIM private keys or the encryption CA's key. Delete the claims yourself to remove
+    # the data (kubectl -n <namespace> delete pvc <fullname>-dkim-keys <fullname>-blob-data <fullname>-pki-data), and do so before
+    # installing a release of the same name again, since Helm won't adopt a claim it didn't create.
+    keepOnUninstall: true
   dkim:
     selector: mail
     autogenerate: true
@@ -426,6 +469,9 @@ mail:
       registry: docker.io
       repository: clamav/clamav
       tag: stable
+      # `stable` moves with ClamAV's releases, which are security fixes to the scanner itself: Always pulls it again whenever the pod
+      # starts, instead of keeping whatever copy a node first pulled. Use IfNotPresent with a pinned tag (e.g. 1.5.4).
+      pullPolicy: Always
     resources:
       requests:
         cpu: 200m
@@ -506,6 +552,11 @@ coturn:
     port: 5349
     # A kubernetes.io/tls Secret (keys tls.crt and tls.key) in this namespace whose certificate covers coturn.hostname.
     existingSecret: ''
+  # Most relayed allocations (one per peer connection) a single user, i.e. one participant's credential, may hold at once, and most
+  # in total; 0 is coturn's own default, no limit besides the relay ports above. A participant in a mesh call holds one or two per
+  # other participant, so the per-user limit is generous: it stops one credential from using up every relay port.
+  userQuota: 25
+  totalQuota: 0
   # coturn refuses to relay to these addresses, so it can't be used to reach anything on the node's or the cluster's own
   # network (cloud metadata at 169.254.169.254, the cluster's pods and services, the node itself). Participants reach each
   # other through public addresses, so there is normally nothing to change - remove a range only to relay between hosts on
