@@ -125,7 +125,7 @@ jobs:
       # Lint does not render the templates' `required`/`fail` checks; this does, with the values an install has to give.
       - name: Render the chart
         run: |
-          helm template rapidmx ./helm --namespace rapidmx             --set global.domain=example.com --set host=mail.example.com             --set global.mailIngestSecret=0123456789abcdef0123 --set global.jwt.secret=y             --set global.secrets.cookies=c --set global.secrets.sessions=s             --set mail.escrow.auditHmacKey=k --set global.openbao.enabled=false             --set mail.rspamd.controller.password=abcdefghijklmnop1             --set coturn.auth.sharedSecret=abc123 > /dev/null
+          helm template rapidmx ./helm --namespace rapidmx             --set global.domain=example.com --set host=mail.example.com             --set global.mailIngestSecret=0123456789abcdef0123 --set global.jwt.secret=y             --set global.secrets.cookies=c --set global.secrets.sessions=s             --set mail.escrow.auditHmacKey=k --set global.openbao.enabled=false             --set mail.rspamd.controller.password=abcdefghijklmnop1             --set coturn.auth.sharedSecret=abc123             --set authserver.service.config.auth__oauth_server__keys__encryption_key=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef             --set authserver.service.config.auth__totp__encryption_key=fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210 > /dev/null
 
   test-run-mongo:
     runs-on: ubuntu-latest
