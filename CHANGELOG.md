@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.36] - 2026-10-03
+
+### Changed
+- Load the plugins that were uploaded as npm pack files on startup, fetching each from the blob store, checking its integrity and installing it from a local copy, and skip only the plugin that fails
+- Turn the uploading of plugins on or off and limit the size of an upload with chart values
+- Give the helm tests the encryption keys the auth-server chart now needs to render
+- Update @rapidmx/restapi to 0.29.0
+- Update @rapidmx/web-client to 0.32.0
+
 ## [1.0.0-beta.35] - 2026-10-02
 
 ### Changed
@@ -1168,7 +1177,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed test from .dockerignore, fixing yarn build's lint step failing outright when the build context is missing the test directory its tsconfig.eslint.json requires
 - Removed docker-compose.mail.yml's partial server: service block, since include: only supports merging resources that don't already exist in the including file and hard-errors ("services.server conflicts with imported resource") on a Compose version newer than whatever this had only ever been tested against locally
 
-[Unreleased]: https://github.com/rapidmx/server/compare/v1.0.0-beta.35...HEAD
+[Unreleased]: https://github.com/rapidmx/server/compare/v1.0.0-beta.36...HEAD
+[1.0.0-beta.36]: https://github.com/rapidmx/server/compare/v1.0.0-beta.35...v1.0.0-beta.36
 [1.0.0-beta.35]: https://github.com/rapidmx/server/compare/v1.0.0-beta.34...v1.0.0-beta.35
 [1.0.0-beta.34]: https://github.com/rapidmx/server/compare/v1.0.0-beta.33...v1.0.0-beta.34
 [1.0.0-beta.33]: https://github.com/rapidmx/server/compare/v1.0.0-beta.32...v1.0.0-beta.33
