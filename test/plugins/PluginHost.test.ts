@@ -61,6 +61,11 @@ function tarball(file: string, files: Record<string, string>): void {
     fs.writeFileSync(file, zlib.gzipSync(Buffer.concat(blocks)));
 }
 
+/** An ObjectFactory with no server behind it: builds what is asked for, and knows no instances. */
+function fakeObjectFactory(): any {
+    return { getInstance: () => undefined, newInstance: async (type: any, options: any) => new type(...(options?.args ?? [])), destroy: async () => undefined };
+}
+
 describe("PluginStateStore", () => {
     const registry: any = {
         getVersion: vi.fn(async (name: string, version: string) =>
@@ -400,7 +405,7 @@ describe("PluginHost", () => {
         expect(host.loadedHash).toBe(computePluginStateHash(rows));
         expect(host.safeMode).toBe(false);
 
-        await host.start({ getInstance: () => undefined } as any, async () => undefined);
+        await host.start(fakeObjectFactory(), async () => undefined);
         // No entry point was actually imported, so nothing counts as loaded once the server has started.
         expect(PluginRegistry.list()).toEqual([]);
         await host.stop();
@@ -571,7 +576,7 @@ describe("PluginHost", () => {
         expect(renewedDuringInstall).toBe(true);
         expect(values.get("plugins:restart-lock")).toBe("pod-a");
 
-        await host.start({ getInstance: () => undefined } as any, async () => undefined);
+        await host.start(fakeObjectFactory(), async () => undefined);
         expect(createRedisClient).toHaveBeenCalledTimes(1);
         expect(values.has("plugins:restart-lock")).toBe(false);
         await host.stop();
@@ -710,7 +715,7 @@ describe("PluginHost", () => {
             const host = await prepare({ installer, uiBuilder: { build: vi.fn(async () => ({ built: [], failed: [{ name: "first", message: "boom" }] })) } });
             // As if the entry point had imported.
             host.classLoader.loaded.push(one);
-            await host.start({ getInstance: () => undefined } as any, async () => undefined);
+            await host.start(fakeObjectFactory(), async () => undefined);
             expect((host as any).watcher.options.status.loaded).toEqual([{ name: "first", version: "1.0.0", ui: { status: "failed", mounts: [], error: "boom" } }]);
             expect(PluginRegistry.list()).toEqual([expect.objectContaining({ name: "first", ui: expect.objectContaining({ status: "failed" }) })]);
             await host.stop();

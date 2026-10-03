@@ -386,7 +386,8 @@ describe("POST /purges/:uid/retry", () => {
 describe("the ledger of a route", () => {
     it("builds its own from the server's datastore connection", async () => {
         const fresh: any = new Route();
-        fresh._objectFactory = { getInstance: () => ({ connections: new Map([["sql", manager.connections.get("sql")]]) }) };
+        Object.defineProperty(fresh, "_objectFactory", { value: objectFactory, writable: true, configurable: true });
+        await fresh.initializePurgeLedger();
         expect(fresh.getPurgeLedger()).toBeInstanceOf(PluginPurgeLedger);
         expect(fresh.getPurgeLedger()).toBe(fresh.getPurgeLedger());
         await ledger.request(PLUGIN, { wasEnabled: true }, T0);

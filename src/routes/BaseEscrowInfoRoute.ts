@@ -4,7 +4,7 @@
 import { ApiError, ObjectDecorators, type JWTUser } from "@rapidrest/core";
 import { ACLAction, ACLUtils, ApiErrorMessages, ApiErrors, DocDecorators, ObjectFactory, RepoUtils, RouteDecorators } from "@rapidrest/service-core";
 import { EscrowScope, EscrowScopePublicKey, Mailbox } from "@rapidmx/restapi";
-const { Inject } = ObjectDecorators;
+const { Init, Inject } = ObjectDecorators;
 const { Description, Summary } = DocDecorators;
 const { Auth, Get, Param, User: AuthUser } = RouteDecorators;
 
@@ -47,15 +47,19 @@ export abstract class BaseEscrowInfoRoute<M extends Mailbox> {
     @Inject(ACLUtils)
     private aclUtils?: ACLUtils;
 
-    private async init(): Promise<void> {
-        if (!this.mailboxRepo) {
-            this.mailboxRepo = await this._objectFactory!.newInstance(RepoUtils, {
+    @Init
+    protected async initializeEscrowInfo(): Promise<void> {
+        if (!this._objectFactory) {
+            throw new Error("objectFactory is not set.");
+        }
+        if (!this.mailboxRepo && this.mailboxClass) {
+            this.mailboxRepo = await this._objectFactory.newInstance(RepoUtils, {
                 name: this.mailboxClass.name,
                 args: [this.mailboxClass],
             });
         }
-        if (!this.escrowScopeRepo) {
-            this.escrowScopeRepo = await this._objectFactory!.newInstance(RepoUtils, {
+        if (!this.escrowScopeRepo && this.escrowScopeClass) {
+            this.escrowScopeRepo = await this._objectFactory.newInstance(RepoUtils, {
                 name: this.escrowScopeClass.name,
                 args: [this.escrowScopeClass],
             });
@@ -90,8 +94,6 @@ export abstract class BaseEscrowInfoRoute<M extends Mailbox> {
         if (!this.aclUtils) {
             throw new ApiError(ApiErrors.INTERNAL_ERROR, 500, ApiErrorMessages.INTERNAL_ERROR);
         }
-        await this.init();
-
         const mailbox: M | undefined = await this.mailboxRepo!.findOne(mailboxId, { ignoreACL: true });
         if (!mailbox) {
             // Refused exactly like a mailbox the caller has no access to, so the answer doesn't reveal which addresses have one.

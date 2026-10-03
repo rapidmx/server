@@ -2,11 +2,11 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 ///////////////////////////////////////////////////////////////////////////////
 import { ObjectDecorators } from "@rapidrest/core";
-import { DocDecorators, RouteDecorators } from "@rapidrest/service-core";
+import { DocDecorators, ObjectFactory, RouteDecorators } from "@rapidrest/service-core";
 import { DiagnosticsCollector } from "../diagnostics/DiagnosticsCollector.js";
 import type { DiagnosticsInformation, DiagnosticsMetrics, DiagnosticsRuntime, DiagnosticsVersions } from "../diagnostics/types.js";
 
-const { Config } = ObjectDecorators;
+const { Config, Init } = ObjectDecorators;
 const { Description, Returns, Summary } = DocDecorators;
 const { Auth, Get, RequiresElevation, RequiresTrustedRole } = RouteDecorators;
 
@@ -28,14 +28,27 @@ export abstract class BaseDiagnosticsRoute {
     @Config("diagnostics:timeout_ms", 5000)
     private timeoutMs!: number;
 
+    // Automatically injected by ObjectFactory on instantiation
+    private _objectFactory?: ObjectFactory;
+
+    /** One collector serves every handler, so its samples (CPU rates) carry over between polls. */
     private collector?: DiagnosticsCollector;
 
+    @Init
+    protected async initializeDiagnostics(): Promise<void> {
+        if (!this._objectFactory) {
+            throw new Error("objectFactory is not set.");
+        }
+        if (!this.collector) {
+            this.collector = await this._objectFactory.newInstance(DiagnosticsCollector, {
+                name: "DiagnosticsCollector",
+                args: [{ namespace: this.namespace, timeoutMs: Number(this.timeoutMs) }],
+            });
+        }
+    }
+
     private get diagnostics(): DiagnosticsCollector {
-        this.collector ??= new DiagnosticsCollector({
-            namespace: this.namespace,
-            timeoutMs: Number(this.timeoutMs),
-        });
-        return this.collector;
+        return this.collector!;
     }
 
     @Summary("Server and container versions")

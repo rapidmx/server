@@ -31,7 +31,7 @@ import {
     withRetainedBodyBlobKey,
 } from "@rapidmx/restapi";
 import { DEFAULT_MAX_COMPOSE_ATTACHMENT_BYTES } from "../config.defaults.js";
-const { Config, Inject } = ObjectDecorators;
+const { Config, Init, Inject } = ObjectDecorators;
 const { Description, Returns, Summary } = DocDecorators;
 const { Auth, Param, Post, User: AuthUser } = RouteDecorators;
 
@@ -467,33 +467,37 @@ export abstract class BaseMailComposeRoute<M extends Message, A extends Attachme
     @Config()
     private config?: { get(key: string): unknown };
 
-    private async init(): Promise<void> {
-        if (!this.messageRepo) {
-            this.messageRepo = await this._objectFactory!.newInstance(RepoUtils, {
+    @Init
+    protected async initializeCompose(): Promise<void> {
+        if (!this._objectFactory) {
+            throw new Error("objectFactory is not set.");
+        }
+        if (!this.messageRepo && this.messageClass) {
+            this.messageRepo = await this._objectFactory.newInstance(RepoUtils, {
                 name: this.messageClass.name,
                 args: [this.messageClass],
             });
         }
-        if (!this.attachmentRepo) {
-            this.attachmentRepo = await this._objectFactory!.newInstance(RepoUtils, {
+        if (!this.attachmentRepo && this.attachmentClass) {
+            this.attachmentRepo = await this._objectFactory.newInstance(RepoUtils, {
                 name: this.attachmentClass.name,
                 args: [this.attachmentClass],
             });
         }
-        if (!this.mailboxRepo) {
-            this.mailboxRepo = await this._objectFactory!.newInstance(RepoUtils, {
+        if (!this.mailboxRepo && this.mailboxClass) {
+            this.mailboxRepo = await this._objectFactory.newInstance(RepoUtils, {
                 name: this.mailboxClass.name,
                 args: [this.mailboxClass],
             });
         }
-        if (!this.folderRepo) {
-            this.folderRepo = await this._objectFactory!.newInstance(RepoUtils, {
+        if (!this.folderRepo && this.folderClass) {
+            this.folderRepo = await this._objectFactory.newInstance(RepoUtils, {
                 name: this.folderClass.name,
                 args: [this.folderClass],
             });
         }
-        if (!this.matterRepo) {
-            this.matterRepo = await this._objectFactory!.newInstance(RepoUtils, {
+        if (!this.matterRepo && this.matterClass) {
+            this.matterRepo = await this._objectFactory.newInstance(RepoUtils, {
                 name: this.matterClass.name,
                 args: [this.matterClass],
             });
@@ -517,7 +521,6 @@ export abstract class BaseMailComposeRoute<M extends Message, A extends Attachme
         if (!this.blobStore || !this.aclUtils) {
             throw new ApiError(ApiErrors.INTERNAL_ERROR, 500, ApiErrorMessages.INTERNAL_ERROR);
         }
-        await this.init();
 
         // No recipients or an empty body is a valid draft (see `ComposeAssembleInput`); only malformed input is refused.
         if (
@@ -744,7 +747,6 @@ export abstract class BaseMailComposeRoute<M extends Message, A extends Attachme
         if (!this.blobStore || !this.aclUtils) {
             throw new ApiError(ApiErrors.INTERNAL_ERROR, 500, ApiErrorMessages.INTERNAL_ERROR);
         }
-        await this.init();
 
         if (!body?.to?.length || !body.rawMime) {
             throw new ApiError(ApiErrors.INVALID_REQUEST, 400, ApiErrorMessages.INVALID_REQUEST);

@@ -35,7 +35,7 @@ import { clearStarting, markStarting, RedisPurgeCoordination } from "./PluginPur
 import { hasPurgeHook, InstallingPurgeHookRunner, type PurgeHookRunner } from "./PluginPurgeHook.js";
 import { DEFAULT_PURGE_LEASE_MS, PluginPurgeLedger } from "./PluginPurgeLedger.js";
 import { PluginPurgeStore } from "./PluginPurgeStore.js";
-import { DEFAULT_PURGE_CHECK_MS, DEFAULT_PURGE_GRACE_MS, PluginPurger, setPluginPurger } from "./PluginPurger.js";
+import { DEFAULT_PURGE_CHECK_MS, DEFAULT_PURGE_GRACE_MS, PluginPurger, setPluginPurger, type PluginPurgerOptions } from "./PluginPurger.js";
 import type { PluginOwnedModel } from "./PluginPurgeTypes.js";
 import { PluginUiBuilder, type PluginUiBuildResult } from "./PluginUiBuilder.js";
 import { prepareUploadedPlugins, type UploadBlobStore } from "./PluginUploads.js";
@@ -121,6 +121,9 @@ export class PluginHost {
     public readonly classLoader: PluginClassLoader;
     private watcher?: PluginWatcher;
     private purger?: PluginPurger;
+    /** The ObjectFactory of the running server and what `start()` built through it, so `stop()` can release those again. */
+    private factory?: ObjectFactory;
+    private built: object[] = [];
     private lockClosed: boolean = false;
 
     private constructor(
@@ -423,7 +426,8 @@ export class PluginHost {
         PluginRegistry.setLoaded(this.classLoader.registryEntries());
         // Serving now: the watcher releases the restart lock once this copy has been ready a little while.
         this.restartLock?.lock.clearHoldLimit();
-        this.watcher = new PluginWatcher({
+        this.factory = objectFactory;
+        this.watcher = await this.build(PluginWatcher, "default", [{
             instance: PluginHost.instanceId(config),
             loadedHash: this.loadedHash,
             status: {
@@ -452,7 +456,7 @@ export class PluginHost {
             ...this.retry,
             createRedisClient: this.options.createRedisClient,
             logger,
-        });
+        }]);
         await this.watcher.start();
         if (this.restartLock) {
             await clearStarting(this.restartLock.cache, PluginHost.instanceId(config)).catch(() => undefined);
@@ -476,7 +480,9 @@ export class PluginHost {
             const auditLogRepo: RepoUtils<any> = await objectFactory.newInstance(RepoUtils, { name: purge.auditLogClass.name, args: [purge.auditLogClass] });
             const auditLogUtils: AuditLogUtils = await objectFactory.newInstance(AuditLogUtils, { name: purge.auditLogClass.name, args: [auditLogRepo] });
             const leaseMs: number = config.get("system:plugins:purge:lease_ms") ?? DEFAULT_PURGE_LEASE_MS;
-            const ledger: PluginPurgeLedger = new PluginPurgeLedger(new PluginPurgeStore(connection, purge.purgeClass), leaseMs);
+            // The same ledger the plugin route's own hook gets (same name and arguments, so one instance for both).
+            const store: PluginPurgeStore = await objectFactory.newInstance(PluginPurgeStore, { name: purge.purgeClass.name, args: [connection, purge.purgeClass] });
+            const ledger: PluginPurgeLedger = await objectFactory.newInstance(PluginPurgeLedger, { name: purge.purgeClass.name, args: [store, leaseMs] });
 
             const loadedModels: Map<string, PluginOwnedModel[]> = new Map();
             for (const plugin of this.classLoader.loaded) {
@@ -492,19 +498,23 @@ export class PluginHost {
 
             const { pluginsDir, installer } = this.purgeEnv;
             const instance: string = PluginHost.instanceId(config);
-            this.purger = new PluginPurger({
+            // Built for this run: `stop()` destroys them again, so a host started again on the same factory gets fresh ones.
+            const coordination: PluginPurgerOptions["coordination"] = this.options.purgeCoordination ?? (await this.build(RedisPurgeCoordination, "default", [config.get("datastores:cache:url"), logger, this.options.createRedisClient]));
+            // `createInstaller` stays a `new`: each purge hook installs into its own scratch directory and the installer is dropped afterwards, which a factory would keep until it is destroyed.
+            const hooks: PurgeHookRunner = this.options.purgeHooks ?? (await this.build(InstallingPurgeHookRunner, "default", [(dir: string) => new PluginInstaller({ ...installer, dir }), path.join(pluginsDir, ".purge")]));
+            this.purger = await this.build(PluginPurger, "default", [{
                 instance,
                 config,
                 logger,
                 ledger,
                 leaseMs,
-                coordination: this.options.purgeCoordination ?? new RedisPurgeCoordination(config.get("datastores:cache:url"), logger, this.options.createRedisClient),
+                coordination,
                 connections,
                 coreClasses: () => this.classLoader.coreClasses(),
                 loadedPlugins: () => loadedModels,
                 readRows: () => findAllPlugins(pluginRepository(connection, pluginClass)),
                 clearSettings: (row) => clearRemovedPluginSettings(connection, pluginClass, row.uid),
-                hooks: this.options.purgeHooks ?? new InstallingPurgeHookRunner((dir) => new PluginInstaller({ ...installer, dir }), path.join(pluginsDir, ".purge")),
+                hooks,
                 hookContext: () => ({
                     connection: (name: string) => connections.get(name),
                     blobStore: objectFactory.getInstance("BlobStore"),
@@ -526,12 +536,19 @@ export class PluginHost {
                 checkIntervalMs: config.get("system:plugins:purge:check_ms") ?? DEFAULT_PURGE_CHECK_MS,
                 initialDelayMs: config.get("system:plugins:purge:initial_delay_ms") ?? undefined,
                 graceMs: config.get("system:plugins:purge:grace_ms") ?? DEFAULT_PURGE_GRACE_MS,
-            });
+            }]);
             this.purger.start();
             setPluginPurger(this.purger);
         } catch (err: any) {
             logger.warn(`Deleting uninstalled plugins' data is unavailable: ${err.message}`);
         }
+    }
+
+    /** Builds a service through the server's ObjectFactory and remembers it, so `stop()` destroys it again. */
+    private async build<T extends object>(type: new (...args: any[]) => T, name: string, args: unknown[]): Promise<T> {
+        const instance: T = await this.factory!.newInstance(type, { name, args });
+        this.built.push(instance);
+        return instance;
     }
 
     /** Stops watching for plugin changes. With `shutdown` (the process is stopping for good, not restarting), the restart
@@ -552,6 +569,11 @@ export class PluginHost {
                 await this.restartLock.lock.release().catch(() => undefined);
             }
             await (this.restartLock.cache.quit?.() ?? this.restartLock.cache.disconnect?.())?.catch(() => undefined);
+        }
+        if (this.factory && this.built.length > 0) {
+            // Stopped: another `start()` on the same factory must not get these back.
+            await this.factory.destroy(this.built);
+            this.built = [];
         }
     }
 }

@@ -41,6 +41,9 @@ describe.each([
         const route: any = new routeClass();
         route.namespace = "mail";
         route.timeoutMs = "2500";
+        // What the factory does in the route's `@Init` hook.
+        Object.defineProperty(route, "_objectFactory", { value: { newInstance: async (type: any, opts: any) => new type(...opts.args) }, configurable: true });
+        await route.initializeDiagnostics();
         const spies = {
             versions: vi.spyOn(DiagnosticsCollector.prototype, "versions").mockResolvedValue("v" as any),
             runtime: vi.spyOn(DiagnosticsCollector.prototype, "runtime").mockResolvedValue("r" as any),

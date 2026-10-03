@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import { ApiError, ObjectDecorators, type JWTUser } from "@rapidrest/core";
-import { ApiErrorMessages, ApiErrors, ConnectionManager, HttpRequest, RouteDecorators } from "@rapidrest/service-core";
+import { ApiErrorMessages, ApiErrors, ConnectionManager, HttpRequest, ObjectFactory, RouteDecorators } from "@rapidrest/service-core";
 import {
     type AddPluginRequest,
     type AddPluginResponse,
@@ -13,12 +13,12 @@ import {
     type PluginStatusResponse,
 } from "@rapidmx/restapi";
 import { blockingInstances } from "../plugins/PluginPurgeCoordination.js";
-import { PluginPurgeLedger, PurgeInProgressError } from "../plugins/PluginPurgeLedger.js";
+import { DEFAULT_PURGE_LEASE_MS, PluginPurgeLedger, PurgeInProgressError } from "../plugins/PluginPurgeLedger.js";
 import { PluginPurgeStore } from "../plugins/PluginPurgeStore.js";
 import { getPluginPurger, PURGE_AUDIT } from "../plugins/PluginPurger.js";
 import type { PluginPurgeInfo, PluginPurgeRecord } from "../plugins/PluginPurgeTypes.js";
 
-const { Logger } = ObjectDecorators;
+const { Config, Init, Logger } = ObjectDecorators;
 const { Delete, Get, Param, Post, Request, RequiresTrustedRole, User: AuthUser } = RouteDecorators;
 
 /** The response of `DELETE /:id`. Older clients ignore it (they never sent `purgeData`). */
@@ -119,15 +119,39 @@ export function withPluginPurge<B extends RouteBase>(Base: B, binding: { datasto
         @Logger
         public purgeLogger: any;
 
-        /** Set directly by tests; otherwise built from the server's own connection. */
+        @Config("system:plugins:purge:lease_ms", DEFAULT_PURGE_LEASE_MS)
+        protected purgeLeaseMs: number = DEFAULT_PURGE_LEASE_MS;
+
+        /** Built once by `initializePurgeLedger()` from the server's own connection; tests may set it directly. */
         public purgeLedger?: PluginPurgeLedger;
 
-        public getPurgeLedger(): PluginPurgeLedger {
-            if (!this.purgeLedger) {
-                const connections = ((this as any)._objectFactory.getInstance(ConnectionManager) as ConnectionManager).connections;
-                this.purgeLedger = new PluginPurgeLedger(new PluginPurgeStore(connections.get(binding.datastore), binding.purgeClass));
+        // Not `initialize`: restapi's plugin route has an `@Init` hook of that name, which this one would shadow.
+        @Init
+        protected async initializePurgeLedger(): Promise<void> {
+            // Injected by ObjectFactory on instantiation (restapi's plugin route declares the field, and a second declaration would conflict).
+            const objectFactory: ObjectFactory | undefined = (this as any)._objectFactory;
+            if (!objectFactory) {
+                throw new Error("objectFactory is not set.");
             }
-            return this.purgeLedger;
+            if (!this.purgeLedger) {
+                const connections = objectFactory.getInstance<ConnectionManager>(ConnectionManager)?.connections;
+                if (!connections) {
+                    throw new Error("ConnectionManager is not available.");
+                }
+                // The same store and ledger (same names and arguments) `PluginHost` gives the purger.
+                const store: PluginPurgeStore = await objectFactory.newInstance(PluginPurgeStore, {
+                    name: binding.purgeClass.name,
+                    args: [connections.get(binding.datastore), binding.purgeClass],
+                });
+                this.purgeLedger = await objectFactory.newInstance(PluginPurgeLedger, {
+                    name: binding.purgeClass.name,
+                    args: [store, Number(this.purgeLeaseMs)],
+                });
+            }
+        }
+
+        public getPurgeLedger(): PluginPurgeLedger {
+            return this.purgeLedger!;
         }
 
         private async purgeAudit(req: HttpRequest, user: JWTUser | undefined, action: string, plugin: { uid: string; name: string }, details: Record<string, unknown>): Promise<void> {

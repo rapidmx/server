@@ -17,8 +17,11 @@ import { ACLUtils, ConnectionManager, ObjectFactory } from "@rapidrest/service-c
 import { PluginHost } from "../../src/plugins/PluginHost.js";
 import { findAllPlugins, pluginRepository } from "../../src/plugins/PluginStateStore.js";
 import { PluginPurgeLedger } from "../../src/plugins/PluginPurgeLedger.js";
+import { InstallingPurgeHookRunner } from "../../src/plugins/PluginPurgeHook.js";
+import { RedisPurgeCoordination } from "../../src/plugins/PluginPurgeCoordination.js";
+import { PluginWatcher } from "../../src/plugins/PluginWatcher.js";
 import { PluginPurgeStore } from "../../src/plugins/PluginPurgeStore.js";
-import { getPluginPurger, PURGE_AUDIT } from "../../src/plugins/PluginPurger.js";
+import { getPluginPurger, PluginPurger, PURGE_AUDIT } from "../../src/plugins/PluginPurger.js";
 import { PluginPurgeSQL } from "../../src/sql/PluginPurgeSQL.js";
 
 const PLUGIN = "@rapidmx/notes-plugin";
@@ -128,6 +131,11 @@ async function startCopy(options: { rows: any[]; installs: boolean; instance: st
 
 const row = (extra: Record<string, unknown> = {}) => ({ uid: "row-1", name: PLUGIN, packageVersion: "1.2.3", enabled: true, settings: { "notes:greeting": "hello" }, manifest: MANIFEST, ...extra });
 
+/** An ObjectFactory with no server behind it: builds what is asked for, and knows no instances. */
+function fakeObjectFactory(): any {
+    return { getInstance: () => undefined, newInstance: async (type: any, options: any) => new type(...(options?.args ?? [])), destroy: async () => undefined };
+}
+
 describe("PluginHost: deleting an uninstalled plugin's data", () => {
     it("records what a running plugin stores, then a copy that starts after its uninstall deletes it", async () => {
         const ledger = new PluginPurgeLedger(new PluginPurgeStore(sql, PluginPurgeSQL));
@@ -204,8 +212,38 @@ describe("PluginHost: deleting an uninstalled plugin's data", () => {
             purge: { purgeClass: PluginPurgeSQL, auditLogClass: AuditLogEntrySQL },
         });
         hosts.push(broken);
-        await broken.start({ getInstance: () => undefined } as any, async () => undefined);
+        await broken.start(fakeObjectFactory(), async () => undefined);
         expect(logger.warn).toHaveBeenCalledWith(expect.stringMatching(/Deleting uninstalled plugins' data is unavailable/));
         expect(getPluginPurger()).toBeUndefined();
+    });
+
+    it("builds the watcher, the purger and its default services through the ObjectFactory, and releases them when it stops", async () => {
+        const config = configWith({ base_path: base, datastores: { cache: {} }, system: { plugins: { dir: path.join(dir, "plugins-default"), purge: { initial_delay_ms: 1000000 } } } });
+        const installer: any = { install: async () => ({ installed: [], errors: [] }) };
+        const host = await PluginHost.prepare({
+            config,
+            logger,
+            datastore: "sql",
+            pluginClass: PluginSQL,
+            appRoot: process.cwd(),
+            store: { loadAndSeed: async () => [] } as any,
+            installer,
+            purge: { purgeClass: PluginPurgeSQL, auditLogClass: AuditLogEntrySQL },
+        });
+        hosts.push(host);
+        await host.start(objectFactory, async () => undefined);
+        expect(getPluginPurger()).toBeDefined();
+        expect(objectFactory.getInstance(PluginWatcher)).toBeDefined();
+        expect(objectFactory.getInstance(PluginPurger)).toBe(getPluginPurger());
+        expect(objectFactory.getInstance(RedisPurgeCoordination)).toBeDefined();
+        expect(objectFactory.getInstance(InstallingPurgeHookRunner)).toBeDefined();
+        // The ledger is shared with the plugin route's hook, so it stays in the factory.
+        expect(objectFactory.getInstance(PluginPurgeLedger)).toBeDefined();
+
+        await host.stop();
+        expect(objectFactory.getInstance(PluginWatcher)).toBeUndefined();
+        expect(objectFactory.getInstance(PluginPurger)).toBeUndefined();
+        expect(objectFactory.getInstance(RedisPurgeCoordination)).toBeUndefined();
+        expect(objectFactory.getInstance(InstallingPurgeHookRunner)).toBeUndefined();
     });
 });
