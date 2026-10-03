@@ -4,7 +4,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 import os from "os";
 import path from "path";
-import { ConnectionManager, ObjectFactory } from "@rapidrest/service-core";
+import { ConnectionManager, ObjectFactory, RepoUtils } from "@rapidrest/service-core";
 import {
     computePluginStateHash,
     DEFAULT_ALLOWED_PLUGIN_PACKAGES,
@@ -20,7 +20,7 @@ import {
     orderByDependencies,
     PluginRegistry,
     pruneUnmetRequirements,
-    recordAuditLog,
+    AuditLogUtils,
     type AuditAction,
     type Plugin,
     type PluginNamespace,
@@ -472,6 +472,9 @@ export class PluginHost {
         try {
             const connections = objectFactory.getInstance<ConnectionManager>(ConnectionManager)!.connections;
             const connection: any = connections.get(datastore);
+            // Built once, through the ObjectFactory, from the audit log's repository (the purger records every action with it).
+            const auditLogRepo: RepoUtils<any> = await objectFactory.newInstance(RepoUtils, { name: purge.auditLogClass.name, args: [purge.auditLogClass] });
+            const auditLogUtils: AuditLogUtils = await objectFactory.newInstance(AuditLogUtils, { name: purge.auditLogClass.name, args: [auditLogRepo] });
             const leaseMs: number = config.get("system:plugins:purge:lease_ms") ?? DEFAULT_PURGE_LEASE_MS;
             const ledger: PluginPurgeLedger = new PluginPurgeLedger(new PluginPurgeStore(connection, purge.purgeClass), leaseMs);
 
@@ -514,12 +517,12 @@ export class PluginHost {
                     return manifest ? path.dirname(path.dirname(path.resolve(manifest))) : undefined;
                 },
                 audit: async (action, plugin, details) =>
-                    recordAuditLog(
-                        objectFactory,
-                        purge.auditLogClass,
-                        { config, logger },
-                        { action: action as AuditAction, targetType: "Plugin", targetUid: plugin.uid ?? plugin.name, details: { name: plugin.name, ...details } },
-                    ),
+                    auditLogUtils.record({
+                        action: action as AuditAction,
+                        targetType: "Plugin",
+                        targetUid: plugin.uid ?? plugin.name,
+                        details: { name: plugin.name, ...details },
+                    }),
                 checkIntervalMs: config.get("system:plugins:purge:check_ms") ?? DEFAULT_PURGE_CHECK_MS,
                 initialDelayMs: config.get("system:plugins:purge:initial_delay_ms") ?? undefined,
                 graceMs: config.get("system:plugins:purge:grace_ms") ?? DEFAULT_PURGE_GRACE_MS,

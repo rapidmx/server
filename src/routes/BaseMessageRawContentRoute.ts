@@ -15,8 +15,8 @@ import {
     RepoUtils,
     RouteDecorators,
 } from "@rapidrest/service-core";
-import { AuditAction, BlobStore, hasMailAccess, isNonOwnerAccess, Mailbox, Message, recordAuditLog } from "@rapidmx/restapi";
-const { Config, Inject, Logger } = ObjectDecorators;
+import { AuditAction, AuditLogUtils, BlobStore, hasMailAccess, isNonOwnerAccess, Mailbox, Message } from "@rapidmx/restapi";
+const { Config, Init, Inject } = ObjectDecorators;
 const { Description, Summary } = DocDecorators;
 const { Auth, Get, Param, Request, Response, User: AuthUser } = RouteDecorators;
 
@@ -70,12 +70,8 @@ export abstract class BaseMessageRawContentRoute<M extends Message> {
 
     private messageRepo?: RepoUtils<M>;
     private mailboxRepo?: RepoUtils<Mailbox>;
-
-    @Config()
-    private config?: any;
-
-    @Logger
-    private logger?: any;
+    private auditLogRepo?: RepoUtils<any>;
+    private auditLogUtils?: AuditLogUtils;
 
     @Inject("BlobStore")
     private blobStore?: BlobStore;
@@ -90,17 +86,33 @@ export abstract class BaseMessageRawContentRoute<M extends Message> {
     @Config("trusted_roles", ["admin"])
     private trustedRoles: string[] = ["admin"];
 
-    private async init(): Promise<void> {
-        if (!this.messageRepo) {
-            this.messageRepo = await this._objectFactory!.newInstance(RepoUtils, {
+    @Init
+    protected async initializeRawContent(): Promise<void> {
+        if (!this._objectFactory) {
+            throw new Error("objectFactory is not set.");
+        }
+        if (!this.messageRepo && this.messageClass) {
+            this.messageRepo = await this._objectFactory.newInstance(RepoUtils, {
                 name: this.messageClass.name,
                 args: [this.messageClass],
             });
         }
-        if (!this.mailboxRepo) {
-            this.mailboxRepo = await this._objectFactory!.newInstance(RepoUtils, {
+        if (!this.mailboxRepo && this.mailboxClass) {
+            this.mailboxRepo = await this._objectFactory.newInstance(RepoUtils, {
                 name: this.mailboxClass.name,
                 args: [this.mailboxClass],
+            });
+        }
+        if (!this.auditLogRepo && this.auditLogClass) {
+            this.auditLogRepo = await this._objectFactory.newInstance(RepoUtils, {
+                name: this.auditLogClass.name,
+                args: [this.auditLogClass],
+            });
+        }
+        if (!this.auditLogUtils && this.auditLogRepo) {
+            this.auditLogUtils = await this._objectFactory.newInstance(AuditLogUtils, {
+                name: this.auditLogClass.name,
+                args: [this.auditLogRepo],
             });
         }
     }
@@ -126,8 +138,6 @@ export abstract class BaseMessageRawContentRoute<M extends Message> {
         if (user?.uid) {
             await this.rateLimiter?.checkAndIncrement(rawContentRateLimitKey(user.uid), RAW_CONTENT_RATE_LIMIT, req);
         }
-        await this.init();
-
         const message: M | undefined = await this.messageRepo!.findOne(id, { ignoreACL: true });
         if (!message || !(await hasMailAccess(this.aclUtils, this.trustedRoles, user, message.folderUid, ACLAction.READ))) {
             throw new ApiError(ApiErrors.NOT_FOUND, 404, ApiErrorMessages.NOT_FOUND);
@@ -140,10 +150,7 @@ export abstract class BaseMessageRawContentRoute<M extends Message> {
         // either way, so the uncertain case is audited rather than skipped.
         const mailbox: Mailbox | undefined = await this.mailboxRepo!.findOne(message.mailboxUid, { ignoreACL: true });
         if (!mailbox || isNonOwnerAccess(mailbox, user)) {
-            await recordAuditLog(
-                this._objectFactory!,
-                this.auditLogClass,
-                { config: this.config, user, logger: this.logger },
+            await this.auditLogUtils!.record(
                 {
                     action: AuditAction.MESSAGE_CONTENT_ACCESSED,
                     targetType: "Message",
@@ -151,6 +158,7 @@ export abstract class BaseMessageRawContentRoute<M extends Message> {
                     mailboxUid: message.mailboxUid,
                     details: { subject: message.subject, raw: true },
                 },
+                { req, user },
             );
         }
 

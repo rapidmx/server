@@ -5,17 +5,15 @@
 // starts after the plugin was uninstalled (a restart) deletes it - against a real SQLite database with the server's own
 // connection manager, the real audit log model, and a real plugin module.
 // The audit log's own persistence needs the full server's ACL wiring; what matters here is what the host records.
-const recordAuditLog = vi.hoisted(() => vi.fn(async () => undefined));
-vi.mock("@rapidmx/restapi", async (importOriginal) => ({ ...(await importOriginal<any>()), recordAuditLog }));
-
 import fs from "fs";
 import os from "os";
 import path from "path";
 import { pathToFileURL } from "url";
 import nconf from "nconf";
 import * as uuid from "uuid";
+import { AuditLogUtils } from "@rapidmx/restapi";
 import { AuditLogEntrySQL, PluginSQL } from "@rapidmx/restapi/sql";
-import { ConnectionManager, ObjectFactory } from "@rapidrest/service-core";
+import { ACLUtils, ConnectionManager, ObjectFactory } from "@rapidrest/service-core";
 import { PluginHost } from "../../src/plugins/PluginHost.js";
 import { findAllPlugins, pluginRepository } from "../../src/plugins/PluginStateStore.js";
 import { PluginPurgeLedger } from "../../src/plugins/PluginPurgeLedger.js";
@@ -34,6 +32,7 @@ let manager: ConnectionManager;
 let sql: any;
 let hosts: PluginHost[];
 const hookRun = vi.fn(async () => ({ ran: true }));
+let auditRecord: ReturnType<typeof vi.spyOn>;
 
 function configWith(values: Record<string, any>) {
     const conf = new nconf.Provider();
@@ -62,6 +61,8 @@ Reflect.defineMetadata("rrst:entityOptions", { name: "hostnote_sql" }, NoteSQL);
 
     const datastores = { sql: { type: "better-sqlite3", host: "localhost", database: path.join(dir, "host.db"), synchronize: true } };
     objectFactory = new ObjectFactory(configWith({ datastores }), logger);
+    // What the audit log's repository needs (the app registers it).
+    objectFactory.register(ACLUtils, "ACLUtils");
     manager = await objectFactory.newInstance(ConnectionManager, { name: "host-purge" });
     await manager.connect(datastores, new Map<string, any>([["PluginSQL", PluginSQL], ["PluginPurgeSQL", PluginPurgeSQL], ["AuditLogEntrySQL", AuditLogEntrySQL]]));
     sql = manager.connections.get("sql");
@@ -79,6 +80,7 @@ afterAll(async () => {
 beforeEach(() => {
     hosts = [];
     vi.clearAllMocks();
+    auditRecord = vi.spyOn(AuditLogUtils.prototype, "record").mockResolvedValue(undefined);
 });
 
 afterEach(async () => {
@@ -176,11 +178,9 @@ describe("PluginHost: deleting an uninstalled plugin's data", () => {
         expect(saved).toEqual(expect.objectContaining({ name: PLUGIN, removed: true, settings: {} }));
 
         // It's in the audit log, by the system (no request, no actor) with who asked for it.
-        expect(recordAuditLog).toHaveBeenCalledTimes(1);
-        const [factory, auditClass, caller, entry] = recordAuditLog.mock.calls[0] as any[];
-        expect(factory).toBe(objectFactory);
-        expect(auditClass).toBe(AuditLogEntrySQL);
-        expect(caller.user).toBeUndefined();
+        expect(auditRecord).toHaveBeenCalledTimes(1);
+        const [entry, caller] = auditRecord.mock.calls[0] as any[];
+        expect(caller).toBeUndefined();
         expect(entry).toEqual(expect.objectContaining({ action: PURGE_AUDIT.completed, targetType: "Plugin", targetUid: "row-1" }));
         expect(entry.details).toEqual(expect.objectContaining({ name: PLUGIN, requestedBy: "admin-1" }));
     }, 30_000);

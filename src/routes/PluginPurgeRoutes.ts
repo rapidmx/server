@@ -5,7 +5,6 @@
 import { ApiError, ObjectDecorators, type JWTUser } from "@rapidrest/core";
 import { ApiErrorMessages, ApiErrors, ConnectionManager, HttpRequest, RouteDecorators } from "@rapidrest/service-core";
 import {
-    recordAuditLog,
     type AddPluginRequest,
     type AddPluginResponse,
     type AuditAction,
@@ -19,7 +18,7 @@ import { PluginPurgeStore } from "../plugins/PluginPurgeStore.js";
 import { getPluginPurger, PURGE_AUDIT } from "../plugins/PluginPurger.js";
 import type { PluginPurgeInfo, PluginPurgeRecord } from "../plugins/PluginPurgeTypes.js";
 
-const { Config, Logger } = ObjectDecorators;
+const { Logger } = ObjectDecorators;
 const { Delete, Get, Param, Post, Request, RequiresTrustedRole, User: AuthUser } = RouteDecorators;
 
 /** The response of `DELETE /:id`. Older clients ignore it (they never sent `purgeData`). */
@@ -117,9 +116,6 @@ type RouteBase = new (...args: any[]) => PluginRouteBase;
  */
 export function withPluginPurge<B extends RouteBase>(Base: B, binding: { datastore: string; purgeClass: any }) {
     class PurgingPluginRoute extends Base {
-        @Config()
-        public purgeConfig: any;
-
         @Logger
         public purgeLogger: any;
 
@@ -135,11 +131,10 @@ export function withPluginPurge<B extends RouteBase>(Base: B, binding: { datasto
         }
 
         private async purgeAudit(req: HttpRequest, user: JWTUser | undefined, action: string, plugin: { uid: string; name: string }, details: Record<string, unknown>): Promise<void> {
-            await recordAuditLog(
-                (this as any)._objectFactory,
-                (this as any).auditLogClass,
-                { config: this.purgeConfig, req, user, logger: this.purgeLogger },
+            // `auditLogUtils` is built by restapi's route in its own `@Init` hook.
+            await (this as any).auditLogUtils!.record(
                 { action: action as AuditAction, targetType: "Plugin", targetUid: plugin.uid, details: { name: plugin.name, ...details } },
+                { req, user },
             );
         }
 

@@ -3,13 +3,14 @@
 ///////////////////////////////////////////////////////////////////////////////
 // Isolated unit test for BaseMessageRawContentRoute, mocked at the repo/collaborator boundary rather
 // than exercised against a real database - same convention as BaseMailComposeRoute.test.ts's own
-// "assembleRaw() Tests (mocked collaborators)" block: `init()` only builds a repo when one isn't
+// "assembleRaw() Tests (mocked collaborators)" block: the `@Init` hook only builds a repo when one isn't
 // already set, so pre-populating the route's private fields before calling a route method bypasses
 // real DI entirely while still running every real ACL/validation branch this route has.
 import nconf from "nconf";
 import config from "../../src/config.mongo.js";
 import { ObjectFactory, RateLimiter } from "@rapidrest/service-core";
 import { Logger } from "@rapidrest/core";
+import { AuditLogUtils } from "@rapidmx/restapi";
 import { BaseMessageRawContentRoute, RAW_CONTENT_RATE_LIMIT } from "../../src/routes/BaseMessageRawContentRoute.js";
 import { TieredRateLimiter } from "../../src/lib/TieredRateLimiter.js";
 
@@ -41,15 +42,16 @@ describe("BaseMessageRawContentRoute.raw() Tests (mocked collaborators)", () => 
 
     function buildRoute(overrides: Partial<Record<string, any>> = {}) {
         const route = new (TestMessageRawContentRoute as any)();
-        // restapi's recordAuditLog() caches the audit log repo per class, so each route gets its own class and repo.
+        // The real AuditLogUtils (as the @Init hook builds it) over a fake audit log repository.
         (route).auditLogClass = class {
             constructor(other: object) {
                 Object.assign(this, other);
             }
         };
-        (route).auditRepo = { create: vi.fn().mockResolvedValue(undefined) };
-        (route)._objectFactory = { newInstance: vi.fn().mockReturnValue((route).auditRepo) };
-        (route).config = config;
+        (route).auditRepo = { create: vi.fn().mockResolvedValue(undefined), modelClass: (route).auditLogClass };
+        const auditLogUtils: any = new AuditLogUtils((route).auditRepo);
+        auditLogUtils.config = config;
+        (route).auditLogUtils = auditLogUtils;
         (route).messageRepo = { findOne: vi.fn().mockResolvedValue(message) };
         (route).mailboxRepo = { findOne: vi.fn().mockResolvedValue({ uid: "mb1", ownerUserUid: "u1" }) };
         (route).aclUtils = { hasPermission: vi.fn().mockResolvedValue(true) };

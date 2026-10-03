@@ -3,9 +3,6 @@
 ///////////////////////////////////////////////////////////////////////////////
 // What the server adds to restapi's plugin route: uninstalling with the plugin's data, cancelling it by adding the plugin
 // again, its status, and retrying it - over restapi's route replaced by a fake, and a real (SQLite) ledger.
-const recordAuditLog = vi.hoisted(() => vi.fn(async () => undefined));
-vi.mock("@rapidmx/restapi", async (importOriginal) => ({ ...(await importOriginal<any>()), recordAuditLog }));
-
 import fs from "fs";
 import os from "os";
 import path from "path";
@@ -67,6 +64,8 @@ let store: PluginPurgeStore;
 let ledger: PluginPurgeLedger;
 let route: any;
 let installed: any[];
+/** What restapi's route built in its `@Init` hook: the service that records the audit entries. */
+const recordAuditLog = vi.fn(async (..._args: any[]) => undefined);
 
 const row = (name: string, extra: Record<string, unknown> = {}) => ({ uid: `uid-${name}`, name, packageVersion: "1.2.3", integrity: "sha512-x", enabled: true, settings: {}, manifest: { ...MANIFEST, displayName: name === PLUGIN ? "Notes" : "Dep" }, ...extra });
 const admin = { uid: "admin-1", roles: ["admin"], elevated: Date.now() };
@@ -111,9 +110,7 @@ beforeEach(async () => {
     route = new Route();
     route.purgeLedger = ledger;
     route.purgeLogger = logger;
-    route.purgeConfig = { get: () => undefined };
-    route._objectFactory = { name: "factory" };
-    route.auditLogClass = class AuditLog {};
+    route.auditLogUtils = { record: recordAuditLog };
     // A purge that was recorded when the plugin loaded.
     await ledger.recordInventory(PLUGIN, { version: "1.2.3", hook: false, models: [{ className: "NoteSQL", datastore: "sql", kind: "sql", name: "note_sql" }] });
 });
@@ -206,9 +203,7 @@ describe("DELETE /:id", () => {
         const record = (await ledger.get(PLUGIN))!;
         expect(record).toEqual(expect.objectContaining({ state: "pending", requestedBy: "admin-1", wasEnabled: true, packageVersion: "1.2.3", integrity: "sha512-x", displayName: "Notes" }));
         expect(recordAuditLog).toHaveBeenCalledTimes(1);
-        const [factory, auditClass, caller, entry] = recordAuditLog.mock.calls[0] as any[];
-        expect(factory).toBe(route._objectFactory);
-        expect(auditClass).toBe(route.auditLogClass);
+        const [entry, caller] = recordAuditLog.mock.calls[0] as any[];
         expect(caller).toEqual(expect.objectContaining({ req: request, user: admin }));
         expect(entry).toEqual({
             action: PURGE_AUDIT.requested,
@@ -262,7 +257,7 @@ describe("POST / (adding a plugin)", () => {
         expect((await ledger.get(PLUGIN))!.state).toBe("cancelled");
         expect(result.purgeCancelled).toEqual([PLUGIN]);
         expect(result.warnings).toEqual(["The pending deletion of Notes's data was cancelled because the plugin was added again. Its data is kept."]);
-        expect(recordAuditLog.mock.calls[0][3]).toEqual(expect.objectContaining({ action: PURGE_AUDIT.cancelled, targetUid: `uid-${PLUGIN}`, details: { name: PLUGIN, reason: "The plugin was added again." } }));
+        expect(recordAuditLog.mock.calls[0][0]).toEqual(expect.objectContaining({ action: PURGE_AUDIT.cancelled, targetUid: `uid-${PLUGIN}`, details: { name: PLUGIN, reason: "The plugin was added again." } }));
     });
 
     it("also cancels the deletion of a plugin it requires, which adding it brings back", async () => {
@@ -366,7 +361,7 @@ describe("POST /purges/:uid/retry", () => {
 
         expect(info).toEqual(expect.objectContaining({ uid, name: PLUGIN, state: "pending" }));
         expect((await ledger.get(PLUGIN))!.steps).toEqual([{ step: "hook", ok: false, error: "boom" }, { step: "settings", ok: true }]);
-        expect(recordAuditLog.mock.calls[0][3]).toEqual(expect.objectContaining({ action: PURGE_AUDIT.retried, details: { name: PLUGIN, failedSteps: ["hook"] } }));
+        expect(recordAuditLog.mock.calls[0][0]).toEqual(expect.objectContaining({ action: PURGE_AUDIT.retried, details: { name: PLUGIN, failedSteps: ["hook"] } }));
         expect(kicked).toHaveBeenCalledTimes(1);
         kicked.mockRestore();
     });
