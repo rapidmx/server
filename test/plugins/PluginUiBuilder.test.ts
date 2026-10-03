@@ -355,3 +355,73 @@ describe("PluginUiBuilder with Vite", () => {
         expect(fs.readFileSync(result.manifestPath!, "utf8")).not.toContain("web-client/dist/apps");
     }, 120_000);
 });
+
+describe("PluginUiBuilder moving a finished build into place", () => {
+    let dir: string;
+
+    beforeEach(() => {
+        dir = fs.mkdtempSync(path.join(os.tmpdir(), "ui-move-"));
+    });
+
+    afterEach(() => {
+        vi.restoreAllMocks();
+        fs.rmSync(dir, { recursive: true, force: true });
+    });
+
+    /** A finished build folder and the folder it is to be renamed to. */
+    function folders(): { temp: string; target: string } {
+        const temp = path.join(dir, "temp");
+        fs.mkdirSync(path.join(temp, ".vite"), { recursive: true });
+        fs.writeFileSync(path.join(temp, ".vite", "manifest.json"), "{}");
+        return { temp, target: path.join(dir, "target") };
+    }
+
+    function builder(): any {
+        return new PluginUiBuilder({ pluginsDir: dir, appRoot: process.cwd(), renameRetryMs: 1 });
+    }
+
+    function refuse(code: string, times: number): ReturnType<typeof vi.spyOn> {
+        const real = fs.renameSync;
+        let refused = 0;
+        return vi.spyOn(fs, "renameSync").mockImplementation(((from: any, to: any) => {
+            if (refused < times) {
+                refused++;
+                throw Object.assign(new Error(`${code}: refused`), { code });
+            }
+            return real(from, to);
+        }) as any);
+    }
+
+    it.each(["EPERM", "EBUSY", "EACCES"])("tries again when Windows refuses the rename for a moment (%s)", async (code) => {
+        const { temp, target } = folders();
+        const rename = refuse(code, 3);
+        await builder().moveIntoPlace(temp, target);
+        expect(rename).toHaveBeenCalledTimes(4);
+        expect(fs.existsSync(path.join(target, ".vite", "manifest.json"))).toBe(true);
+        expect(fs.existsSync(temp)).toBe(false);
+    });
+
+    it("gives up, with the error, when the rename keeps being refused", async () => {
+        const { temp, target } = folders();
+        const rename = refuse("EPERM", 1000);
+        await expect(builder().moveIntoPlace(temp, target)).rejects.toThrow("EPERM");
+        expect(rename).toHaveBeenCalledTimes(9);
+        expect(fs.existsSync(target)).toBe(false);
+    });
+
+    it("does not try again for an error that will not pass", async () => {
+        const { temp, target } = folders();
+        const rename = refuse("ENOENT", 1000);
+        await expect(builder().moveIntoPlace(temp, target)).rejects.toThrow("ENOENT");
+        expect(rename).toHaveBeenCalledTimes(1);
+    });
+
+    it("keeps the build another start completed first, whatever the rename said", async () => {
+        const { temp, target } = folders();
+        fs.mkdirSync(path.join(target, ".vite"), { recursive: true });
+        fs.writeFileSync(path.join(target, ".vite", "manifest.json"), "{}");
+        const rename = refuse("EPERM", 1000);
+        await builder().moveIntoPlace(temp, target);
+        expect(rename).toHaveBeenCalledTimes(1);
+    });
+});

@@ -31,6 +31,14 @@ const HASHED_PACKAGES = [
 /** A temporary build folder older than this is left over from a start that died mid-build. */
 const STALE_TEMP_MS = 60 * 60_000;
 
+/**
+ * Errors that Windows gives for renaming a folder while something else (antivirus, the search indexer, a file watcher) still has a file in it open.
+ * They pass within moments, so the rename is tried again a few times before it is given up on.
+ */
+const TRANSIENT_RENAME_ERRORS: ReadonlySet<string> = new Set(["EPERM", "EBUSY", "EACCES"]);
+const RENAME_RETRIES = 8;
+const RENAME_RETRY_MS = 100;
+
 /** The longest build error kept for a plugin's status. */
 const MAX_ERROR_LENGTH = 2000;
 
@@ -60,6 +68,8 @@ export interface PluginUiBuilderOptions {
     coreAppDirs?: readonly string[];
     createConfig?: (options: ServerViteConfigOptions) => Promise<any>;
     build?: (config: any) => Promise<unknown>;
+    /** How long the first wait lasts when renaming a finished build is refused for a moment; each further wait is longer. */
+    renameRetryMs?: number;
 }
 
 /** `value` with backslashes as forward slashes, lowercased: for comparing paths in error text. */
@@ -268,7 +278,7 @@ export class PluginUiBuilder {
                 throw new Error("The build finished without writing a Vite manifest.");
             }
             await this.precompress(temp);
-            this.moveIntoPlace(temp, path.join(this.buildRoot, hash));
+            await this.moveIntoPlace(temp, path.join(this.buildRoot, hash));
             logger?.info?.(`Built the plugin UI ${hash} in ${Math.round((Date.now() - started) / 1000)}s (process memory ${Math.round(process.memoryUsage().rss / 1048576)} MiB).`);
         } finally {
             fs.rmSync(cssDir, { recursive: true, force: true });
@@ -290,13 +300,23 @@ export class PluginUiBuilder {
         }
     }
 
-    /** Renames a completed build folder to `target`, or keeps `target` when another start completed it first. */
-    private moveIntoPlace(temp: string, target: string): void {
-        try {
-            fs.renameSync(temp, target);
-        } catch (err) {
-            if (!fs.existsSync(path.join(target, ".vite", "manifest.json"))) {
-                throw err;
+    /**
+     * Renames a completed build folder to `target`, or keeps `target` when another start completed it first. A rename that
+     * Windows refuses for a moment (`TRANSIENT_RENAME_ERRORS`) is tried again, waiting a little longer each time.
+     */
+    private async moveIntoPlace(temp: string, target: string): Promise<void> {
+        for (let attempt = 0; ; attempt++) {
+            try {
+                fs.renameSync(temp, target);
+                return;
+            } catch (err: any) {
+                if (fs.existsSync(path.join(target, ".vite", "manifest.json"))) {
+                    return;
+                }
+                if (!TRANSIENT_RENAME_ERRORS.has(err?.code) || attempt >= RENAME_RETRIES) {
+                    throw err;
+                }
+                await new Promise((resolve) => setTimeout(resolve, (this.options.renameRetryMs ?? RENAME_RETRY_MS) * (attempt + 1)));
             }
         }
     }
