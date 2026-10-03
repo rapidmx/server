@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.37] - 2026-10-03
+
+### Changed
+- Update @rapidmx/restapi to 0.30.0
+- Record the audit log of the plugin data that is deleted, of the plugin purges and of the raw content of a message through the AuditLogUtils service of restapi, built once from the audit log repository
+- Build the repositories and the audit service of the raw content route of a message in a single @Init hook
+
 ## [1.0.0-beta.36] - 2026-10-03
 
 ### Changed
@@ -1177,7 +1184,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed test from .dockerignore, fixing yarn build's lint step failing outright when the build context is missing the test directory its tsconfig.eslint.json requires
 - Removed docker-compose.mail.yml's partial server: service block, since include: only supports merging resources that don't already exist in the including file and hard-errors ("services.server conflicts with imported resource") on a Compose version newer than whatever this had only ever been tested against locally
 
-[Unreleased]: https://github.com/rapidmx/server/compare/v1.0.0-beta.36...HEAD
+[Unreleased]: https://github.com/rapidmx/server/compare/v1.0.0-beta.37...HEAD
+[1.0.0-beta.37]: https://github.com/rapidmx/server/compare/v1.0.0-beta.36...v1.0.0-beta.37
 [1.0.0-beta.36]: https://github.com/rapidmx/server/compare/v1.0.0-beta.35...v1.0.0-beta.36
 [1.0.0-beta.35]: https://github.com/rapidmx/server/compare/v1.0.0-beta.34...v1.0.0-beta.35
 [1.0.0-beta.34]: https://github.com/rapidmx/server/compare/v1.0.0-beta.33...v1.0.0-beta.34
