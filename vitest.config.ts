@@ -20,6 +20,7 @@ export default defineConfig({
     // tests standalone). Without this, a hook test could resolve two separate React instances and fail
     // with "Invalid hook call" - see vite.config.ts's identical fix for the same root cause.
     resolve: {
+        preserveSymlinks: true,
         dedupe: ['react', 'react-dom'],
     },
     plugins: [
