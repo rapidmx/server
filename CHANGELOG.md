@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.38] - 2026-10-04
+
+### Changed
+- Build the repositories of the escrow information and mail composition routes once in an @Init hook rather than in an init() that their handlers called
+- Build the diagnostics collector and the plugin purge ledger and store through the ObjectFactory, in the hooks of their routes, and the watcher, purger, coordination and hook runner of the plugin host the same way, releasing them when the host stops
+- Try renaming a finished plugin UI build again when Windows refuses it for a moment because something else still has one of its files open
+- Update @rapidmx/restapi to 0.30.1 A message a user sends is no longer refused with a 422 for a middling spam score or an rspamd greylist action
+
+### Fixed
+- Fixed vitest config
+
 ## [1.0.0-beta.37] - 2026-10-03
 
 ### Changed
@@ -1184,7 +1195,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed test from .dockerignore, fixing yarn build's lint step failing outright when the build context is missing the test directory its tsconfig.eslint.json requires
 - Removed docker-compose.mail.yml's partial server: service block, since include: only supports merging resources that don't already exist in the including file and hard-errors ("services.server conflicts with imported resource") on a Compose version newer than whatever this had only ever been tested against locally
 
-[Unreleased]: https://github.com/rapidmx/server/compare/v1.0.0-beta.37...HEAD
+[Unreleased]: https://github.com/rapidmx/server/compare/v1.0.0-beta.38...HEAD
+[1.0.0-beta.38]: https://github.com/rapidmx/server/compare/v1.0.0-beta.37...v1.0.0-beta.38
 [1.0.0-beta.37]: https://github.com/rapidmx/server/compare/v1.0.0-beta.36...v1.0.0-beta.37
 [1.0.0-beta.36]: https://github.com/rapidmx/server/compare/v1.0.0-beta.35...v1.0.0-beta.36
 [1.0.0-beta.35]: https://github.com/rapidmx/server/compare/v1.0.0-beta.34...v1.0.0-beta.35
