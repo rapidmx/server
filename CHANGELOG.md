@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.39] - 2026-10-05
+
+### Changed
+- Upgraded restapi dep
+
 ## [1.0.0-beta.38] - 2026-10-04
 
 ### Changed
@@ -1195,7 +1200,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed test from .dockerignore, fixing yarn build's lint step failing outright when the build context is missing the test directory its tsconfig.eslint.json requires
 - Removed docker-compose.mail.yml's partial server: service block, since include: only supports merging resources that don't already exist in the including file and hard-errors ("services.server conflicts with imported resource") on a Compose version newer than whatever this had only ever been tested against locally
 
-[Unreleased]: https://github.com/rapidmx/server/compare/v1.0.0-beta.38...HEAD
+[Unreleased]: https://github.com/rapidmx/server/compare/v1.0.0-beta.39...HEAD
+[1.0.0-beta.39]: https://github.com/rapidmx/server/compare/v1.0.0-beta.38...v1.0.0-beta.39
 [1.0.0-beta.38]: https://github.com/rapidmx/server/compare/v1.0.0-beta.37...v1.0.0-beta.38
 [1.0.0-beta.37]: https://github.com/rapidmx/server/compare/v1.0.0-beta.36...v1.0.0-beta.37
 [1.0.0-beta.36]: https://github.com/rapidmx/server/compare/v1.0.0-beta.35...v1.0.0-beta.36
