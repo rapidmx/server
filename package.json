@@ -1,6 +1,6 @@
 {
   "name": "server",
-  "version": "1.0.0-beta.39",
+  "version": "1.0.0-beta.41",
   "description": "The RapidMX mail server: webmail, calendar, contacts, Exchange ActiveSync and MAPI, and end-to-end encryption.",
   "type": "module",
   "repository": "https://github.com/rapidmx/server",
@@ -34,8 +34,8 @@
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.906.0",
-    "@rapidmx/restapi": "^0.31.0",
-    "@rapidmx/web-client": "^0.32.0",
+    "@rapidmx/restapi": "^0.33.0",
+    "@rapidmx/web-client": "^0.34.0",
     "@rapidrest/core": "^6.0.0",
     "@rapidrest/react": "2.1.0",
     "@rapidrest/service-core": "^2.4.0",

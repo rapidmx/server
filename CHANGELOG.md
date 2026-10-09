@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.41] - 2026-10-09
+
+### Changed
+- Update @rapidmx/restapi to 0.33.0 and @rapidmx/web-client to 0.34.0
+- Raise a calendar alarm at an event's start even when it has no reminder, and play a sound with each notification
+
+## [1.0.0-beta.40] - 2026-10-07
+
+### Changed
+- Update @rapidmx/restapi to 0.32.0 and @rapidmx/web-client to 0.33.0 Serve the Suggested contacts view and the Suggested Contacts folder it lists
+
+
 ## [1.0.0-beta.39] - 2026-10-05
 
 ### Changed
@@ -1200,7 +1212,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed test from .dockerignore, fixing yarn build's lint step failing outright when the build context is missing the test directory its tsconfig.eslint.json requires
 - Removed docker-compose.mail.yml's partial server: service block, since include: only supports merging resources that don't already exist in the including file and hard-errors ("services.server conflicts with imported resource") on a Compose version newer than whatever this had only ever been tested against locally
 
-[Unreleased]: https://github.com/rapidmx/server/compare/v1.0.0-beta.39...HEAD
+[Unreleased]: https://github.com/rapidmx/server/compare/v1.0.0-beta.41...HEAD
+[1.0.0-beta.41]: https://github.com/rapidmx/server/compare/v1.0.0-beta.40...v1.0.0-beta.41
+[1.0.0-beta.40]: https://github.com/rapidmx/server/compare/v1.0.0-beta.39...v1.0.0-beta.40
 [1.0.0-beta.39]: https://github.com/rapidmx/server/compare/v1.0.0-beta.38...v1.0.0-beta.39
 [1.0.0-beta.38]: https://github.com/rapidmx/server/compare/v1.0.0-beta.37...v1.0.0-beta.38
 [1.0.0-beta.37]: https://github.com/rapidmx/server/compare/v1.0.0-beta.36...v1.0.0-beta.37
