@@ -1849,9 +1849,9 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@rapidmx/web-client@npm:^0.34.0":
-  version: 0.34.0
-  resolution: "@rapidmx/web-client@npm:0.34.0"
+"@rapidmx/web-client@npm:^0.35.0":
+  version: 0.35.0
+  resolution: "@rapidmx/web-client@npm:0.35.0"
   dependencies:
     "@dnd-kit/core": "npm:^6.3.1"
     "@emoji-mart/data": "npm:^1.2.1"
@@ -1880,7 +1880,7 @@ __metadata:
     "@rapidrest/react": ">=2.1.0 <3"
     react: 19.x
     react-dom: 19.x
-  checksum: 10c0/5968db0ec0dc9b2cb24a461a94065882f3a6fc567655203bcf74f368d3171582298dce14f573a80f49cea96a9fab9f26d0359179c31ad11e61dc598423aa7335
+  checksum: 10c0/d60602633530d74ce131d40a2ceb18b2b68670d7b8b3936b1b0808dbc1f77ddc2a6d69396daceca3f0430e15932a06c42d6a0b8a4923122e33a79e1a9bed749d
   languageName: node
   linkType: hard
 
@@ -9883,7 +9883,7 @@ __metadata:
   dependencies:
     "@aws-sdk/client-s3": "npm:^3.906.0"
     "@rapidmx/restapi": "npm:^0.33.0"
-    "@rapidmx/web-client": "npm:^0.34.0"
+    "@rapidmx/web-client": "npm:^0.35.0"
     "@rapidrest/cli": "npm:^2.1.0"
     "@rapidrest/core": "npm:^6.0.0"
     "@rapidrest/react": "npm:2.1.0"
