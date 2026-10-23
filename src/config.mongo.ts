@@ -246,6 +246,10 @@ conf.defaults({
         // administrator saves "Allow zero-access encryption" (EncryptionPolicy.allowZeroAccess) in the admin console.
         zero_access: {
             allowed: true,
+            // A zero-access message's attachments are indexed while the delivery waits (the plaintext exists only then): at most this
+            // long in total, and none larger than extraction_max_bytes. What doesn't fit is left for the user's app to index.
+            extraction_budget_ms: 5000,
+            extraction_max_bytes: 10 * 1024 * 1024,
         },
         // Defaults assume a host-run `yarn dev` process talking to docker-compose.mail.yml's standalone
         // scanning stack, whose ports are mapped straight to the host (see that file) - the same

@@ -6831,3 +6831,8 @@ Not committed. `BaseEscrowInfoRoute` (`initializeEscrowInfo`) and `BaseMailCompo
 
 - `src/{mongo,sql}/Models.ts` list restapi's new `ZeroAccessIndexEntry{Mongo,SQL}` (test/Models.test.ts requires every exported model).
 - restapi now depends on pkijs/asn1js. This server already hoists pkijs 3.4.0 and asn1js 3.0.10 (from web-client). After a restapi bump, check that `node_modules/pkijs/node_modules/asn1js` does NOT exist: a second asn1js instance breaks CMS decryption silently (see restapi NOTES 2026-10-22 Phase 2).
+
+## 2026-10-22 - Zero-access encryption, Phase 3
+
+- Added `mail:zero_access:extraction_budget_ms: 5000` and `extraction_max_bytes: 10 MB` to `config.mongo.ts` and `config.sql.ts`, matching restapi's `@Config` defaults. They bound the attachment-text extraction a zero-access delivery does while the MTA waits.
+- Zero-access deliveries now run inside `/internal/mta/deliver` (restapi Phase 3). An inline failure answers 503, which postfix-bridge turns into SMTP 450, so the sending MTA retries.
