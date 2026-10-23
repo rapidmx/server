@@ -862,3 +862,87 @@ describe("BaseMailComposeRoute.assemble() inline attachments", () => {
         expect(result.patch.hasAttachments).toBe(false);
     });
 });
+
+/** Zero-access drafts: `storeBody()` seals a save (`ZeroAccessWriter.sealDraft()`) and stores an assemble for sending readable. */
+describe("BaseMailComposeRoute zero-access drafts (mocked collaborators)", () => {
+    const draftsFolder = { uid: "f1", type: "drafts" };
+    const mailbox = { uid: "mb1", displayName: "Alice", primarySmtpAddress: "alice@example.com", aliasAddresses: [] };
+    const user = { uid: "u1" } as any;
+    const rawMime = rawMessage(["From: \"Alice\" <alice@example.com>", "To: bob@example.com"]);
+    const input = { to: [{ address: "bob@example.com" }], subject: "[...]", rawMime };
+    const sealedFields = {
+        subject: "[...]",
+        bodyPreview: "",
+        bodyBlobKey: "za/mb1/drafts/new",
+        zeroAccess: { keyFingerprint: "fp", sealedSummary: "s" },
+        indexEntryUid: "ix",
+    };
+
+    function buildRoute(message: object, writer: object) {
+        const route = new (TestMailComposeRoute as any)();
+        const update = vi.fn(async (patch: any) => ({ ...message, ...patch }));
+        route._objectFactory = { newInstance: vi.fn(), logger: { warn: vi.fn() } };
+        route.messageRepo = { findOne: vi.fn().mockResolvedValue(message), update, count: vi.fn().mockResolvedValue(0) };
+        route.folderRepo = { findOne: vi.fn().mockResolvedValue(draftsFolder) };
+        route.mailboxRepo = { findOne: vi.fn().mockResolvedValue(mailbox) };
+        route.attachmentRepo = { count: vi.fn().mockResolvedValue(0) };
+        route.matterRepo = { find: vi.fn().mockResolvedValue([]) };
+        route.aclUtils = { hasPermission: vi.fn().mockResolvedValue(true) };
+        route.blobStore = { put: vi.fn(), delete: vi.fn() };
+        route.zeroAccessWriter = writer;
+        return { route, update };
+    }
+
+    it("stores a save in a zero-access mailbox sealed, with no plaintext blob, and removes the sealed body it replaces", async () => {
+        const message = { uid: "m1", version: 0, folderUid: "f1", mailboxUid: "mb1", bodyBlobKey: "za/mb1/drafts/old", zeroAccess: {} };
+        const sealDraft = vi.fn().mockResolvedValue(sealedFields);
+        const { route, update } = buildRoute(message, { sealDraft });
+
+        await route.assembleRaw("m1", input, user);
+
+        expect(sealDraft).toHaveBeenCalledWith(mailbox, Buffer.from(rawMime, "utf-8"), "m1", expect.any(Date));
+        expect(route.blobStore.put).not.toHaveBeenCalled();
+        expect(update.mock.calls[0][0]).toMatchObject({ subject: "[...]", bodyPreview: "", bodyBlobKey: "za/mb1/drafts/new", zeroAccess: sealedFields.zeroAccess });
+        expect(route.blobStore.delete).toHaveBeenCalledWith("za/mb1/drafts/old");
+    });
+
+    it("stores an assemble for sending readable, dropping the draft's sealed state and index entry", async () => {
+        const message = { uid: "m1", version: 0, folderUid: "f1", mailboxUid: "mb1", bodyBlobKey: "za/mb1/drafts/old", zeroAccess: {} };
+        const sealDraft = vi.fn();
+        const removeIndexEntry = vi.fn().mockResolvedValue(undefined);
+        const { route, update } = buildRoute(message, { sealDraft, removeIndexEntry });
+
+        await route.assembleRaw("m1", { ...input, intent: "send" }, user);
+
+        expect(sealDraft).not.toHaveBeenCalled();
+        expect(route.blobStore.put).toHaveBeenCalledWith(expect.stringMatching(/^bodies\//), expect.any(Buffer), expect.anything());
+        expect(update.mock.calls[0][0]).toMatchObject({ zeroAccess: null });
+        expect(removeIndexEntry).toHaveBeenCalledWith(expect.any(String));
+    });
+
+    it("keeps the readable save when the sealed draft's index entry can't be removed, and logs it", async () => {
+        const message = { uid: "m1", version: 0, folderUid: "f1", mailboxUid: "mb1", bodyBlobKey: "bodies/old", zeroAccess: {} };
+        const { route, update } = buildRoute(message, { removeIndexEntry: vi.fn().mockRejectedValue(new Error("db down")) });
+
+        await route.assembleRaw("m1", { ...input, intent: "send" }, user);
+
+        expect(update).toHaveBeenCalled();
+        expect(route._objectFactory.logger.warn).toHaveBeenCalledWith(expect.stringContaining("db down"));
+    });
+
+    it("stores a save as before for a mailbox without zero-access, or a server without the writer", async () => {
+        const message = { uid: "m1", version: 0, folderUid: "f1", mailboxUid: "mb1", bodyBlobKey: "bodies/old" };
+        for (const writer of [{ sealDraft: vi.fn().mockResolvedValue(undefined) }, undefined]) {
+            const { route, update } = buildRoute(message, writer as any);
+            await route.assembleRaw("m1", input, user);
+            expect(route.blobStore.put).toHaveBeenCalled();
+            expect(update.mock.calls[0][0].zeroAccess).toBeUndefined();
+        }
+    });
+
+    it("refuses an unknown intent", async () => {
+        const { route } = buildRoute({ uid: "m1" }, {});
+        await expect(route.assembleRaw("m1", { ...input, intent: "publish" as any }, user)).rejects.toThrow(/invalid/i);
+        await expect(route.assemble("m1", { to: [], intent: "publish" as any }, user)).rejects.toThrow(/invalid/i);
+    });
+});

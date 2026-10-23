@@ -6836,3 +6836,12 @@ Not committed. `BaseEscrowInfoRoute` (`initializeEscrowInfo`) and `BaseMailCompo
 
 - Added `mail:zero_access:extraction_budget_ms: 5000` and `extraction_max_bytes: 10 MB` to `config.mongo.ts` and `config.sql.ts`, matching restapi's `@Config` defaults. They bound the attachment-text extraction a zero-access delivery does while the MTA waits.
 - Zero-access deliveries now run inside `/internal/mta/deliver` (restapi Phase 3). An inline failure answers 503, which postfix-bridge turns into SMTP 450, so the sending MTA retries.
+
+## 2026-10-22 - Zero-access encryption, Phase 4 (drafts)
+
+- `POST /mail/compose/:id/assemble` and `/assemble-raw` take an optional `intent` (`ComposeIntent`: `"save"` by default, or `"send"`); anything else is a 400.
+- **A save in a zero-access mailbox** is stored sealed through restapi's `ZeroAccessWriter.sealDraft()`. That writes a fresh `za/<mailbox>/drafts/<uuid>` blob, the `[...]` subject, an empty preview, `zeroAccess` and the draft's index entry. No plaintext blob is written.
+- **`intent: "send"`** (web-client's send job, right before `/send`) stores the draft readable, sets `zeroAccess: null`, and removes the sealed draft's index entry. restapi refuses (409) to send a draft that is still sealed.
+- A replaced sealed draft body is deleted, or kept for a legal hold, exactly like a `bodies/` one: `replacesComposedBody` covers both prefixes.
+- The concrete compose routes now set `encryptionPolicyClass`/`zeroAccessIndexEntryClass`. Without them `newZeroAccessWriter()` gives `undefined` and drafts are stored as before.
+- **Open:** files uploaded to a zero-access draft stay plaintext until it is sent (see restapi NOTES).

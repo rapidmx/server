@@ -1,7 +1,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 ///////////////////////////////////////////////////////////////////////////////
-import { AttachmentSQL, FolderSQL, MailboxSQL, MatterSQL, MessageSQL } from "@rapidmx/restapi/sql";
+import { AttachmentSQL, EncryptionPolicySQL, FolderSQL, MailboxSQL, MatterSQL, MessageSQL, ZeroAccessIndexEntrySQL } from "@rapidmx/restapi/sql";
 import { RouteDecorators } from "@rapidrest/service-core";
 import { BaseMailComposeRoute } from "../../routes/BaseMailComposeRoute.js";
 
@@ -14,4 +14,6 @@ export class MailComposeRoute extends BaseMailComposeRoute<MessageSQL, Attachmen
     protected mailboxClass: any = MailboxSQL;
     protected folderClass: any = FolderSQL;
     protected matterClass: any = MatterSQL;
+    protected encryptionPolicyClass: any = EncryptionPolicySQL;
+    protected zeroAccessIndexEntryClass: any = ZeroAccessIndexEntrySQL;
 }

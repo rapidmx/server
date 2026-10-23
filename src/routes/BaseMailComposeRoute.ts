@@ -29,6 +29,11 @@ import {
     Recipient,
     RecipientType,
     withRetainedBodyBlobKey,
+    newZeroAccessWriter,
+    zeroAccessDraftBlobPrefix,
+    zeroAccessIndexEntryUid,
+    type ZeroAccessSealedFields,
+    type ZeroAccessWriter,
 } from "@rapidmx/restapi";
 import { DEFAULT_MAX_COMPOSE_ATTACHMENT_BYTES } from "../config.defaults.js";
 const { Config, Init, Inject } = ObjectDecorators;
@@ -47,6 +52,20 @@ export interface ComposeAssembleInput {
     bcc?: Recipient[];
     subject?: string;
     html?: string;
+    /** See `ComposeIntent`. */
+    intent?: ComposeIntent;
+}
+
+/**
+ * Why a draft is being assembled. `"save"` (the default) is an edit being kept: in a zero-access mailbox the composed message is
+ * stored sealed to the mailbox's zero-access key (restapi `ZeroAccessWriter.sealDraft()`), which restapi can't relay. `"send"` is the
+ * assemble a client does right before `POST /messages/:id/send`: stored readable, for the relay - restapi seals the Sent Items copy
+ * and removes this plaintext once it has been sent.
+ */
+export type ComposeIntent = "save" | "send";
+
+function isComposeIntent(value: unknown): value is ComposeIntent | undefined {
+    return value === undefined || value === "save" || value === "send";
 }
 
 /**
@@ -74,6 +93,8 @@ export interface ComposeAssembleRawInput {
      * File attachments are not yet supported on this path (a signed/encrypted message can only
      * contain a text body) — see this route's own `assembleRaw()` doc comment. */
     rawMime: string;
+    /** See `ComposeIntent`. */
+    intent?: ComposeIntent;
 }
 
 /** The blob key prefix of a composed draft body. */
@@ -444,6 +465,9 @@ export abstract class BaseMailComposeRoute<M extends Message, A extends Attachme
     protected abstract mailboxClass: any;
     protected abstract folderClass: any;
     protected abstract matterClass: any;
+    /** restapi's `EncryptionPolicy` and `ZeroAccessIndexEntry` models: with both, drafts saved in a zero-access mailbox are sealed. */
+    protected encryptionPolicyClass?: any;
+    protected zeroAccessIndexEntryClass?: any;
 
     // Automatically injected by ObjectFactory on instantiation
     private _objectFactory?: ObjectFactory;
@@ -453,6 +477,7 @@ export abstract class BaseMailComposeRoute<M extends Message, A extends Attachme
     private mailboxRepo?: RepoUtils<X>;
     private folderRepo?: RepoUtils<F>;
     private matterRepo?: RepoUtils<any>;
+    private zeroAccessWriter?: ZeroAccessWriter;
 
     @Inject("BlobStore")
     private blobStore?: BlobStore;
@@ -502,6 +527,7 @@ export abstract class BaseMailComposeRoute<M extends Message, A extends Attachme
                 args: [this.matterClass],
             });
         }
+        this.zeroAccessWriter ??= await newZeroAccessWriter(this._objectFactory, this.encryptionPolicyClass, this.zeroAccessIndexEntryClass);
     }
 
     @Summary("Assemble compose draft into MIME")
@@ -530,7 +556,8 @@ export abstract class BaseMailComposeRoute<M extends Message, A extends Attachme
             !isRecipientList(body.cc) ||
             !isRecipientList(body.bcc) ||
             (body.html !== undefined && typeof body.html !== "string") ||
-            (body.subject !== undefined && typeof body.subject !== "string")
+            (body.subject !== undefined && typeof body.subject !== "string") ||
+            !isComposeIntent(body.intent)
         ) {
             throw new ApiError(ApiErrors.INVALID_REQUEST, 400, ApiErrorMessages.INVALID_REQUEST);
         }
@@ -611,7 +638,7 @@ export abstract class BaseMailComposeRoute<M extends Message, A extends Attachme
             ...(body.bcc ?? []).map((r) => ({ ...r, type: RecipientType.BCC })),
         ];
 
-        return await this.storeBody(message, raw, user, {
+        return await this.storeBody(message, raw, user, mailbox, body.intent, {
             subject: body.subject ?? "",
             recipients,
             from: { address: mailbox.primarySmtpAddress, displayName: fromName, type: RecipientType.TO },
@@ -631,17 +658,45 @@ export abstract class BaseMailComposeRoute<M extends Message, A extends Attachme
      * `retainedBodyBlobKeys` by the same version-checked update that sets the new `bodyBlobKey` (restapi's
      * `withRetainedBodyBlobKey()`), so matter exports can still reach it and retention enforcement can clean it up once
      * the hold ends. A draft that already retains `MAX_RETAINED_BODY_BLOB_KEYS` bodies can't be saved again (409).
+     *
+     * In a zero-access mailbox a save (`intent` other than `"send"`) stores `raw` sealed instead (`ZeroAccessWriter.sealDraft()`: a
+     * fresh `za/<mailbox>/drafts/` blob, the `[...]` subject and empty preview, `zeroAccess`, and the draft's index entry), so no
+     * plaintext of the draft is kept. Assembling for a send stores it readable and drops the draft's sealed state and index entry,
+     * leaving restapi's Sent Items sealing to start clean. A replaced sealed draft body is deleted, or kept for a hold, like a
+     * `bodies/` one.
      */
-    private async storeBody(message: M, raw: Buffer, user: JWTUser | undefined, patch: Record<string, unknown>): Promise<M> {
+    private async storeBody(
+        message: M,
+        raw: Buffer,
+        user: JWTUser | undefined,
+        mailbox: X,
+        intent: ComposeIntent | undefined,
+        patch: Record<string, unknown>,
+    ): Promise<M> {
         const previousKey: string | undefined = (message as any).bodyBlobKey;
-        const replacesComposedBody: boolean = typeof previousKey === "string" && previousKey.startsWith(COMPOSED_BODY_PREFIX);
+        const replacesComposedBody: boolean =
+            typeof previousKey === "string" &&
+            (previousKey.startsWith(COMPOSED_BODY_PREFIX) || previousKey.startsWith(zeroAccessDraftBlobPrefix(message.mailboxUid)));
         // Asked once per save, before the update, so the retained key lands in the same version-checked write.
         const held: boolean = replacesComposedBody && (await this.isHeldForBodyReplacement(message.mailboxUid));
         // Throws 409 at the bound, before anything is written.
         const retained: Record<string, unknown> = held ? { retainedBodyBlobKeys: withRetainedBodyBlobKey(message, previousKey) } : {};
 
-        const bodyBlobKey = `${COMPOSED_BODY_PREFIX}${crypto.randomUUID()}`;
-        await this.blobStore!.put(bodyBlobKey, raw, { contentType: "message/rfc822" });
+        const sealed: ZeroAccessSealedFields | undefined =
+            intent !== "send" ? await this.zeroAccessWriter?.sealDraft(mailbox, raw, message.uid, new Date()) : undefined;
+        const wasSealed: boolean = !!(message as any).zeroAccess;
+        let bodyBlobKey: string;
+        let sealedPatch: Record<string, unknown> = {};
+        if (sealed) {
+            bodyBlobKey = sealed.bodyBlobKey;
+            sealedPatch = { subject: sealed.subject, bodyPreview: sealed.bodyPreview, zeroAccess: sealed.zeroAccess };
+        } else {
+            bodyBlobKey = `${COMPOSED_BODY_PREFIX}${crypto.randomUUID()}`;
+            await this.blobStore!.put(bodyBlobKey, raw, { contentType: "message/rfc822" });
+            if (wasSealed) {
+                sealedPatch = { zeroAccess: null };
+            }
+        }
 
         // `update()` only enforces the optimistic lock (a 409 when `send()` or another save changed the draft since it
         // was read) when `existing` is an entity instance. `findOne()` returns one today; a plain document (e.g. from a
@@ -651,13 +706,19 @@ export abstract class BaseMailComposeRoute<M extends Message, A extends Attachme
         let updated: M;
         try {
             updated = await this.messageRepo!.update(
-                { uid: message.uid, version: (message as any).version, ...patch, ...retained, bodyBlobKey } as any,
+                { uid: message.uid, version: (message as any).version, ...patch, ...sealedPatch, ...retained, bodyBlobKey } as any,
                 existing,
                 { user, ignoreACL: true },
             );
         } catch (err) {
             await this.blobStore!.delete(bodyBlobKey).catch(() => undefined);
             throw err;
+        }
+        if (!sealed && wasSealed) {
+            // Readable now, for the send: the sealed draft's index entry would otherwise stand in for the Sent Items copy's own.
+            await this.zeroAccessWriter?.removeIndexEntry(zeroAccessIndexEntryUid(message.uid)).catch((err: any) => {
+                (this._objectFactory as any)?.logger?.warn?.(`Failed to remove the zero-access index entry of draft ${message.uid}: ${err?.message ?? err}`);
+            });
         }
 
         if (replacesComposedBody && !held) {
@@ -748,7 +809,7 @@ export abstract class BaseMailComposeRoute<M extends Message, A extends Attachme
             throw new ApiError(ApiErrors.INTERNAL_ERROR, 500, ApiErrorMessages.INTERNAL_ERROR);
         }
 
-        if (!body?.to?.length || !body.rawMime) {
+        if (!body?.to?.length || !body.rawMime || !isComposeIntent(body.intent)) {
             throw new ApiError(ApiErrors.INVALID_REQUEST, 400, ApiErrorMessages.INVALID_REQUEST);
         }
 
@@ -817,7 +878,7 @@ export abstract class BaseMailComposeRoute<M extends Message, A extends Attachme
             ...(body.bcc ?? []).map((r) => ({ ...r, type: RecipientType.BCC })),
         ];
 
-        return await this.storeBody(message, rawBytes, user, {
+        return await this.storeBody(message, rawBytes, user, mailbox, body.intent, {
             subject: body.subject,
             recipients,
             from: { address: mailbox.primarySmtpAddress, displayName: safeFromDisplayName(mailbox.displayName), type: RecipientType.TO },

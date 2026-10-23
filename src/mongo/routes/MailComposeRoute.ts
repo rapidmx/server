@@ -1,7 +1,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 ///////////////////////////////////////////////////////////////////////////////
-import { AttachmentMongo, FolderMongo, MailboxMongo, MatterMongo, MessageMongo } from "@rapidmx/restapi/mongo";
+import { AttachmentMongo, EncryptionPolicyMongo, FolderMongo, MailboxMongo, MatterMongo, MessageMongo, ZeroAccessIndexEntryMongo } from "@rapidmx/restapi/mongo";
 import { RouteDecorators } from "@rapidrest/service-core";
 import { BaseMailComposeRoute } from "../../routes/BaseMailComposeRoute.js";
 
@@ -14,4 +14,6 @@ export class MailComposeRoute extends BaseMailComposeRoute<MessageMongo, Attachm
     protected mailboxClass: any = MailboxMongo;
     protected folderClass: any = FolderMongo;
     protected matterClass: any = MatterMongo;
+    protected encryptionPolicyClass: any = EncryptionPolicyMongo;
+    protected zeroAccessIndexEntryClass: any = ZeroAccessIndexEntryMongo;
 }
