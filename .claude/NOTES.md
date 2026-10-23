@@ -6818,3 +6818,11 @@ Not committed. restapi's `POST /plugins/upload` (see its NOTES, same date) store
 ### 2026-10-03 - Conformance: hooks and ObjectFactory construction
 
 Not committed. `BaseEscrowInfoRoute` (`initializeEscrowInfo`) and `BaseMailComposeRoute` (`initializeCompose`) build their repos once in an `@Init` hook (the lazy `init()` called by handlers is gone), `BaseDiagnosticsRoute` (`initializeDiagnostics`) builds its one `DiagnosticsCollector` through the factory, and `withPluginPurge` (`initializePurgeLedger`, not `initialize`: restapi's `BasePluginRoute` already has that hook and a same-named one would shadow it) builds the `PluginPurgeStore`/`PluginPurgeLedger` (lease from `system:plugins:purge:lease_ms`). `PluginHost.start()`/`startPurger()` build the watcher, store, ledger, purger, `RedisPurgeCoordination` and `InstallingPurgeHookRunner` through the factory (same name/args as the route's, so the ledger is one instance); `stop()` destroys what the run built (watcher, purger, coordination, hook runner) so a second `start()` on the same factory gets fresh ones. Left as `new`: everything in `PluginHost.prepare()` (runs before the app/ObjectFactory exists), the per-hook `PluginInstaller` (one per scratch dir, dropped after use), `PluginRestartLock`, the early BlobStore/`PluginStateStore` factories, `KubeClient`/`ProcessSampler`/`DirectorySizer` inside the collector (plain helpers/clients). Tests: `test/routes/RouteInitializeHooks.test.ts`.
+
+## 2026-10-22 - Zero-access encryption, Phase 1 (config)
+
+- **Config default.** Added `mail:zero_access:allowed: true` to `config.mongo.ts` and `config.sql.ts`. It only seeds restapi's `EncryptionPolicy.allowZeroAccess` until an administrator saves a value in the admin console; a saved value always wins.
+- **Helm.** `mail.zeroAccess.allowed` (default `true`) maps to `mail__zero_access__allowed`. Verified with `helm template`.
+  - Rendering locally needs every generated secret set explicitly, including a 16+ character `mail.rspamd.controller.password`.
+- **Protected settings.** `mail:zero_access` was added to `PROTECTED_PLUGIN_SETTING_KEYS`, so a plugin can't quietly turn the server-wide default off. restapi's `PluginUtils` list got the same entry.
+- `yarn build` is clean.

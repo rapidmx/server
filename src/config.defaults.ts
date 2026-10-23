@@ -271,6 +271,7 @@ export const PROTECTED_PLUGIN_SETTING_KEYS: readonly string[] = [
     "mail:search",
     "mail:preferences",
     "mail:branding",
+    "mail:zero_access",
 ];
 
 function normalizeSettingKey(key: string): string {

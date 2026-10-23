@@ -331,6 +331,11 @@ conf.defaults({
                 datasource: "sql",
             },
         },
+        // Zero-access encryption (restapi specs/search.md §3): whether mailboxes may store mail encrypted at rest, until an
+        // administrator saves "Allow zero-access encryption" (EncryptionPolicy.allowZeroAccess) in the admin console.
+        zero_access: {
+            allowed: true,
+        },
         // Defaults assume a host-run `yarn dev` process talking to docker-compose.mail.yml's standalone
         // scanning stack, whose ports are mapped straight to the host (see that file) - the same
         // localhost-reachable convention every other default in this file follows (datastores, etc). These

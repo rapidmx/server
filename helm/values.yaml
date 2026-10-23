@@ -227,6 +227,7 @@ service:
     mail__basic_auth__realm: '{{ .Values.mail.basicAuth.realm }}'
     mail__basic_auth__cache_ttl_ms: '{{ .Values.mail.basicAuth.cacheTtlMs }}'
     mail__basic_auth__failure_limit: '{{ .Values.mail.basicAuth.failureLimit }}'
+    mail__zero_access__allowed: '{{ .Values.mail.zeroAccess.allowed }}'
     # /internal/mta refuses a request that carries proxy headers (X-Forwarded-For, ...), which keeps one that came in through the
     # public Gateway out. An internal load balancer for ses-bridge (mail.ingestService) may add them, so they are accepted then -
     # except with pod-terminated TLS, where the Gateway can't answer 404 for /internal itself and the server's refusal is all there is.
@@ -411,6 +412,11 @@ mail:
     # ceiling per address - mail:basic_auth:ip_failure_limit, 50 - stops a client trying many names; per username from every
     # address, mail:basic_auth:name_failure_limit only slows further attempts down, so a stranger can't lock someone out.)
     failureLimit: 10
+  # Zero-access encryption: mail is encrypted at rest on arrival to a key only the mailbox's user (or an escrow holder) can
+  # unlock, and the server keeps no readable copy. This is only the default for "Allow zero-access encryption" in the admin
+  # console; a value saved there wins. Each user can still turn it off for their own mailbox.
+  zeroAccess:
+    allowed: true
   trustedAuthservId: ''
   relay:
     host: postfix
