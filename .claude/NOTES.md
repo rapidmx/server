@@ -6826,3 +6826,8 @@ Not committed. `BaseEscrowInfoRoute` (`initializeEscrowInfo`) and `BaseMailCompo
   - Rendering locally needs every generated secret set explicitly, including a 16+ character `mail.rspamd.controller.password`.
 - **Protected settings.** `mail:zero_access` was added to `PROTECTED_PLUGIN_SETTING_KEYS`, so a plugin can't quietly turn the server-wide default off. restapi's `PluginUtils` list got the same entry.
 - `yarn build` is clean.
+
+## 2026-10-22 - Zero-access encryption, Phase 2
+
+- `src/{mongo,sql}/Models.ts` list restapi's new `ZeroAccessIndexEntry{Mongo,SQL}` (test/Models.test.ts requires every exported model).
+- restapi now depends on pkijs/asn1js. This server already hoists pkijs 3.4.0 and asn1js 3.0.10 (from web-client). After a restapi bump, check that `node_modules/pkijs/node_modules/asn1js` does NOT exist: a second asn1js instance breaks CMS decryption silently (see restapi NOTES 2026-10-22 Phase 2).
