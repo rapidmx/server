@@ -6851,3 +6851,7 @@ Not committed. `BaseEscrowInfoRoute` (`initializeEscrowInfo`) and `BaseMailCompo
 - `ZeroAccessIndexRoute` (mongo/sql, `@ApiRoute("mail/mailboxes")`) mounts restapi's `BaseZeroAccessIndexRoute` at `/:id/search-index/*`. It is listed in `RESTAPI_ROUTES` (`test/routes/MailAccessRoutes.test.ts`).
 - `ZeroAccessIndexSegment{Mongo,SQL}` is added to `Models.ts`.
 - Config: `mail:zero_access:compaction_grace_hours` (24) and `max_segment_bytes` (64 MiB).
+
+## 2026-10-23 - Zero-access encryption, Phase 6
+
+- `ZeroAccessBackfillJob{Mongo,SQL}` is registered in `Jobs.ts`. Config `mail:jobs:zero_access_backfill`: `schedule` "0 * * * * *" (every minute), `batch_size` 100. It seals mail stored before zero-access became active; see restapi NOTES.

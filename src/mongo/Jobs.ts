@@ -22,4 +22,5 @@ export {
     ScanQueueJobMongo,
     ScheduledSendJobMongo,
     SearchIndexJobMongo,
+    ZeroAccessBackfillJobMongo,
 } from "@rapidmx/restapi/mongo";

@@ -427,6 +427,12 @@ conf.defaults({
                 // the next process - it is never relayed twice).
                 drain_ms: 15_000,
             },
+            zero_access_backfill: {
+                // Seals mail a mailbox already had when zero-access encryption became active for it: once a minute, at most
+                // batch_size messages per run across all mailboxes, newest first.
+                schedule: "0 * * * * *",
+                batch_size: 100,
+            },
             meeting_scheduling: {
                 // How often MeetingSchedulingJob mails invitations, updates and cancellations to a meeting's guests, cron syntax
                 // (seconds field included): every 10 seconds, so guests hear of a meeting that was deleted or cancelled within

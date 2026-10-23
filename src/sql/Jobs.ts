@@ -22,4 +22,5 @@ export {
     ScanQueueJobSQL,
     ScheduledSendJobSQL,
     SearchIndexJobSQL,
+    ZeroAccessBackfillJobSQL,
 } from "@rapidmx/restapi/sql";
