@@ -6845,3 +6845,9 @@ Not committed. `BaseEscrowInfoRoute` (`initializeEscrowInfo`) and `BaseMailCompo
 - A replaced sealed draft body is deleted, or kept for a legal hold, exactly like a `bodies/` one: `replacesComposedBody` covers both prefixes.
 - The concrete compose routes now set `encryptionPolicyClass`/`zeroAccessIndexEntryClass`. Without them `newZeroAccessWriter()` gives `undefined` and drafts are stored as before.
 - **Open:** files uploaded to a zero-access draft stay plaintext until it is sent (see restapi NOTES).
+
+## 2026-10-23 - Zero-access encryption, Phase 5 (segment store)
+
+- `ZeroAccessIndexRoute` (mongo/sql, `@ApiRoute("mail/mailboxes")`) mounts restapi's `BaseZeroAccessIndexRoute` at `/:id/search-index/*`. It is listed in `RESTAPI_ROUTES` (`test/routes/MailAccessRoutes.test.ts`).
+- `ZeroAccessIndexSegment{Mongo,SQL}` is added to `Models.ts`.
+- Config: `mail:zero_access:compaction_grace_hours` (24) and `max_segment_bytes` (64 MiB).

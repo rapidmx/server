@@ -339,6 +339,10 @@ conf.defaults({
             // long in total, and none larger than extraction_max_bytes. What doesn't fit is left for the user's app to index.
             extraction_budget_ms: 5000,
             extraction_max_bytes: 10 * 1024 * 1024,
+            // A week's search index entries may be compacted into one segment this long after the week ends (late mail waits for
+            // the next generation), and a segment a client uploads may be at most max_segment_bytes.
+            compaction_grace_hours: 24,
+            max_segment_bytes: 64 * 1024 * 1024,
         },
         // Defaults assume a host-run `yarn dev` process talking to docker-compose.mail.yml's standalone
         // scanning stack, whose ports are mapped straight to the host (see that file) - the same

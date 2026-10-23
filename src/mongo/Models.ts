@@ -52,4 +52,5 @@ export {
     TaskMongo,
     TransportRuleMongo,
     ZeroAccessIndexEntryMongo,
+    ZeroAccessIndexSegmentMongo,
 } from "@rapidmx/restapi/mongo";

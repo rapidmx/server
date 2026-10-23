@@ -52,4 +52,5 @@ export {
     TaskSQL,
     TransportRuleSQL,
     ZeroAccessIndexEntrySQL,
+    ZeroAccessIndexSegmentSQL,
 } from "@rapidmx/restapi/sql";
