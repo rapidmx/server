@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v1.0.0-beta.44
+
 ### Added
 
 - **Zero-access encryption** (`@rapidmx/restapi` 0.34, `@rapidmx/web-client` 0.36) - mail is stored encrypted to a key only the mailbox's users hold, so administrators, storage and backup copies can no longer read it. On by default: `mail:zero_access:allowed` (Helm `mail.zeroAccess.allowed`) is the global switch in the admin console's encryption policy, and each user can turn it off for their own mailbox. A mailbox starts using it once its user signs in to the web client and gets a zero-access key; `ZeroAccessBackfillJob` (every minute, up to 100 messages a run) then seals the mail it already had. Drafts are sealed when saved. The zero-access search index is served under `/api/mail/mailboxes/:id/search-index`.

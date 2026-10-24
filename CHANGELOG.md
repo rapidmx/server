@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.44] - 2026-10-24
+
+### Added
+- Added mail:zero_access:allowed (on) as the default for the admin console's Allow zero-access encryption setting, with the Helm value mail.zeroAccess.allowed
+- Added mail:zero_access:extraction_budget_ms and extraction_max_bytes defaults for zero-access attachment indexing during delivery
+- Added an intent to assemble and assemble-raw, storing an assemble for sending readable and dropping the draft's sealed state and index entry
+- Added mail:zero_access:compaction_grace_hours and max_segment_bytes defaults
+
+### Changed
+- Record the zero-access encryption standing decisions in NOTES.md
+- Protect mail:zero_access from plugin settings
+- List restapi's ZeroAccessIndexEntry models for the ClassLoader
+- Seal drafts saved in a zero-access mailbox through ZeroAccessWriter.sealDraft, storing no plaintext body
+- Delete or retain a replaced sealed draft body like a composed one
+- Mount the zero-access search index route under mail/mailboxes and list the ZeroAccessIndexSegment models
+- Run ZeroAccessBackfillJob every minute, sealing up to 100 existing messages per run
+- Build against @rapidmx/restapi ^0.34.0 and @rapidmx/web-client ^0.36.0
+- Describe zero-access encryption in the release notes
+
 ## [1.0.0-beta.43] - 2026-10-09
 
 ### Changed
@@ -1226,7 +1245,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed test from .dockerignore, fixing yarn build's lint step failing outright when the build context is missing the test directory its tsconfig.eslint.json requires
 - Removed docker-compose.mail.yml's partial server: service block, since include: only supports merging resources that don't already exist in the including file and hard-errors ("services.server conflicts with imported resource") on a Compose version newer than whatever this had only ever been tested against locally
 
-[Unreleased]: https://github.com/rapidmx/server/compare/v1.0.0-beta.43...HEAD
+[Unreleased]: https://github.com/rapidmx/server/compare/v1.0.0-beta.44...HEAD
+[1.0.0-beta.44]: https://github.com/rapidmx/server/compare/v1.0.0-beta.43...v1.0.0-beta.44
 [1.0.0-beta.43]: https://github.com/rapidmx/server/compare/v1.0.0-beta.42...v1.0.0-beta.43
 [1.0.0-beta.42]: https://github.com/rapidmx/server/compare/v1.0.0-beta.41...v1.0.0-beta.42
 [1.0.0-beta.41]: https://github.com/rapidmx/server/compare/v1.0.0-beta.40...v1.0.0-beta.41
