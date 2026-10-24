@@ -6855,3 +6855,20 @@ Not committed. `BaseEscrowInfoRoute` (`initializeEscrowInfo`) and `BaseMailCompo
 ## 2026-10-23 - Zero-access encryption, Phase 6
 
 - `ZeroAccessBackfillJob{Mongo,SQL}` is registered in `Jobs.ts`. Config `mail:jobs:zero_access_backfill`: `schedule` "0 * * * * *" (every minute), `batch_size` 100. It seals mail stored before zero-access became active; see restapi NOTES.
+
+## 2026-10-24 - OpenPGP interoperability (server side of Phase 2)
+
+- Standing decisions are in restapi's NOTES ("OpenPGP interoperability"). The plan is at `C:/Users/caska/.claude/plans/openpgp-interop.md`.
+  - OpenPGP exists for interop with Proton and other PGP users.
+  - S/MIME stays RapidMX's own format, and the preferred one.
+- `src/{mongo,sql}/routes/WkdRoute.ts` mounts restapi's `BaseWkdRoute` at `/.well-known/openpgpkey`.
+  - Public and unauthenticated, like `KeyDiscoveryRoute`.
+  - Classified as a restapi route in `test/routes/MailAccessRoutes.test.ts`.
+- Helm: a new `rapidmx.openpgpkeyHost` helper (`openpgpkey.<global.domain>`), copying the autodiscover host pattern.
+  - `http-openpgpkey`/`https-openpgpkey` Gateway listeners.
+  - Parent refs and hostnames on the main HTTPRoute, the HTTP redirect route and the TLSRoute.
+  - A `dnsNames` entry on the certificate.
+  - This is the WKD advanced-method host that Proton Mail and GnuPG try first. The Domain DNS setup checklist asks for the `openpgpkey.<domain>` CNAME.
+- Local packaging: restapi now depends on `openpgp` (6.3, LGPL-3.0+).
+  - Until restapi is published, copy `restapi/node_modules/openpgp` into `server/node_modules/openpgp` along with restapi's `dist` and `package.json`.
+- **MTA TODO:** DKIM signing must oversign `Autocrypt` as well as `RapidMX-Key`. That config lives outside these repos.

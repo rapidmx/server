@@ -3,6 +3,7 @@
 {{- $certificate := eq (include "rrst.certificate" $) "true" }}
 {{- $podTLS := eq (include "rrst.podTLS" $) "true" }}
 {{- $autodiscoverHost := include "rapidmx.autodiscoverHost" $ }}
+{{- $openpgpkeyHost := include "rapidmx.openpgpkeyHost" $ }}
 {{- /*
 Plain HTTP is redirected to HTTPS when this chart owns the Gateway and terminates TLS on it: the http and https listeners are
 named here, so the redirect can be attached to the http ones only (a Gateway it doesn't own names its own listeners, which
@@ -31,6 +32,14 @@ spec:
     port: 80
     protocol: HTTP
     hostname: {{ $autodiscoverHost | quote }}
+    allowedRoutes:
+      namespaces:
+        from: All
+  # OpenPGP clients' Web Key Directory lookup (advanced method) reaches this server on this fixed name.
+  - name: http-openpgpkey
+    port: 80
+    protocol: HTTP
+    hostname: {{ $openpgpkeyHost | quote }}
     allowedRoutes:
       namespaces:
         from: All
@@ -66,6 +75,26 @@ spec:
     {{- end }}
     port: 443
     hostname: {{ $autodiscoverHost | quote }}
+    tls:
+      {{- if $podTLS }}
+      mode: Passthrough
+      {{- else }}
+      mode: Terminate
+      certificateRefs:
+      - kind: Secret
+        name: {{ (include "rrst.render" (dict "value" $.Values.host "context" $)) }}-tls-cert
+      {{- end }}
+    allowedRoutes:
+      namespaces:
+        from: All
+  - name: https-openpgpkey
+    {{- if $podTLS }}
+    protocol: TLS
+    {{- else }}
+    protocol: HTTPS
+    {{- end }}
+    port: 443
+    hostname: {{ $openpgpkeyHost | quote }}
     tls:
       {{- if $podTLS }}
       mode: Passthrough
@@ -117,6 +146,9 @@ spec:
   - name: {{ tpl $.Values.global.gateway.name $ }}
     namespace: {{ tpl $.Values.global.gateway.namespace $ }}
     sectionName: http-autodiscover
+  - name: {{ tpl $.Values.global.gateway.name $ }}
+    namespace: {{ tpl $.Values.global.gateway.namespace $ }}
+    sectionName: http-openpgpkey
   {{- end }}
   {{- if and (not $podTLS) $certificate }}
   - name: {{ tpl $.Values.global.gateway.name $ }}
@@ -125,6 +157,9 @@ spec:
   - name: {{ tpl $.Values.global.gateway.name $ }}
     namespace: {{ $.Release.Namespace }}
     sectionName: https-autodiscover
+  - name: {{ tpl $.Values.global.gateway.name $ }}
+    namespace: {{ $.Release.Namespace }}
+    sectionName: https-openpgpkey
   {{- end }}
   {{- else }}
   # A Gateway this chart doesn't own (global.gateway.name/namespace) has listeners it names itself, so the route names
@@ -136,6 +171,7 @@ spec:
   hostnames:
   - {{ (include "rrst.render" (dict "value" $.Values.host "context" $)) | quote }}
   - {{ $autodiscoverHost | quote }}
+  - {{ $openpgpkeyHost | quote }}
   rules:
   # /internal/* (the MTA hand-off API postfix-bridge calls inside the cluster, authenticated by mail.ingestSecret) is
   # never served publicly: a rule with no backendRefs and no filters answers 404. It shares the server's port with the
@@ -216,9 +252,13 @@ spec:
   - name: {{ tpl $.Values.global.gateway.name $ }}
     namespace: {{ tpl $.Values.global.gateway.namespace $ }}
     sectionName: http-autodiscover
+  - name: {{ tpl $.Values.global.gateway.name $ }}
+    namespace: {{ tpl $.Values.global.gateway.namespace $ }}
+    sectionName: http-openpgpkey
   hostnames:
   - {{ (include "rrst.render" (dict "value" $.Values.host "context" $)) | quote }}
   - {{ $autodiscoverHost | quote }}
+  - {{ $openpgpkeyHost | quote }}
   rules:
   - matches:
     - path:
@@ -250,10 +290,14 @@ spec:
   - name: {{ tpl $.Values.global.gateway.name $ }}
     namespace: {{ $.Release.Namespace }}
     sectionName: https-autodiscover
+  - name: {{ tpl $.Values.global.gateway.name $ }}
+    namespace: {{ $.Release.Namespace }}
+    sectionName: https-openpgpkey
   {{- end }}
   hostnames:
   - {{ (include "rrst.render" (dict "value" $.Values.host "context" $)) | quote }}
   - {{ $autodiscoverHost | quote }}
+  - {{ $openpgpkeyHost | quote }}
   rules:
   - backendRefs:
     - name: {{ include "rrst.fullname" . }}-services

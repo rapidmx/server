@@ -343,6 +343,16 @@ include "rapidmx.autodiscoverHost" .
 {{- end -}}
 
 {{/*
+The host name OpenPGP clients (Proton Mail, GnuPG, Thunderbird) look a key up on with the Web Key Directory's advanced method:
+`openpgpkey.<global.domain>`, the fixed name the WKD draft (and the CNAME the Domain DNS setup checklist tells operators to add)
+requires. The server answers `/.well-known/openpgpkey/<domain>/hu/...` on it. Usage:
+include "rapidmx.openpgpkeyHost" .
+*/}}
+{{- define "rapidmx.openpgpkeyHost" -}}
+{{-   printf "openpgpkey.%s" (include "rrst.render" (dict "value" .Values.global.domain "context" .)) -}}
+{{- end -}}
+
+{{/*
 "true" when `global.domain` is one a public certificate authority could never issue for: `localhost` or a domain ending in
 `.local`, `.localhost`, `.test` or `.invalid` (the reserved-for-testing/local-use TLDs). Usage: include "rapidmx.isLocalDomain" .
 */}}
