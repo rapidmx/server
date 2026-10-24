@@ -95,6 +95,13 @@ export interface ComposeAssembleRawInput {
     rawMime: string;
     /** See `ComposeIntent`. */
     intent?: ComposeIntent;
+    /**
+     * The addresses this copy is delivered to, when not all of `to`/`cc`/`bcc`: a message whose recipients need different end-to-end
+     * formats is sent as one copy per format (restapi `specs/end-to-end_encryption.md` *OpenPGP Interoperability*), each listing
+     * every recipient in its headers but delivered only to the recipients of its own format. Every address must be one of the
+     * recipients (`400` otherwise); stored as `Message.envelopeRecipients`.
+     */
+    deliverTo?: string[];
 }
 
 /** The blob key prefix of a composed draft body. */
@@ -877,6 +884,18 @@ export abstract class BaseMailComposeRoute<M extends Message, A extends Attachme
             ...(body.cc ?? []).map((r) => ({ ...r, type: RecipientType.CC })),
             ...(body.bcc ?? []).map((r) => ({ ...r, type: RecipientType.BCC })),
         ];
+        let envelopeRecipients: string[] | null = null;
+        if (body.deliverTo !== undefined) {
+            const known = new Set(recipients.map((r) => r.address.toLowerCase()));
+            if (
+                !Array.isArray(body.deliverTo) ||
+                body.deliverTo.length === 0 ||
+                !body.deliverTo.every((address) => typeof address === "string" && known.has(address.toLowerCase()))
+            ) {
+                throw new ApiError(ApiErrors.INVALID_REQUEST, 400, "deliverTo must list some of the message's own recipients.");
+            }
+            envelopeRecipients = body.deliverTo.map((address) => address.toLowerCase());
+        }
 
         return await this.storeBody(message, rawBytes, user, mailbox, body.intent, {
             subject: body.subject,
@@ -889,6 +908,8 @@ export abstract class BaseMailComposeRoute<M extends Message, A extends Attachme
             // independent of this preview being empty.
             bodyPreview: "",
             hasAttachments: false,
+            // Cleared again by a later assemble without one, so the whole message goes out.
+            envelopeRecipients,
         });
     }
 }

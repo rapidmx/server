@@ -6872,3 +6872,7 @@ Not committed. `BaseEscrowInfoRoute` (`initializeEscrowInfo`) and `BaseMailCompo
 - Local packaging: restapi now depends on `openpgp` (6.3, LGPL-3.0+).
   - Until restapi is published, copy `restapi/node_modules/openpgp` into `server/node_modules/openpgp` along with restapi's `dist` and `package.json`.
 - **MTA TODO:** DKIM signing must oversign `Autocrypt` as well as `RapidMX-Key`. That config lives outside these repos.
+
+### 2026-10-24: `assemble-raw` `deliverTo` (OpenPGP mixed-format sends)
+- `POST /:id/assemble-raw` accepts an optional `deliverTo: string[]`. Every address must be among the draft's recipients (400 otherwise). It is stored as `Message.envelopeRecipients`, so restapi relays that copy only to those addresses.
+- The web client sends one S/MIME copy and one OpenPGP copy, each with its own `deliverTo`, when an encrypted message's recipients need both formats.

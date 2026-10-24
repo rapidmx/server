@@ -202,6 +202,21 @@ describe("BaseMailComposeRoute.assembleRaw() Tests (mocked collaborators)", () =
             { address: "dave@example.com", type: "bcc" },
         ]);
     });
+
+    it("limits a copy's delivery to some of its recipients (deliverTo), and refuses an address that isn't one", async () => {
+        const raw = rawMessage(["From: alice@example.com", "To: bob@example.com", "Cc: carol@example.com"]);
+        const route = buildRoute();
+        await route.assembleRaw("m1", { ...validInput, rawMime: raw, cc: [{ address: "carol@example.com" }], deliverTo: ["Carol@Example.com"] }, user);
+        expect((route as any).messageRepo.update.mock.calls[0][0].envelopeRecipients).toEqual(["carol@example.com"]);
+
+        const plain = buildRoute();
+        await plain.assembleRaw("m1", validInput, user);
+        expect((plain as any).messageRepo.update.mock.calls[0][0].envelopeRecipients).toBeNull();
+
+        for (const deliverTo of [[], ["eve@example.com"], [5], "bob@example.com"]) {
+            await expect(buildRoute().assembleRaw("m1", { ...validInput, deliverTo } as any, user)).rejects.toMatchObject({ status: 400 });
+        }
+    });
 });
 
 describe("BaseMailComposeRoute.assembleRaw() header and size checks", () => {
