@@ -1810,16 +1810,18 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@rapidmx/restapi@npm:^0.33.0":
-  version: 0.33.0
-  resolution: "@rapidmx/restapi@npm:0.33.0"
+"@rapidmx/restapi@npm:^0.34.0":
+  version: 0.34.0
+  resolution: "@rapidmx/restapi@npm:0.34.0"
   dependencies:
     "@peculiar/x509": "npm:^2.1.0"
     acme-client: "npm:^5.4.0"
+    asn1js: "npm:^3.0.10"
     html-to-text: "npm:^10.0.1"
     htmlparser2: "npm:^10.1.0"
     mailparser: "npm:^3.9.23"
     nodemailer: "npm:^10.0.13"
+    pkijs: "npm:^3.4.0"
     pst-extractor: "npm:^1.12.0"
     sanitize-html: "npm:^2.17.7"
     semver: "npm:^7.8.5"
@@ -1845,13 +1847,13 @@ __metadata:
       optional: true
     pdf-parse:
       optional: true
-  checksum: 10c0/62052ced38da18ce6312edcc4bc5548ae4d8f1a7bc806f49451189810a75b51dc64651f0d4f19a35496558f5b67da637a4dc85eb3e6dccfc2bcee32bf35b49c9
+  checksum: 10c0/5d3bb4d6a988afab942b95a4b08e20a739c5b94b59d509bee23c107e488ab5b3035edfd0505bb440aa878acde7ea4af158fa77ef25f730c674de9ac5ed0d35dd
   languageName: node
   linkType: hard
 
-"@rapidmx/web-client@npm:^0.35.0":
-  version: 0.35.0
-  resolution: "@rapidmx/web-client@npm:0.35.0"
+"@rapidmx/web-client@npm:^0.36.0":
+  version: 0.36.0
+  resolution: "@rapidmx/web-client@npm:0.36.0"
   dependencies:
     "@dnd-kit/core": "npm:^6.3.1"
     "@emoji-mart/data": "npm:^1.2.1"
@@ -1877,10 +1879,10 @@ __metadata:
     reflect-metadata: "npm:^0.2.2"
     rrule: "npm:^2.8.1"
   peerDependencies:
-    "@rapidrest/react": ">=2.1.0 <3"
+    "@rapidrest/react": 2.x
     react: 19.x
     react-dom: 19.x
-  checksum: 10c0/d60602633530d74ce131d40a2ceb18b2b68670d7b8b3936b1b0808dbc1f77ddc2a6d69396daceca3f0430e15932a06c42d6a0b8a4923122e33a79e1a9bed749d
+  checksum: 10c0/f9e3aec24acb6f1b55ee6de145be679c28a1ecad09e523f6f92810b3ffc65b930a020352cf21ee46204002fa1094c7b8acd6a44e7b5d0c3cf19dfaa9969f830a
   languageName: node
   linkType: hard
 
@@ -9882,8 +9884,8 @@ __metadata:
   resolution: "server@workspace:."
   dependencies:
     "@aws-sdk/client-s3": "npm:^3.906.0"
-    "@rapidmx/restapi": "npm:^0.33.0"
-    "@rapidmx/web-client": "npm:^0.35.0"
+    "@rapidmx/restapi": "npm:^0.34.0"
+    "@rapidmx/web-client": "npm:^0.36.0"
     "@rapidrest/cli": "npm:^2.1.0"
     "@rapidrest/core": "npm:^6.0.0"
     "@rapidrest/react": "npm:2.1.0"
