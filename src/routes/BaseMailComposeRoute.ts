@@ -28,6 +28,7 @@ import {
     Message,
     Recipient,
     RecipientType,
+    SEARCH_REINDEX,
     withRetainedBodyBlobKey,
     newZeroAccessWriter,
     zeroAccessDraftBlobPrefix,
@@ -671,8 +672,8 @@ export abstract class BaseMailComposeRoute<M extends Message, A extends Attachme
      *
      * In a zero-access mailbox a save (`intent` other than `"send"`) stores `raw` sealed instead (`ZeroAccessWriter.sealDraft()`: a
      * fresh `za/<mailbox>/drafts/` blob, the `[...]` subject and empty preview, `zeroAccess`, and the draft's index entry), so no
-     * plaintext of the draft is kept: a readable sanitized render is dropped, and `searchIndexedAt` is cleared so SearchIndexJob
-     * replaces an earlier readable search document with a metadata-only one. Assembling for a send stores it readable and
+     * plaintext of the draft is kept: a readable sanitized render is dropped, and `SEARCH_REINDEX` is spread (the search stamp and
+     * its retries cleared) so SearchIndexJob replaces an earlier readable search document with a metadata-only one. Assembling for a send stores it readable and
      * drops the draft's sealed state and index entry, leaving restapi's Sent Items sealing to start clean. It keeps the
      * draft's search stamp, so the metadata-only search document stays while the readable copy waits to be relayed:
      * re-indexing it would put its plaintext in the server-side search index. A sealed draft saved readable (zero-access
@@ -712,7 +713,8 @@ export abstract class BaseMailComposeRoute<M extends Message, A extends Attachme
                 sanitizedHtmlBlobKey: null,
                 // Indexed again, now as metadata only: a draft indexed before the mailbox turned zero-access still has
                 // its readable text in the server-side search document, and ZeroAccessBackfillJob never revisits it.
-                searchIndexedAt: null,
+                // Retries included, so a draft whose indexing retries had run out is selected again too.
+                ...SEARCH_REINDEX,
             };
         } else {
             bodyBlobKey = `${COMPOSED_BODY_PREFIX}${crypto.randomUUID()}`;
@@ -722,7 +724,7 @@ export abstract class BaseMailComposeRoute<M extends Message, A extends Attachme
                 // Sent Items copy, which clears the stamp. Clearing it here would let SearchIndexJob index the readable body.
                 // A save stored readable means zero-access is no longer active for the mailbox, so the draft is indexed
                 // again from its readable body; autosave never clears the stamp, and its content would never be searchable.
-                sealedPatch = intent === "send" ? { zeroAccess: null } : { zeroAccess: null, searchIndexedAt: null };
+                sealedPatch = intent === "send" ? { zeroAccess: null } : { zeroAccess: null, ...SEARCH_REINDEX };
             }
         }
 

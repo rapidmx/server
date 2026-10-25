@@ -11,7 +11,7 @@
 import config from "../../src/config.mongo.js";
 import { BaseEntity, ObjectFactory } from "@rapidrest/service-core";
 import { Logger } from "@rapidrest/core";
-import { MAX_RETAINED_BODY_BLOB_KEYS, zeroAccessIndexEntryUid } from "@rapidmx/restapi";
+import { MAX_RETAINED_BODY_BLOB_KEYS, SEARCH_REINDEX, zeroAccessIndexEntryUid } from "@rapidmx/restapi";
 import {
     assertRawMimeHeadersMatch,
     BaseMailComposeRoute,
@@ -932,7 +932,7 @@ describe("BaseMailComposeRoute zero-access drafts (mocked collaborators)", () =>
         expect(route.blobStore.delete).toHaveBeenCalledWith("za/mb1/drafts/old");
     });
 
-    it("re-indexes a draft it seals and drops its readable sanitized render, so an earlier plaintext search document is replaced", async () => {
+    it("re-indexes a draft it seals, retries included, and drops its readable sanitized render, so an earlier plaintext search document is replaced", async () => {
         const message = {
             uid: "m1",
             version: 0,
@@ -941,12 +941,16 @@ describe("BaseMailComposeRoute zero-access drafts (mocked collaborators)", () =>
             bodyBlobKey: "bodies/old",
             sanitizedHtmlBlobKey: "sanitized/m1",
             searchIndexedAt: new Date("2026-10-01T00:00:00Z"),
+            // Its indexing retries ran out: SearchIndexJob selects it again only once these are reset too.
+            searchIndexAttempts: 5,
+            searchIndexNextAttemptAt: null,
+            searchIndexError: "provider down",
         };
         const { route, update } = buildRoute(message, { sealDraft: vi.fn().mockResolvedValue(sealedFields) });
 
         await route.assembleRaw("m1", input, user);
 
-        expect(update.mock.calls[0][0]).toMatchObject({ zeroAccess: sealedFields.zeroAccess, searchIndexedAt: null, sanitizedHtmlBlobKey: null });
+        expect(update.mock.calls[0][0]).toMatchObject({ zeroAccess: sealedFields.zeroAccess, ...SEARCH_REINDEX, sanitizedHtmlBlobKey: null });
         expect(route.messageRepo.count).toHaveBeenCalledWith({ sanitizedHtmlBlobKey: "eq(sanitized/m1)" }, expect.anything());
         expect(route.blobStore.delete).toHaveBeenCalledWith("sanitized/m1");
     });
@@ -1110,6 +1114,8 @@ describe("BaseMailComposeRoute zero-access drafts (mocked collaborators)", () =>
                 bodyBlobKey: "za/mb1/drafts/old",
                 zeroAccess: {},
                 searchIndexedAt: new Date("2026-10-01T00:00:00Z"),
+                searchIndexAttempts: 5,
+                searchIndexError: "provider down",
             };
             const removeIndexEntry = vi.fn().mockResolvedValue(undefined);
             const { route, update } = buildRoute(message, { sealDraft: vi.fn().mockResolvedValue(undefined), removeIndexEntry });
@@ -1117,8 +1123,9 @@ describe("BaseMailComposeRoute zero-access drafts (mocked collaborators)", () =>
             const result = await route.assembleRaw("m1", { ...input, ...(intent ? { intent } : {}) }, user);
 
             expect(route.blobStore.put).toHaveBeenCalledWith(expect.stringMatching(/^bodies\//), expect.any(Buffer), expect.anything());
-            expect(update.mock.calls[0][0]).toMatchObject({ zeroAccess: null, searchIndexedAt: null });
+            expect(update.mock.calls[0][0]).toMatchObject({ zeroAccess: null, ...SEARCH_REINDEX });
             expect(result.searchIndexedAt).toBeNull();
+            expect(result.searchIndexAttempts).toBeNull();
             expect(removeIndexEntry).toHaveBeenCalledWith(zeroAccessIndexEntryUid("m1"));
         },
     );
