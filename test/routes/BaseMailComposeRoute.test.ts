@@ -11,7 +11,7 @@
 import config from "../../src/config.mongo.js";
 import { BaseEntity, ObjectFactory } from "@rapidrest/service-core";
 import { Logger } from "@rapidrest/core";
-import { MAX_RETAINED_BODY_BLOB_KEYS } from "@rapidmx/restapi";
+import { MAX_RETAINED_BODY_BLOB_KEYS, zeroAccessIndexEntryUid } from "@rapidmx/restapi";
 import {
     assertRawMimeHeadersMatch,
     BaseMailComposeRoute,
@@ -914,7 +914,7 @@ describe("BaseMailComposeRoute zero-access drafts (mocked collaborators)", () =>
         route.attachmentRepo = { count: vi.fn().mockResolvedValue(0) };
         route.matterRepo = { find: vi.fn().mockResolvedValue([]) };
         route.aclUtils = { hasPermission: vi.fn().mockResolvedValue(true) };
-        route.blobStore = { put: vi.fn(), delete: vi.fn() };
+        route.blobStore = { put: vi.fn(), delete: vi.fn().mockResolvedValue(undefined) };
         route.zeroAccessWriter = writer;
         return { route, update };
     }
@@ -983,8 +983,68 @@ describe("BaseMailComposeRoute zero-access drafts (mocked collaborators)", () =>
 
         expect(sealDraft).not.toHaveBeenCalled();
         expect(route.blobStore.put).toHaveBeenCalledWith(expect.stringMatching(/^bodies\//), expect.any(Buffer), expect.anything());
-        expect(update.mock.calls[0][0]).toMatchObject({ zeroAccess: null, searchIndexedAt: null });
-        expect(removeIndexEntry).toHaveBeenCalledWith(expect.any(String));
+        expect(update.mock.calls[0][0]).toMatchObject({ zeroAccess: null });
+        expect(removeIndexEntry).toHaveBeenCalledWith(zeroAccessIndexEntryUid("m1"));
+    });
+
+    it("keeps a sealed draft's search stamp when it is assembled readable for sending, so its plaintext is never indexed", async () => {
+        const indexedAt = new Date("2026-10-01T00:00:00Z");
+        const message = { uid: "m1", version: 0, folderUid: "f1", mailboxUid: "mb1", bodyBlobKey: "za/mb1/drafts/old", zeroAccess: {}, searchIndexedAt: indexedAt };
+        const { route, update } = buildRoute(message, { sealDraft: vi.fn(), removeIndexEntry: vi.fn().mockResolvedValue(undefined) });
+
+        const result = await route.assembleRaw("m1", { ...input, intent: "send" }, user);
+
+        expect(update.mock.calls[0][0]).not.toHaveProperty("searchIndexedAt");
+        expect(result.searchIndexedAt).toBe(indexedAt);
+    });
+
+    it("removes the index entry a sealed save wrote when its update loses to a concurrent save or send (409)", async () => {
+        const message = { uid: "m1", version: 0, folderUid: "f1", mailboxUid: "mb1", bodyBlobKey: "za/mb1/drafts/old", zeroAccess: {} };
+        // The mailbox's index entries, as `sealDraft()` (replace) and `removeIndexEntry()` leave them.
+        const index = new Map<string, string>();
+        const entryUid = zeroAccessIndexEntryUid("m1");
+        const sealDraft = vi.fn(async () => {
+            index.set(entryUid, "losing autosave");
+            return { ...sealedFields, indexEntryUid: entryUid };
+        });
+        const removeIndexEntry = vi.fn(async (uid: string) => void index.delete(uid));
+        const { route, update } = buildRoute(message, { sealDraft, removeIndexEntry });
+        const conflict = Object.assign(new Error("version conflict"), { status: 409 });
+        update.mockRejectedValueOnce(conflict);
+
+        await expect(route.assembleRaw("m1", input, user)).rejects.toBe(conflict);
+
+        expect(route.blobStore.delete).toHaveBeenCalledWith("za/mb1/drafts/new");
+        expect(removeIndexEntry).toHaveBeenCalledWith(entryUid);
+        expect(index.has(entryUid)).toBe(false);
+        // The draft keeps its old body.
+        expect(route.blobStore.delete).not.toHaveBeenCalledWith("za/mb1/drafts/old");
+    });
+
+    it("still answers the failed save's own error when the losing index entry can't be removed, and logs it", async () => {
+        const message = { uid: "m1", version: 0, folderUid: "f1", mailboxUid: "mb1", bodyBlobKey: "za/mb1/drafts/old", zeroAccess: {} };
+        const { route, update } = buildRoute(message, {
+            sealDraft: vi.fn().mockResolvedValue(sealedFields),
+            removeIndexEntry: vi.fn().mockRejectedValue(new Error("db down")),
+        });
+        const conflict = Object.assign(new Error("version conflict"), { status: 409 });
+        update.mockRejectedValueOnce(conflict);
+
+        await expect(route.assembleRaw("m1", input, user)).rejects.toBe(conflict);
+
+        expect(route.zeroAccessWriter.removeIndexEntry).toHaveBeenCalledWith("ix");
+        expect(route._objectFactory.logger.warn).toHaveBeenCalledWith(expect.stringContaining("db down"));
+    });
+
+    it("leaves the index alone when a readable save's update fails", async () => {
+        const message = { uid: "m1", version: 0, folderUid: "f1", mailboxUid: "mb1", bodyBlobKey: "bodies/old" };
+        const removeIndexEntry = vi.fn();
+        const { route, update } = buildRoute(message, { sealDraft: vi.fn().mockResolvedValue(undefined), removeIndexEntry });
+        update.mockRejectedValueOnce(new Error("version conflict"));
+
+        await expect(route.assembleRaw("m1", input, user)).rejects.toThrow("version conflict");
+
+        expect(removeIndexEntry).not.toHaveBeenCalled();
     });
 
     it("keeps the readable save when the sealed draft's index entry can't be removed, and logs it", async () => {

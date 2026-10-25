@@ -673,8 +673,11 @@ export abstract class BaseMailComposeRoute<M extends Message, A extends Attachme
      * fresh `za/<mailbox>/drafts/` blob, the `[...]` subject and empty preview, `zeroAccess`, and the draft's index entry), so no
      * plaintext of the draft is kept: a readable sanitized render is dropped, and `searchIndexedAt` is cleared so SearchIndexJob
      * replaces an earlier readable search document with a metadata-only one. Assembling for a send stores it readable and
-     * drops the draft's sealed state and index entry (re-indexing it too), leaving restapi's Sent Items sealing to start clean. A replaced sealed draft body is deleted, or kept for a hold, like a
-     * `bodies/` one.
+     * drops the draft's sealed state and index entry, leaving restapi's Sent Items sealing to start clean. It keeps the
+     * draft's search stamp, so the metadata-only search document stays while the readable copy waits to be relayed:
+     * re-indexing it would put its plaintext in the server-side search index. A replaced sealed draft body is deleted,
+     * or kept for a hold, like a `bodies/` one. When a sealed save's update fails, the index entry it wrote is removed
+     * with its blob, so it can't describe content the draft never got.
      */
     private async storeBody(
         message: M,
@@ -714,8 +717,9 @@ export abstract class BaseMailComposeRoute<M extends Message, A extends Attachme
             bodyBlobKey = `${COMPOSED_BODY_PREFIX}${crypto.randomUUID()}`;
             await this.blobStore!.put(bodyBlobKey, raw, { contentType: "message/rfc822" });
             if (wasSealed) {
-                // Indexed again from the now-readable body, in place of the sealed metadata-only document.
-                sealedPatch = { zeroAccess: null, searchIndexedAt: null };
+                // `searchIndexedAt` is kept: the metadata-only document stays until restapi files the sealed Sent Items
+                // copy, which clears the stamp. Clearing it here would let SearchIndexJob index the readable body.
+                sealedPatch = { zeroAccess: null };
             }
         }
 
@@ -733,6 +737,16 @@ export abstract class BaseMailComposeRoute<M extends Message, A extends Attachme
             );
         } catch (err) {
             await this.blobStore!.delete(bodyBlobKey).catch(() => undefined);
+            if (sealed) {
+                // `sealDraft()` already replaced the draft's index entry with one for this body, which the draft never
+                // got (a concurrent save or send won). Left in place it would stand in for the winner's content, and a
+                // send's Sent Items seal keeps an existing entry. The next sealed save, or the Sent copy, writes a fresh one.
+                await this.zeroAccessWriter?.removeIndexEntry(sealed.indexEntryUid).catch((removeErr: any) => {
+                    (this._objectFactory as any)?.logger?.warn?.(
+                        `Failed to remove the zero-access index entry of draft ${message.uid} after a failed save: ${removeErr?.message ?? removeErr}`,
+                    );
+                });
+            }
             throw err;
         }
         if (!sealed && wasSealed) {
