@@ -1036,6 +1036,93 @@ describe("BaseMailComposeRoute zero-access drafts (mocked collaborators)", () =>
         expect(route._objectFactory.logger.warn).toHaveBeenCalledWith(expect.stringContaining("db down"));
     });
 
+    describe("a losing sealed save's index entry, by what the draft is now", () => {
+        const draft = { uid: "m1", version: 0, folderUid: "f1", mailboxUid: "mb1", bodyBlobKey: "za/mb1/drafts/old", zeroAccess: {} };
+        const entryUid = zeroAccessIndexEntryUid("m1");
+
+        /** A sealed save of `draft` whose update loses (409) while the row has become `current`; the index as the writer leaves it. */
+        async function loseTo(current: object | undefined | Error, target: object | null = { key: {} }) {
+            const index = new Map<string, string>([[entryUid, "Sent Items copy"]]);
+            const sealDraft = vi.fn(async () => {
+                index.set(entryUid, "losing autosave");
+                return { ...sealedFields, indexEntryUid: entryUid };
+            });
+            const removeIndexEntry = vi.fn(async (uid: string) => void index.delete(uid));
+            const { route, update } = buildRoute(draft, { sealDraft, removeIndexEntry, target: vi.fn().mockResolvedValue(target ?? undefined) });
+            const findOne = route.messageRepo.findOne;
+            findOne.mockResolvedValueOnce(draft);
+            if (current instanceof Error) {
+                findOne.mockRejectedValueOnce(current);
+            } else {
+                findOne.mockResolvedValueOnce(current);
+            }
+            const conflict = Object.assign(new Error("version conflict"), { status: 409 });
+            update.mockRejectedValueOnce(conflict);
+
+            await expect(route.assembleRaw("m1", input, user)).rejects.toBe(conflict);
+
+            expect(route.blobStore.delete).toHaveBeenCalledWith("za/mb1/drafts/new");
+            return { route, index, removeIndexEntry };
+        }
+
+        it("keeps it once the draft was filed as the sealed Sent Items copy, whose seal kept or was replaced by it", async () => {
+            const sentCopy = { ...draft, version: 2, folderUid: "sent", bodyBlobKey: "za/mb1/m1", zeroAccess: { keyFingerprint: "fp" } };
+            const { index, removeIndexEntry } = await loseTo(sentCopy);
+            expect(removeIndexEntry).not.toHaveBeenCalled();
+            expect(index.has(entryUid)).toBe(true);
+        });
+
+        it("keeps it while the draft waits readable to be relayed, since the Sent Items seal keeps an existing entry", async () => {
+            const assembled = { ...draft, version: 1, bodyBlobKey: "bodies/sending", zeroAccess: null };
+            const { route, index, removeIndexEntry } = await loseTo(assembled);
+            expect(route.zeroAccessWriter.target).toHaveBeenCalledWith(mailbox);
+            expect(removeIndexEntry).not.toHaveBeenCalled();
+            expect(index.has(entryUid)).toBe(true);
+        });
+
+        it("removes it when a readable save won because zero-access is no longer active", async () => {
+            const readable = { ...draft, version: 1, bodyBlobKey: "bodies/plain", zeroAccess: null };
+            const { index } = await loseTo(readable, null);
+            expect(index.has(entryUid)).toBe(false);
+        });
+
+        it("removes it when the draft is gone", async () => {
+            const { index } = await loseTo(undefined);
+            expect(index.has(entryUid)).toBe(false);
+        });
+
+        it("keeps it, and logs, when the draft can't be read back", async () => {
+            const { route, index, removeIndexEntry } = await loseTo(new Error("db down"));
+            expect(removeIndexEntry).not.toHaveBeenCalled();
+            expect(index.has(entryUid)).toBe(true);
+            expect(route._objectFactory.logger.warn).toHaveBeenCalledWith(expect.stringContaining("db down"));
+        });
+    });
+
+    it.each([["save"], [undefined]])(
+        "re-indexes a sealed draft saved readable (intent %s) once zero-access is no longer active, and drops its index entry",
+        async (intent) => {
+            const message = {
+                uid: "m1",
+                version: 0,
+                folderUid: "f1",
+                mailboxUid: "mb1",
+                bodyBlobKey: "za/mb1/drafts/old",
+                zeroAccess: {},
+                searchIndexedAt: new Date("2026-10-01T00:00:00Z"),
+            };
+            const removeIndexEntry = vi.fn().mockResolvedValue(undefined);
+            const { route, update } = buildRoute(message, { sealDraft: vi.fn().mockResolvedValue(undefined), removeIndexEntry });
+
+            const result = await route.assembleRaw("m1", { ...input, ...(intent ? { intent } : {}) }, user);
+
+            expect(route.blobStore.put).toHaveBeenCalledWith(expect.stringMatching(/^bodies\//), expect.any(Buffer), expect.anything());
+            expect(update.mock.calls[0][0]).toMatchObject({ zeroAccess: null, searchIndexedAt: null });
+            expect(result.searchIndexedAt).toBeNull();
+            expect(removeIndexEntry).toHaveBeenCalledWith(zeroAccessIndexEntryUid("m1"));
+        },
+    );
+
     it("leaves the index alone when a readable save's update fails", async () => {
         const message = { uid: "m1", version: 0, folderUid: "f1", mailboxUid: "mb1", bodyBlobKey: "bodies/old" };
         const removeIndexEntry = vi.fn();
