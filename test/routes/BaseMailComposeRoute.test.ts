@@ -528,6 +528,15 @@ describe("BaseMailComposeRoute.assemble() drafts and From", () => {
         expect(patch.version).toBe(2);
     });
 
+    it("clears a deliverTo list an earlier assemble-raw stored, so a plain send reaches every recipient", async () => {
+        const route = buildRoute({
+            message: { uid: "m1", version: 2, folderUid: "f1", mailboxUid: "mb1", envelopeRecipients: ["pgp@example.com"] },
+        });
+        await route.assemble("m1", { to: [{ address: "bob@example.com" }, { address: "pgp@example.com" }], html: "<p>hi</p>" }, user);
+        const patch = route.messageRepo.update.mock.calls[0][0];
+        expect(patch).toHaveProperty("envelopeRecipients", null);
+    });
+
     it("passes an entity instance through unchanged", async () => {
         const entity = Object.assign(Object.create(BaseEntity.prototype), { uid: "m1", version: 5, folderUid: "f1", mailboxUid: "mb1" });
         const route = buildRoute({ message: entity });
@@ -921,6 +930,47 @@ describe("BaseMailComposeRoute zero-access drafts (mocked collaborators)", () =>
         expect(route.blobStore.delete).toHaveBeenCalledWith("za/mb1/drafts/old");
     });
 
+    it("re-indexes a draft it seals and drops its readable sanitized render, so an earlier plaintext search document is replaced", async () => {
+        const message = {
+            uid: "m1",
+            version: 0,
+            folderUid: "f1",
+            mailboxUid: "mb1",
+            bodyBlobKey: "bodies/old",
+            sanitizedHtmlBlobKey: "sanitized/m1",
+            searchIndexedAt: new Date("2026-10-01T00:00:00Z"),
+        };
+        const { route, update } = buildRoute(message, { sealDraft: vi.fn().mockResolvedValue(sealedFields) });
+
+        await route.assembleRaw("m1", input, user);
+
+        expect(update.mock.calls[0][0]).toMatchObject({ zeroAccess: sealedFields.zeroAccess, searchIndexedAt: null, sanitizedHtmlBlobKey: null });
+        expect(route.messageRepo.count).toHaveBeenCalledWith({ sanitizedHtmlBlobKey: "eq(sanitized/m1)" }, expect.anything());
+        expect(route.blobStore.delete).toHaveBeenCalledWith("sanitized/m1");
+    });
+
+    it("keeps a sanitized render another message still references, and logs a failed deletion without failing the save", async () => {
+        const message = { uid: "m1", version: 0, folderUid: "f1", mailboxUid: "mb1", sanitizedHtmlBlobKey: "sanitized/shared" };
+        const referenced = buildRoute(message, { sealDraft: vi.fn().mockResolvedValue(sealedFields) });
+        referenced.route.messageRepo.count.mockResolvedValue(1);
+        await referenced.route.assembleRaw("m1", input, user);
+        expect(referenced.route.blobStore.delete).not.toHaveBeenCalledWith("sanitized/shared");
+
+        const failing = buildRoute(message, { sealDraft: vi.fn().mockResolvedValue(sealedFields) });
+        failing.route.messageRepo.count.mockRejectedValue(new Error("count down"));
+        await expect(failing.route.assembleRaw("m1", input, user)).resolves.toBeDefined();
+        expect(failing.route._objectFactory.logger.warn).toHaveBeenCalledWith(expect.stringContaining("count down"));
+    });
+
+    it("leaves the search stamp and sanitized render of a draft saved readable alone", async () => {
+        const message = { uid: "m1", version: 0, folderUid: "f1", mailboxUid: "mb1", bodyBlobKey: "bodies/old", sanitizedHtmlBlobKey: "sanitized/m1" };
+        const { route, update } = buildRoute(message, { sealDraft: vi.fn().mockResolvedValue(undefined) });
+        await route.assembleRaw("m1", input, user);
+        expect(update.mock.calls[0][0]).not.toHaveProperty("searchIndexedAt");
+        expect(update.mock.calls[0][0]).not.toHaveProperty("sanitizedHtmlBlobKey");
+        expect(route.blobStore.delete).not.toHaveBeenCalledWith("sanitized/m1");
+    });
+
     it("stores an assemble for sending readable, dropping the draft's sealed state and index entry", async () => {
         const message = { uid: "m1", version: 0, folderUid: "f1", mailboxUid: "mb1", bodyBlobKey: "za/mb1/drafts/old", zeroAccess: {} };
         const sealDraft = vi.fn();
@@ -931,7 +981,7 @@ describe("BaseMailComposeRoute zero-access drafts (mocked collaborators)", () =>
 
         expect(sealDraft).not.toHaveBeenCalled();
         expect(route.blobStore.put).toHaveBeenCalledWith(expect.stringMatching(/^bodies\//), expect.any(Buffer), expect.anything());
-        expect(update.mock.calls[0][0]).toMatchObject({ zeroAccess: null });
+        expect(update.mock.calls[0][0]).toMatchObject({ zeroAccess: null, searchIndexedAt: null });
         expect(removeIndexEntry).toHaveBeenCalledWith(expect.any(String));
     });
 

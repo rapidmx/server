@@ -35,6 +35,8 @@ global:
     # forwards plain HTTP to this Gateway's port 80 (Cloudflare "flexible" SSL, a load balancer's TLS listener), or every request
     # is redirected back to itself in a loop.
     httpRedirect: true
+    # pod passes TLS through to the server unread (a TLSRoute): the Gateway then can't keep /internal/mta off the internet,
+    # so mail.ingestSecret (at least 16 characters, enforced for an inline one) is that endpoint's only protection.
     tlsTermination: gateway
     tlsExtraDnsNames: []
     # Envoy Gateway compresses the API's JSON and the pages' HTML in transit (a BackendTrafficPolicy on this chart's route). The

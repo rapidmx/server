@@ -174,9 +174,10 @@ spec:
   - {{ $openpgpkeyHost | quote }}
   rules:
   # /internal/* (the MTA hand-off API postfix-bridge calls inside the cluster, authenticated by mail.ingestSecret) is
-  # never served publicly: a rule with no backendRefs and no filters answers 404. It shares the server's port with the
+  # not served over this route: a rule with no backendRefs and no filters answers 404. It shares the server's port with the
   # public API, so a NetworkPolicy can't separate the two - this rule, the server's own refusal of /internal requests
-  # that arrive through a proxy (see InternalCallerGuard) and the ingest secret are the protection.
+  # that arrive through a proxy (see InternalCallerGuard) and the ingest secret are the protection. With
+  # tlsTermination: pod, HTTPS bypasses this rule entirely (see the TLSRoute below), leaving only the ingest secret.
   - matches:
     - path:
         type: PathPrefix
@@ -277,6 +278,9 @@ spec:
 # Gateway API's experimental channel (gateway.networking.k8s.io/v1alpha2): the cluster's Gateway API CRDs need that
 # channel installed for this to work. Because Envoy never decrypts this traffic, the HSTS-stripping response-header
 # filter above has no equivalent here - global.gateway.hsts only affects the cors__origins scheme list in this mode.
+# Nor does the /internal 404 rule, and Envoy adds no X-Forwarded-* headers to passed-through bytes, so the server can't tell
+# an internet caller from the in-cluster MTA bridge: /internal/mta is publicly reachable and the ingest secret is its only
+# protection (0_config/mail-ingest-secret.yaml refuses to render a short inline one in this mode).
 apiVersion: gateway.networking.k8s.io/v1alpha2
 kind: TLSRoute
 metadata:

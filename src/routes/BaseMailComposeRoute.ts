@@ -651,6 +651,8 @@ export abstract class BaseMailComposeRoute<M extends Message, A extends Attachme
             from: { address: mailbox.primarySmtpAddress, displayName: fromName, type: RecipientType.TO },
             bodyPreview: toPreview(html),
             hasAttachments: attachmentRecords.length > 0,
+            // A plain assemble always goes out to every recipient: drops a `deliverTo` an earlier assemble-raw stored.
+            envelopeRecipients: null,
         });
     }
 
@@ -668,8 +670,9 @@ export abstract class BaseMailComposeRoute<M extends Message, A extends Attachme
      *
      * In a zero-access mailbox a save (`intent` other than `"send"`) stores `raw` sealed instead (`ZeroAccessWriter.sealDraft()`: a
      * fresh `za/<mailbox>/drafts/` blob, the `[...]` subject and empty preview, `zeroAccess`, and the draft's index entry), so no
-     * plaintext of the draft is kept. Assembling for a send stores it readable and drops the draft's sealed state and index entry,
-     * leaving restapi's Sent Items sealing to start clean. A replaced sealed draft body is deleted, or kept for a hold, like a
+     * plaintext of the draft is kept: a readable sanitized render is dropped, and `searchIndexedAt` is cleared so SearchIndexJob
+     * replaces an earlier readable search document with a metadata-only one. Assembling for a send stores it readable and
+     * drops the draft's sealed state and index entry (re-indexing it too), leaving restapi's Sent Items sealing to start clean. A replaced sealed draft body is deleted, or kept for a hold, like a
      * `bodies/` one.
      */
     private async storeBody(
@@ -694,14 +697,24 @@ export abstract class BaseMailComposeRoute<M extends Message, A extends Attachme
         const wasSealed: boolean = !!(message as any).zeroAccess;
         let bodyBlobKey: string;
         let sealedPatch: Record<string, unknown> = {};
+        const previousSanitizedKey: string | undefined = (message as any).sanitizedHtmlBlobKey ?? undefined;
         if (sealed) {
             bodyBlobKey = sealed.bodyBlobKey;
-            sealedPatch = { subject: sealed.subject, bodyPreview: sealed.bodyPreview, zeroAccess: sealed.zeroAccess };
+            sealedPatch = {
+                subject: sealed.subject,
+                bodyPreview: sealed.bodyPreview,
+                zeroAccess: sealed.zeroAccess,
+                sanitizedHtmlBlobKey: null,
+                // Indexed again, now as metadata only: a draft indexed before the mailbox turned zero-access still has
+                // its readable text in the server-side search document, and ZeroAccessBackfillJob never revisits it.
+                searchIndexedAt: null,
+            };
         } else {
             bodyBlobKey = `${COMPOSED_BODY_PREFIX}${crypto.randomUUID()}`;
             await this.blobStore!.put(bodyBlobKey, raw, { contentType: "message/rfc822" });
             if (wasSealed) {
-                sealedPatch = { zeroAccess: null };
+                // Indexed again from the now-readable body, in place of the sealed metadata-only document.
+                sealedPatch = { zeroAccess: null, searchIndexedAt: null };
             }
         }
 
@@ -728,6 +741,22 @@ export abstract class BaseMailComposeRoute<M extends Message, A extends Attachme
             });
         }
 
+        if (sealed && previousSanitizedKey) {
+            // A readable render of an earlier body; the sealed draft must not leave it behind.
+            try {
+                const references: number = await this.messageRepo!.count(
+                    { sanitizedHtmlBlobKey: `eq(${previousSanitizedKey})` },
+                    { ignoreACL: true, includeDeleted: true },
+                );
+                if (references === 0) {
+                    await this.blobStore!.delete(previousSanitizedKey);
+                }
+            } catch (err: any) {
+                (this._objectFactory as any)?.logger?.warn?.(
+                    `Failed to delete draft ${message.uid}'s readable sanitized body ${previousSanitizedKey}: ${err?.message ?? err}`,
+                );
+            }
+        }
         if (replacesComposedBody && !held) {
             try {
                 const references: number = await this.messageRepo!.count(
