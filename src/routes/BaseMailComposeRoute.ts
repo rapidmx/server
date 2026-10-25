@@ -199,12 +199,13 @@ export function decodeEncodedWords(value: string): string {
  * Trace and authentication headers only a receiving/relaying system may write. A client-composed message carrying one
  * would be relayed with it, and a downstream system - including this server's own ingest for local recipients - could
  * trust it: forged `Authentication-Results` would pass DKIM-aligned checks (iTIP, recalls, ACME), a forged
- * `RapidMX-Key` header would announce a key for the sender, and `X-RapidMX-*` headers are this server's own markers.
+ * `RapidMX-Key` or `Autocrypt` header would announce a key for the sender, and `X-RapidMX-*` headers are this server's own markers.
  */
 function isTrustHeader(name: string): boolean {
     return (
         ["authentication-results", "dkim-signature", "received", "received-spf", "return-path"].includes(name) ||
         name.startsWith("arc-") ||
+        name.startsWith("autocrypt") ||
         name.startsWith("rapidmx-key") ||
         name.startsWith("x-rapidmx-")
     );

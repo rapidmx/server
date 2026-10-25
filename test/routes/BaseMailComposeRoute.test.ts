@@ -624,6 +624,8 @@ describe("assertRawMimeHeadersMatch()", () => {
             "ARC-Authentication-Results: i=1; mx.example.com",
             "RapidMX-Key: addr=alice@example.com",
             "RapidMX-Key-Gossip: addr=bob@example.com",
+            "Autocrypt: addr=alice@example.com; keydata=AAAA",
+            "Autocrypt-Gossip: addr=bob@example.com; keydata=AAAA",
             "X-RapidMX-Spam: no",
         ]) {
             expect(check(["From: alice@example.com", "To: bob@example.com", header]), header).toThrow(/only a receiving or relaying server/);
