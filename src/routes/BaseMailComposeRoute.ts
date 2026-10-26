@@ -665,7 +665,7 @@ export abstract class BaseMailComposeRoute<M extends Message, A extends Attachme
      * ones included, still references it. When the update fails (e.g. a concurrent edit's version conflict) the new
      * blob is deleted instead and the draft keeps its old one.
      *
-     * While the mailbox is under a legal hold the replaced `bodies/` blob is kept, and recorded in the draft's
+     * While the mailbox is under a legal hold the replaced blob (`bodies/`, or the mailbox's own sealed `za/<mailbox>/drafts/` one) is kept, and recorded in the draft's
      * `retainedBodyBlobKeys` by the same version-checked update that sets the new `bodyBlobKey` (restapi's
      * `withRetainedBodyBlobKey()`), so matter exports can still reach it and retention enforcement can clean it up once
      * the hold ends. A draft that already retains `MAX_RETAINED_BODY_BLOB_KEYS` bodies can't be saved again (409).
@@ -679,7 +679,7 @@ export abstract class BaseMailComposeRoute<M extends Message, A extends Attachme
      * cleared), so SearchIndexJob never indexes the readable copy while it waits to be relayed: that would put its plaintext
      * in the server-side search index. A sealed draft saved readable (zero-access
      * no longer active) clears the stamp, so its readable content is indexed. A replaced sealed draft body is deleted,
-     * or kept for a hold, like a `bodies/` one. When a sealed save's update fails, its blob is deleted, and the index entry
+     * or kept and recorded for a hold, like a `bodies/` one. When a sealed save's update fails, its blob is deleted, and the index entry
      * it wrote is removed unless the draft has since gone on to be sent (`losingIndexEntryMayGo()`).
      */
     private async storeBody(

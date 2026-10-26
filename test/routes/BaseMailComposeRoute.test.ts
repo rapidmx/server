@@ -932,6 +932,17 @@ describe("BaseMailComposeRoute zero-access drafts (mocked collaborators)", () =>
         expect(route.blobStore.delete).toHaveBeenCalledWith("za/mb1/drafts/old");
     });
 
+    it("keeps and records the sealed body a save replaces while an open Matter holds the mailbox", async () => {
+        const message = { uid: "m1", version: 0, folderUid: "f1", mailboxUid: "mb1", bodyBlobKey: "za/mb1/drafts/old", zeroAccess: {}, retainedBodyBlobKeys: ["bodies/older"] };
+        const { route, update } = buildRoute(message, { sealDraft: vi.fn().mockResolvedValue(sealedFields) });
+        route.matterRepo.find.mockResolvedValue([{ uid: "mt1", custodianMailboxUids: ["mb1"] }]);
+
+        await route.assembleRaw("m1", input, user);
+
+        expect(update.mock.calls[0][0]).toMatchObject({ bodyBlobKey: "za/mb1/drafts/new", retainedBodyBlobKeys: ["bodies/older", "za/mb1/drafts/old"] });
+        expect(route.blobStore.delete).not.toHaveBeenCalledWith("za/mb1/drafts/old");
+    });
+
     it("re-indexes a draft it seals, retries included, and drops its readable sanitized render, so an earlier plaintext search document is replaced", async () => {
         const message = {
             uid: "m1",
