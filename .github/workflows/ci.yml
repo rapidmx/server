@@ -159,9 +159,58 @@ jobs:
           set +e
           bash ./validate.sh
 
+  # A release pushes the default branch and its tag at the same commit, and each push runs this workflow. Publish only
+  # from the tag's run, once every other job of it has passed and every other run of this workflow for that commit has
+  # finished green: a failed run on either ref (even one that passes when rerun) blocks the release until it is rerun
+  # green and this job is rerun after it.
+  release-gate:
+    runs-on: ubuntu-latest
+    needs: [build, test, test-docker-build, test-helm, test-run-mongo, test-run-sql, validate]
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Require a release tag on the default branch and every other run of its commit green
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          TAG: ${{ github.ref_name }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          if ! git tag --points-at HEAD | grep -qxF "$TAG" || ! git merge-base --is-ancestor HEAD "origin/$DEFAULT_BRANCH"; then
+            echo "::error::Tag $TAG doesn't point at $SHA on $DEFAULT_BRANCH; not publishing."
+            exit 1
+          fi
+          workflow_id=$(gh api "repos/$REPO/actions/runs/$GITHUB_RUN_ID" --jq .workflow_id)
+          url="repos/$REPO/actions/workflows/$workflow_id/runs?head_sha=$SHA&per_page=100"
+          others="[.workflow_runs[] | select(.id != $GITHUB_RUN_ID)]"
+          for attempt in $(seq 1 90); do
+            pending=$(gh api "$url" --jq "$others | map(select(.status != \"completed\")) | length")
+            failed=$(gh api "$url" --jq "$others | map(select(.status == \"completed\" and .conclusion != \"success\")
+              | \"\(.id) (\(.head_branch)): \(.conclusion)\") | join(\", \")")
+            if [ -n "$failed" ]; then
+              echo "::error::Not publishing $TAG: another run of this workflow for $SHA did not succeed: $failed. Rerun it green, then rerun this job."
+              exit 1
+            fi
+            if [ "$pending" = 0 ]; then
+              echo "Every other run of this workflow for $SHA succeeded: $(gh api "$url" --jq "$others | map(\"\(.id) (\(.head_branch))\") | join(\", \")")"
+              exit 0
+            fi
+            sleep 20
+          done
+          echo "::error::Timed out waiting for the other runs of this workflow for $SHA to finish."
+          exit 1
+
   publish-docker-image:
     runs-on: ubuntu-latest
-    needs: test-run-mongo
+    needs: release-gate
     if: startsWith(github.ref, 'refs/tags/')
     permissions:
       contents: read
@@ -212,7 +261,7 @@ jobs:
 
   publish-helm-chart:
     runs-on: ubuntu-latest
-    needs: test-run-mongo
+    needs: release-gate
     if: startsWith(github.ref, 'refs/tags/')
     permissions:
       contents: read
