@@ -1,6 +1,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 ///////////////////////////////////////////////////////////////////////////////
+import { createHash } from "crypto";
 import { ApiError, ObjectDecorators, type JWTUser } from "@rapidrest/core";
 import {
     ACLAction,
@@ -38,6 +39,15 @@ export const RAW_CONTENT_RATE_LIMIT = { maxAttempts: 300, windowSeconds: 60 };
 const rawContentRateLimitKey = (userUid: string): string => `${userUid}|mail-message-raw`;
 
 /**
+ * A short digest of a message's subject for its audit entry, the same as restapi's own (`BaseMessageRoute.ts`
+ * `subjectDigest()`, not exported), so the entries of both correlate: they are readable by every administrator, and a
+ * subject is mail content.
+ */
+function subjectDigest(subject: string | undefined): string {
+    return createHash("sha256").update(`${subject}`).digest("hex").slice(0, 16);
+}
+
+/**
  * Serves a message's raw RFC 5322 MIME source, byte-for-byte — the one thing `@rapidmx/restapi`'s own
  * `GET /:id/content` deliberately never does (see that route's own doc comment: it only ever serves
  * already-sanitized HTML derived from the stored MIME, since rendering raw MIME directly via a browser
@@ -58,7 +68,7 @@ const rawContentRateLimitKey = (userUid: string): string => `${userUid}|mail-mes
  * `KeyLookupRoute`/`MailboxRoute` already use (see server's own `.claude/NOTES.md`).
  *
  * A read by anyone but the mailbox's owner (an admin or a delegate) is audited as `MESSAGE_CONTENT_ACCESSED`, exactly like
- * restapi's own `GET /:id/content`.
+ * restapi's own `GET /:id/content`: the entry carries a digest of the subject, never the subject itself.
  */
 export abstract class BaseMessageRawContentRoute<M extends Message> {
     protected abstract messageClass: any;
@@ -156,7 +166,7 @@ export abstract class BaseMessageRawContentRoute<M extends Message> {
                     targetType: "Message",
                     targetUid: message.uid,
                     mailboxUid: message.mailboxUid,
-                    details: { subject: message.subject, raw: true },
+                    details: { subjectDigest: subjectDigest(message.subject), raw: true },
                 },
                 { req, user },
             );

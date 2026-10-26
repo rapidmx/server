@@ -6,6 +6,7 @@
 // "assembleRaw() Tests (mocked collaborators)" block: the `@Init` hook only builds a repo when one isn't
 // already set, so pre-populating the route's private fields before calling a route method bypasses
 // real DI entirely while still running every real ACL/validation branch this route has.
+import { createHash } from "crypto";
 import nconf from "nconf";
 import config from "../../src/config.mongo.js";
 import { ObjectFactory, RateLimiter } from "@rapidrest/service-core";
@@ -126,8 +127,10 @@ describe("BaseMessageRawContentRoute.raw() Tests (mocked collaborators)", () => 
             targetUid: "m1",
             mailboxUid: "mb1",
             actorUserUid: "u1",
-            details: { subject: "Hello", raw: true },
+            // A digest, as restapi's own content audit records: a subject is mail content, and every administrator can read this.
+            details: { subjectDigest: createHash("sha256").update("Hello").digest("hex").slice(0, 16), raw: true },
         });
+        expect(entry.details).not.toHaveProperty("subject");
         expect(options).toEqual({ ignoreACL: true });
         expect(res.send).toHaveBeenCalled();
     });

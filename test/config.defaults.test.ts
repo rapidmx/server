@@ -17,6 +17,8 @@ import {
     trustedAuthservIdWarning,
     weakIngestSecretWarning,
 } from "../src/config.defaults.js";
+import fs from "fs";
+import path from "path";
 
 type FakeConfigKey = "cookie_secret" | "auth:secret" | "mail:transport:ingest:secret";
 
@@ -206,6 +208,30 @@ describe("isProtectedPluginSettingKey", () => {
             expect(isProtectedPluginSettingKey(key), key).toBe(true);
         }
         expect(isProtectedPluginSettingKey("mail:jobs:eas_device_cleanup:schedule")).toBe(false);
+    });
+
+    it("protects the settings of every job the server and restapi read, so a new core job can't be left off", () => {
+        // Every `mail:jobs:<name>` key in this repo's source and restapi's build: the jobs a plugin's saved settings must
+        // never reconfigure (a plugin's own job, such as activesync's eas_device_cleanup, lives in neither).
+        const sources = [path.resolve(__dirname, "../src"), path.resolve(__dirname, "../node_modules/@rapidmx/restapi/dist")];
+        const jobs = new Set<string>();
+        const scan = (dir: string): void => {
+            for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+                const full = path.join(dir, entry.name);
+                if (entry.isDirectory()) {
+                    scan(full);
+                } else if (/\.(ts|js)$/.test(entry.name) && !entry.name.endsWith(".d.ts")) {
+                    for (const match of fs.readFileSync(full, "utf8").matchAll(/["'`]mail:jobs:([a-z0-9_]+)/g)) {
+                        jobs.add(match[1]);
+                    }
+                }
+            }
+        };
+        sources.forEach(scan);
+        expect(jobs).toContain("zero_access_backfill");
+        for (const job of jobs) {
+            expect(isProtectedPluginSettingKey(`mail:jobs:${job}:schedule`), job).toBe(true);
+        }
     });
 
     it("leaves plugins their own settings", () => {

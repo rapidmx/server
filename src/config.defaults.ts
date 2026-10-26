@@ -267,6 +267,7 @@ export const PROTECTED_PLUGIN_SETTING_KEYS: readonly string[] = [
     "mail:jobs:scan_queue",
     "mail:jobs:scheduled_send",
     "mail:jobs:search_index",
+    "mail:jobs:zero_access_backfill",
     "mail:compose",
     "mail:search",
     "mail:preferences",
