@@ -432,6 +432,9 @@ conf.defaults({
                 // batch_size messages per run across all mailboxes, newest first.
                 schedule: "0 * * * * *",
                 batch_size: 100,
+                // Days a scheduled Outbox message deleted from a zero-access mailbox stays readable (restoring it resumes the send),
+                // counted from the later of its scheduled time and its deletion; after that it is sealed and its schedule cleared.
+                deleted_scheduled_send_days: 30,
             },
             meeting_scheduling: {
                 // How often MeetingSchedulingJob mails invitations, updates and cancellations to a meeting's guests, cron syntax
