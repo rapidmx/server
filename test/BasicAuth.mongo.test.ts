@@ -12,7 +12,7 @@ import * as http from "http";
 import config from "../src/config.mongo.js";
 import { MongoMemoryServer } from "mongodb-memory-server";
 import { JWTUtils, Logger, sleep } from "@rapidrest/core";
-import { ObjectFactory, Server } from "@rapidrest/service-core";
+import { ConnectionManager, ObjectFactory, Server } from "@rapidrest/service-core";
 import { MailboxMongo, PluginMongo } from "@rapidmx/restapi/mongo";
 import { MongoTextSearchProvider } from "@rapidmx/restapi/search";
 import { DevLocalDeliveryTransportMongo } from "../src/dev/DevLocalDeliveryTransportMongo.js";
@@ -31,6 +31,7 @@ describe("Basic sign-in through a real server", () => {
     let port: number;
     /** What the fake auth-server was asked, decoded. */
     const logins: string[] = [];
+    let db: any;
 
     beforeAll(async () => {
         await mongod.start();
@@ -66,6 +67,7 @@ describe("Basic sign-in through a real server", () => {
         server = new Server({ config, basePath: "./src/mongo", logger, objectFactory });
         await server.start();
         await sleep(1000);
+        db = objectFactory.getInstance<ConnectionManager>(ConnectionManager)!.connections.get("mongo")!.db;
     }, 120_000);
 
     afterAll(async () => {
@@ -112,5 +114,31 @@ describe("Basic sign-in through a real server", () => {
         expect([401, 403]).toContain(result.status);
         expect(result.headers["www-authenticate"]).toBeUndefined();
         expect(logins).toHaveLength(0);
+    });
+
+    it("counts every spelling of a mailbox address against its owner, so padding or case can't dodge the per-address limit", async () => {
+        await db.collection("mailbox_mongo").insertOne({
+            uid: "alice-mailbox",
+            version: 1,
+            primarySmtpAddress: "alice@example.com",
+            ownerUserUid: "alice-uid",
+            dateCreated: new Date(),
+            dateModified: new Date(),
+        });
+        logins.length = 0;
+        // `failure_limit` (10) wrong guesses at alice, each spelled differently.
+        const spellings: string[] = Array.from({ length: 10 }, (_, i) => `${" ".repeat(i % 4)}${i % 2 ? "ALICE" : "alice"}@example.com${"\t".repeat(Math.floor(i / 4))}`);
+        expect(new Set(spellings).size).toBe(10);
+        for (const name of spellings) {
+            expect((await localRequest(port, "GET", "/api/mail/mailboxes/domains", { Authorization: basic(name, "wrong") })).status).toBe(401);
+        }
+        // Every one was a login as alice's owner.
+        expect(new Set(logins)).toEqual(new Set(["alice-uid:wrong"]));
+        // An eleventh spelling is turned away by the throttle without asking auth-server. (This route answers the strategy's 429
+        // with its own auth failure status; the message says which it was.)
+        const refused = await localRequest(port, "GET", "/api/mail/mailboxes/domains", { Authorization: basic("  alice@EXAMPLE.com  ", "wrong") });
+        expect(refused.status).not.toBe(200);
+        expect(JSON.parse(refused.body).message).toMatch(/Too many failed sign-in attempts/);
+        expect(logins).toHaveLength(10);
     });
 });

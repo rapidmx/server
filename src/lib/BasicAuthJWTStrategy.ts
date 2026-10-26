@@ -133,7 +133,10 @@ export class BasicAuthJWTStrategy implements AuthStrategy {
     /** Access token per hash of the `Authorization` header that produced it, with when to stop trusting it. */
     private readonly tokens: Map<string, { token: string; until: number }> = new Map();
 
-    /** Failed logins, per client address (`ip:`), per address and lower-cased username (`pair:`) and per username (`name:`), in the current window. */
+    /**
+     * Failed logins, per client address (`ip:`), per address and name (`pair:`) and per name (`name:`), in the current window. The name
+     * is the one the login checks: a mailbox address's owner uid, or else the trimmed, lower-cased username.
+     */
     private readonly failures: Map<string, Failures> = new Map();
 
     private mailboxRepo?: RepoUtils<any>;
@@ -206,11 +209,21 @@ export class BasicAuthJWTStrategy implements AuthStrategy {
         this.trustedList ??= trustedProxyList(this.trustedProxies);
         const resolved: string | undefined = clientAddress(req, this.trustedList);
         const address: string = resolved ? rateLimitAddress(resolved) : "unknown";
-        const name: string = credentials.name.toLowerCase();
+        // Checked before the owner lookup too, so an address already turned away costs no database query.
+        if (this.isThrottled(`ip:${address}`, this.ipFailureLimit)) {
+            throw new ApiError(ApiErrors.AUTH_PERMISSION_FAILURE, 429, "Too many failed sign-in attempts. Try again later.");
+        }
+        // Counted under the account the login actually checks: the login trims and lower-cases a mailbox address and checks its
+        // owner, so " alice@example.com", "ALICE@example.com\t" and the owner's uid are one name here, not a fresh count each.
+        // A lookup that fails (503) happens before anything is counted, so it is never held against the client.
+        const canonical: string = credentials.name.trim().toLowerCase();
+        const owner: string | undefined = canonical.includes("@") ? await this.ownerOf(canonical) : undefined;
+        const name: string = owner?.toLowerCase() ?? canonical;
         const identifiers: Array<[string, number]> = [
             [`ip:${address}`, this.ipFailureLimit],
             [`pair:${address}|${name}`, this.failureLimit],
         ];
+        // Again after the lookup's await, with nothing awaited between this check and the counting below.
         if (identifiers.some(([identifier, limit]) => this.isThrottled(identifier, limit))) {
             throw new ApiError(ApiErrors.AUTH_PERMISSION_FAILURE, 429, "Too many failed sign-in attempts. Try again later.");
         }
@@ -229,7 +242,7 @@ export class BasicAuthJWTStrategy implements AuthStrategy {
         let token: string | undefined;
         let result: AuthResult | undefined;
         try {
-            token = await this.login(req, header, credentials.name, resolved ?? address);
+            token = await this.login(header, credentials.password, owner, resolved ?? address);
             result = token ? await this.verify(req, token) : undefined;
         } catch (err) {
             // auth-server couldn't be asked, which says nothing about the credentials: the attempt isn't held against the client.
@@ -262,12 +275,13 @@ export class BasicAuthJWTStrategy implements AuthStrategy {
         res?.setHeader("WWW-Authenticate", `Basic realm="${this.realm.replace(/["\\]/g, "")}", charset="UTF-8"`);
     }
 
-    /** The access token auth-server gives for these credentials, or `undefined` when it refuses them. Throws when it can't be asked. */
-    private async login(req: HttpRequest, header: string, name: string, address: string): Promise<string | undefined> {
-        const owner: string | undefined = name.includes("@") ? await this.ownerOf(name) : undefined;
+    /**
+     * The access token auth-server gives for these credentials, or `undefined` when it refuses them. Throws when it can't be asked.
+     * `owner`: the uid of the mailbox owner the name was resolved to (`ownerOf()`), checked in its place.
+     */
+    private async login(header: string, password: string, owner: string | undefined, address: string): Promise<string | undefined> {
         // The mailbox's owner is checked, by uid; a username auth-server knows (or a uid) goes as it is.
-        const authorization: string =
-            owner === undefined ? header : `Basic ${Buffer.from(`${owner}:${parseBasicCredentials(header)!.password}`).toString("base64")}`;
+        const authorization: string = owner === undefined ? header : `Basic ${Buffer.from(`${owner}:${password}`).toString("base64")}`;
         let response: Response;
         try {
             response = await this.fetcher(`${this.authServerUrl.replace(/\/+$/, "")}${AUTH_SERVER_LOGIN_PATH}`, {

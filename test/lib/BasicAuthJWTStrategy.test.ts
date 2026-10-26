@@ -334,6 +334,52 @@ describe("BasicAuthJWTStrategy", () => {
             }
         });
 
+        it("counts every spelling of an account the login checks as one name, so whitespace or case variants can't dodge the limits", async () => {
+            config.set("mail:basic_auth:failure_limit", 4);
+            const seen: string[] = [];
+            const fetcher = authServer((name) => {
+                seen.push(name);
+                return { status: 401 };
+            });
+            const basicStrategy = await strategy(fetcher, [{ ownerUserUid: "owner-uid-1" }]);
+            const attempt = (name: string, address = "192.0.2.1") => basicStrategy.authenticate(request("/mapi/emsmdb", { authorization: basic(name, "x") }, address));
+            // The address, padded or cased any way, and the owner's own uid: every one is a login as owner-uid-1.
+            for (const name of [" jp@example.com", "jp@example.com ", "\tJP@Example.com", "owner-uid-1"]) {
+                await attempt(name);
+            }
+            expect(seen).toEqual(["owner-uid-1", "owner-uid-1", "owner-uid-1", "owner-uid-1"]);
+            const failures = (basicStrategy as any).failures;
+            expect(failures.get("pair:192.0.2.1|owner-uid-1").count).toBe(4);
+            expect(failures.get("name:owner-uid-1").count).toBe(4);
+            // So the per-address limit holds for a fifth spelling...
+            await expect(attempt("jp@example.com  ")).rejects.toMatchObject({ status: 429 });
+            expect(fetcher).toHaveBeenCalledTimes(4);
+            // ...and the account's count from every address keeps growing, whichever spelling another address uses.
+            await attempt(" JP@EXAMPLE.COM", "198.51.100.1");
+            expect(failures.get("name:owner-uid-1").count).toBe(5);
+
+            // A username is trimmed and lower-cased too.
+            for (const name of [" jp", "JP\t"]) {
+                await attempt(name, "203.0.113.70");
+            }
+            expect(failures.get("name:jp").count).toBe(2);
+        });
+
+        it("turns away an address over its limit before looking up the mailbox the name belongs to", async () => {
+            config.set("mail:basic_auth:ip_failure_limit", 1);
+            const find = vi.fn(async () => [{ ownerUserUid: "owner-uid-1" }]);
+            const factory: any = { newInstance: vi.fn(async () => ({ find })) };
+            const basicStrategy = await objectFactory.newInstance<BasicAuthJWTStrategy>(BasicAuthJWTStrategy, {
+                args: [jwt, factory, class Mailbox {}, authServer(() => ({ status: 401 }))],
+            });
+            await basicStrategy.authenticate(request("/mapi/emsmdb", { authorization: basic("a@example.com", "x") }));
+            expect(find).toHaveBeenCalledTimes(1);
+            await expect(basicStrategy.authenticate(request("/mapi/emsmdb", { authorization: basic("b@example.com", "x") }))).rejects.toMatchObject({
+                status: 429,
+            });
+            expect(find).toHaveBeenCalledTimes(1);
+        });
+
         it("sends the password on unchanged when it resolves the owner", async () => {
             const fetcher = authServer(() => ({ status: 200, token: tokenFor() }));
             await (await strategy(fetcher, [{ ownerUserUid: "owner-uid-1" }])).authenticate(
@@ -354,6 +400,8 @@ describe("BasicAuthJWTStrategy", () => {
                 args: [jwt, brokenLookup, class Mailbox {}, authServer(() => ({ status: 200, token: tokenFor() }))],
             });
             await expect(lookup.authenticate(request("/mapi/emsmdb", { authorization: basic("a@example.com", "pw") }))).rejects.toMatchObject({ status: 503 });
+            // A lookup that fails is not held against the client either.
+            expect((lookup as any).failures.size).toBe(0);
         });
 
         it("refuses a token auth-server signed with something this server doesn't accept, and a reply with no token", async () => {

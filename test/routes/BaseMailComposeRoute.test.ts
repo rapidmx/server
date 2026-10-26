@@ -1002,6 +1002,61 @@ describe("BaseMailComposeRoute zero-access drafts (mocked collaborators)", () =>
         expect(result.searchIndexedAt).toBe(indexedAt);
     });
 
+    it("stamps a sealed draft whose last save just cleared its search stamp when it is assembled readable for sending, so SearchIndexJob never selects its plaintext", async () => {
+        // The last autosave sealed it, clearing the stamp for its metadata-only re-index, and the send follows before SearchIndexJob runs.
+        const message = { uid: "m1", version: 0, folderUid: "f1", mailboxUid: "mb1", bodyBlobKey: "za/mb1/drafts/old", zeroAccess: {}, ...SEARCH_REINDEX };
+        const target = vi.fn();
+        const { route, update } = buildRoute(message, { sealDraft: vi.fn(), removeIndexEntry: vi.fn().mockResolvedValue(undefined), target });
+        const before = Date.now();
+
+        const result = await route.assembleRaw("m1", { ...input, intent: "send" }, user);
+
+        expect(update.mock.calls[0][0]).toMatchObject({ zeroAccess: null, searchIndexedAt: expect.any(Date) });
+        expect(result.searchIndexedAt.getTime()).toBeGreaterThanOrEqual(before);
+        // A sealed draft is in a zero-access mailbox by definition: no policy lookup needed.
+        expect(target).not.toHaveBeenCalled();
+    });
+
+    it("stamps a never-sealed draft assembled for sending in a mailbox where zero-access is active, and only there", async () => {
+        const message = { uid: "m1", version: 0, folderUid: "f1", mailboxUid: "mb1", bodyBlobKey: "bodies/old", searchIndexedAt: null };
+
+        const active = buildRoute(message, { target: vi.fn().mockResolvedValue({ key: {} }) });
+        await active.route.assembleRaw("m1", { ...input, intent: "send" }, user);
+        expect(active.route.zeroAccessWriter.target).toHaveBeenCalledWith(mailbox);
+        expect(active.update.mock.calls[0][0].searchIndexedAt).toBeInstanceOf(Date);
+        // It never had a sealed state or index entry to drop.
+        expect(active.update.mock.calls[0][0]).not.toHaveProperty("zeroAccess");
+
+        // Zero-access not active, or no writer at all: left for SearchIndexJob to index as before.
+        for (const writer of [{ target: vi.fn().mockResolvedValue(undefined) }, undefined]) {
+            const { route, update } = buildRoute(message, writer as any);
+            await route.assembleRaw("m1", { ...input, intent: "send" }, user);
+            expect(update.mock.calls[0][0]).not.toHaveProperty("searchIndexedAt");
+        }
+
+        // A save never stamps (a readable save means zero-access is off), and a draft already stamped keeps its stamp without a lookup.
+        const save = buildRoute(message, { sealDraft: vi.fn().mockResolvedValue(undefined), target: vi.fn() });
+        await save.route.assembleRaw("m1", input, user);
+        expect(save.update.mock.calls[0][0]).not.toHaveProperty("searchIndexedAt");
+        expect(save.route.zeroAccessWriter.target).not.toHaveBeenCalled();
+        const indexedAt = new Date("2026-10-01T00:00:00Z");
+        const stamped = buildRoute({ ...message, searchIndexedAt: indexedAt }, { target: vi.fn() });
+        const result = await stamped.route.assembleRaw("m1", { ...input, intent: "send" }, user);
+        expect(stamped.update.mock.calls[0][0]).not.toHaveProperty("searchIndexedAt");
+        expect(result.searchIndexedAt).toBe(indexedAt);
+        expect(stamped.route.zeroAccessWriter.target).not.toHaveBeenCalled();
+    });
+
+    it("fails a send-assemble whose zero-access lookup fails before storing a readable body", async () => {
+        const message = { uid: "m1", version: 0, folderUid: "f1", mailboxUid: "mb1", bodyBlobKey: "bodies/old" };
+        const { route, update } = buildRoute(message, { target: vi.fn().mockRejectedValue(new Error("policy down")) });
+
+        await expect(route.assembleRaw("m1", { ...input, intent: "send" }, user)).rejects.toThrow("policy down");
+
+        expect(route.blobStore.put).not.toHaveBeenCalled();
+        expect(update).not.toHaveBeenCalled();
+    });
+
     it("removes the index entry a sealed save wrote when its update loses to a concurrent save or send (409)", async () => {
         const message = { uid: "m1", version: 0, folderUid: "f1", mailboxUid: "mb1", bodyBlobKey: "za/mb1/drafts/old", zeroAccess: {} };
         // The mailbox's index entries, as `sealDraft()` (replace) and `removeIndexEntry()` leave them.
