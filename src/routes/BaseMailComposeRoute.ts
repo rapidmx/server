@@ -679,8 +679,10 @@ export abstract class BaseMailComposeRoute<M extends Message, A extends Attachme
      * cleared), so SearchIndexJob never indexes the readable copy while it waits to be relayed: that would put its plaintext
      * in the server-side search index. A sealed draft saved readable (zero-access
      * no longer active) clears the stamp, so its readable content is indexed. A replaced sealed draft body is deleted,
-     * or kept and recorded for a hold, like a `bodies/` one. When a sealed save's update fails, its blob is deleted, and the index entry
-     * it wrote is removed unless the draft has since gone on to be sent (`losingIndexEntryMayGo()`).
+     * or kept and recorded for a hold, like a `bodies/` one. A sealed save writes the draft's index entry only once its update has won
+     * (`sealDraft()`'s `deferIndex`, `writeDraftIndex()`), so a save that loses never touches the entry the winner, or restapi's
+     * backfill, wrote: its failure deletes only the fresh blob it stored. A readable save of a draft that was sealed brings its put-off
+     * attachments forward for extraction (`extractAttachmentsNow()`).
      */
     private async storeBody(
         message: M,
@@ -700,7 +702,9 @@ export abstract class BaseMailComposeRoute<M extends Message, A extends Attachme
         const retained: Record<string, unknown> = held ? { retainedBodyBlobKeys: withRetainedBodyBlobKey(message, previousKey) } : {};
 
         const sealed: ZeroAccessSealedFields | undefined =
-            intent !== "send" ? await this.zeroAccessWriter?.sealDraft(mailbox, raw, message.uid, new Date()) : undefined;
+            intent !== "send"
+                ? await this.zeroAccessWriter?.sealDraft(mailbox, raw, message.uid, new Date(), { deferIndex: true })
+                : undefined;
         const wasSealed: boolean = !!(message as any).zeroAccess;
         let bodyBlobKey: string;
         let sealedPatch: Record<string, unknown> = {};
@@ -750,24 +754,21 @@ export abstract class BaseMailComposeRoute<M extends Message, A extends Attachme
                 { user, ignoreACL: true },
             );
         } catch (err) {
+            // Only this save's fresh blob: a sealed save that loses has written no index entry (`deferIndex`).
             await this.blobStore!.delete(bodyBlobKey).catch(() => undefined);
-            if (sealed && (await this.losingIndexEntryMayGo(message, mailbox))) {
-                // `sealDraft()` already replaced the draft's index entry with one for this body, which the draft never
-                // got (a concurrent sealed save won). Left in place it would stand in for the winner's content; the
-                // winner's next save writes a fresh one.
-                await this.zeroAccessWriter?.removeIndexEntry(sealed.indexEntryUid).catch((removeErr: any) => {
-                    (this._objectFactory as any)?.logger?.warn?.(
-                        `Failed to remove the zero-access index entry of draft ${message.uid} after a failed save: ${removeErr?.message ?? removeErr}`,
-                    );
-                });
-            }
             throw err;
+        }
+        if (sealed) {
+            await this.writeDraftIndex(message, sealed);
         }
         if (!sealed && wasSealed) {
             // Readable now, for the send: the sealed draft's index entry would otherwise stand in for the Sent Items copy's own.
             await this.zeroAccessWriter?.removeIndexEntry(zeroAccessIndexEntryUid(message.uid)).catch((err: any) => {
                 (this._objectFactory as any)?.logger?.warn?.(`Failed to remove the zero-access index entry of draft ${message.uid}: ${err?.message ?? err}`);
             });
+            if (intent !== "send") {
+                await this.extractAttachmentsNow(updated);
+            }
         }
 
         if (sealed && previousSanitizedKey) {
@@ -804,30 +805,53 @@ export abstract class BaseMailComposeRoute<M extends Message, A extends Attachme
     }
 
     /**
-     * Whether the index entry a sealed save wrote may be removed after its update failed, judged by what the draft is now.
-     * The entry shares its uid with the Sent Items copy's (`zeroAccessIndexEntryUid()` of the same message), and restapi's
-     * Sent Items seal keeps an entry that already exists. So once the draft was assembled readable for a send, or already
-     * filed as the sealed Sent copy, this save's entry is the only one the sent message will get (nothing re-indexes a
-     * sealed message): a near-identical entry is kept rather than none. It goes when the draft is gone, when a sealed save
-     * won (the winner's next save writes its own), or when zero-access is no longer active for the mailbox. A failed
-     * lookup keeps it: a stale entry is replaced by the next sealed save, a missing one for a Sent copy never is.
+     * Writes the index entry of a draft whose sealed save just won its update (`sealDraft()`'s deferred `writeIndex()`), replacing the
+     * one it had - only while the row still points at this save's blob, as restapi's `ZeroAccessBackfillJob.writeDraftIndex()` does: a
+     * later save, the backfill or a send that has moved the draft on since writes or drops the entry itself, and this one must not
+     * stand in for it. Best effort (logged): the save is stored, and a draft left with an older entry gets a fresh one at its next save.
      */
-    private async losingIndexEntryMayGo(message: M, mailbox: X): Promise<boolean> {
+    private async writeDraftIndex(message: M, sealed: ZeroAccessSealedFields): Promise<void> {
         try {
-            const current: any = await this.messageRepo!.findOne(message.uid, { ignoreACL: true });
-            if (!current) {
-                return true;
+            const current: any = await this.messageRepo!.findOne(message.uid, { ignoreACL: true, includeDeleted: true, skipCache: true });
+            if (current?.bodyBlobKey === sealed.bodyBlobKey) {
+                await sealed.writeIndex?.();
             }
-            const key: unknown = current.bodyBlobKey;
-            if (current.zeroAccess) {
-                return typeof key === "string" && key.startsWith(zeroAccessDraftBlobPrefix(message.mailboxUid));
-            }
-            return !(await this.zeroAccessWriter!.target(mailbox));
         } catch (err: any) {
             (this._objectFactory as any)?.logger?.warn?.(
-                `Could not tell whether draft ${message.uid}'s zero-access index entry outlived a failed save; keeping it: ${err?.message ?? err}`,
+                `Failed to write the zero-access index entry of draft ${message.uid} after a sealed save: ${err?.message ?? err}`,
             );
-            return false;
+        }
+    }
+
+    /**
+     * Brings the attachments of a draft just saved readable after being sealed forward for extraction: restapi's
+     * `AttachmentExtractionJob` puts a sealed draft's attachment off for as long as it is old (up to a day), so without this a
+     * long-sealed draft saved readable once zero-access is off would wait that long for its attachments' text. Only rows put off
+     * that way (no text, no failed attempt, due later) are moved, each version-checked so an extraction stamp that lands meanwhile
+     * wins. Best effort (logged): the job reaches them at their own time anyway.
+     */
+    private async extractAttachmentsNow(message: M): Promise<void> {
+        try {
+            const now: Date = new Date();
+            const rows: A[] = await this.attachmentRepo!.find({ messageUid: message.uid }, { ignoreACL: true, limit: 1000 });
+            for (const row of rows as any[]) {
+                const next: Date | null = row.extractionNextAttemptAt ? new Date(row.extractionNextAttemptAt) : null;
+                if (row.extractedTextBlobKey || row.extractionAttempts !== 0 || !next || !(next.getTime() > now.getTime())) {
+                    continue;
+                }
+                const existing: A = row instanceof BaseEntity ? row : new this.attachmentClass(row);
+                await this.attachmentRepo!.update({ uid: row.uid, version: row.version, extractionNextAttemptAt: now } as any, existing, {
+                    ignoreACL: true,
+                }).catch((err: any) => {
+                    (this._objectFactory as any)?.logger?.warn?.(
+                        `Could not bring attachment ${row.uid} of draft ${message.uid} forward for extraction: ${err?.message ?? err}`,
+                    );
+                });
+            }
+        } catch (err: any) {
+            (this._objectFactory as any)?.logger?.warn?.(
+                `Could not bring draft ${message.uid}'s attachments forward for extraction: ${err?.message ?? err}`,
+            );
         }
     }
 
