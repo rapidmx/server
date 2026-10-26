@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.45] - 2026-10-26
+
+### Changed
+- Mount the OpenPGP Web Key Directory at /.well-known/openpgpkey
+- Route and certify the openpgpkey.<global.domain> host in the Helm chart, the Web Key Directory advanced-method host OpenPGP clients look keys up on
+- Accept deliverTo on assemble-raw, restricting which of a draft's recipients its copy is relayed to
+- Re-index a draft compose seals and drop its readable sanitized render, so a search document indexed before zero-access no longer keeps its plaintext
+- Re-index a sealed draft assembled readable for sending
+- Clear envelopeRecipients on a plain assemble, so a draft re-sent after a failed mixed-format send goes to every recipient
+- Refuse to render a short inline ingest secret with tlsTermination: pod, where /internal/mta is reachable from the internet, and document that mode's exposure in the chart
+- Refuse a client-composed Autocrypt or Autocrypt-Gossip header on assemble-raw, as the RapidMX-Key header already is
+- Keep a sealed draft's search stamp when it is assembled readable for sending, so SearchIndexJob never indexes its plaintext while it waits to be relayed
+- Keep a losing sealed draft save's zero-access index entry once the draft has been assembled for sending or filed as the sealed Sent Items copy, which shares its uid, so the sent message keeps an entry
+- Clear the search stamp of a sealed draft saved readable once zero-access is no longer active, so its subject and body are indexed
+- Send a draft that compose seals, or saves readable once zero-access is off, back to the search index with its retries reset, so one whose indexing retries ran out is indexed again
+- Stamp a draft assembled readable for sending from a zero-access mailbox when its search stamp is clear, as every sealed autosave leaves it, so SearchIndexJob never indexes its plaintext while it waits to be relayed
+- Key the Basic sign-in pair and name throttles on the account the login checks, the trimmed lower-cased name or the mailbox owner's uid, so whitespace, case or uid spellings of one account share its limits
+- Note that restapi's metadata-only indexing of readable zero-access mail closed the cancel-scheduled-send search gap, and that its Outbox re-index on send replaces an older readable document a send-assemble's stamp would have kept
+- Record a digest of the subject, as restapi's audits do, rather than the subject itself in the raw-content MESSAGE_CONTENT_ACCESSED audit entry
+- Protect mail:jobs:zero_access_backfill from plugin settings, and test that every core job's mail:jobs key is protected
+- Test that a compose save keeps and records in retainedBodyBlobKeys the sealed draft body it replaces while an open Matter holds the mailbox, as restapi now accepts the mailbox's own za/<mailbox>/drafts/ keys
+- Write a sealed compose save's draft index entry only after its version-checked update wins, and only while the row still names its blob, so a losing save deletes just its fresh blob and the backfill's deferred write can't be undercut
+- Bring a sealed draft's put-off attachments forward for extraction when it is saved readable, version-checked and best effort
+- Document mail:jobs:zero_access_backfill:deleted_scheduled_send_days (30), how long a scheduled Outbox message deleted from a zero-access mailbox stays readable so restoring it resumes the send
+- Force the fixed versions of the dependencies the audit flags through resolutions, dompurify's included, and ignore only node-forge's unfixed advisory 1240912 until acme-client or node-forge ships a fix
+- Describe this release's changes in the release notes
+- Build against @rapidmx/restapi ^0.35.0 and @rapidmx/web-client ^0.37.0
+- Publish a release tag's image and chart only once every other job of its run and every other CI run of its commit has finished green
+
+### Removed
+- Removed the zero-access index entry a sealed draft save wrote when its version-checked update fails, so a losing save's entry never stands in for the draft or its Sent Items copy
+
+
 ## [1.0.0-beta.44] - 2026-10-24
 
 ### Added
@@ -1245,7 +1278,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed test from .dockerignore, fixing yarn build's lint step failing outright when the build context is missing the test directory its tsconfig.eslint.json requires
 - Removed docker-compose.mail.yml's partial server: service block, since include: only supports merging resources that don't already exist in the including file and hard-errors ("services.server conflicts with imported resource") on a Compose version newer than whatever this had only ever been tested against locally
 
-[Unreleased]: https://github.com/rapidmx/server/compare/v1.0.0-beta.44...HEAD
+[Unreleased]: https://github.com/rapidmx/server/compare/v1.0.0-beta.45...HEAD
+[1.0.0-beta.45]: https://github.com/rapidmx/server/compare/v1.0.0-beta.44...v1.0.0-beta.45
 [1.0.0-beta.44]: https://github.com/rapidmx/server/compare/v1.0.0-beta.43...v1.0.0-beta.44
 [1.0.0-beta.43]: https://github.com/rapidmx/server/compare/v1.0.0-beta.42...v1.0.0-beta.43
 [1.0.0-beta.42]: https://github.com/rapidmx/server/compare/v1.0.0-beta.41...v1.0.0-beta.42

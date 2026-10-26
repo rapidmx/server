@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v1.0.0-beta.45
+
 ### Added
 
 - **OpenPGP interoperability** (`@rapidmx/restapi` 0.35, `@rapidmx/web-client` 0.37) - end-to-end encrypted mail now also works with Proton Mail, Thunderbird, GnuPG and other OpenPGP users. S/MIME stays RapidMX's own format and is preferred whenever a recipient has a certificate. Each mailbox gets an OpenPGP key (v4 Curve25519 by default, which GnuPG reads; v6 keys are accepted too) on its user's next unlock in the web client. A message to recipients who need different formats goes out as one encrypted copy per format, each relayed only to its own recipients, never as a plaintext copy. Users can advertise a preferred format for themselves and choose one per contact. The encryption policy gains an "Allow OpenPGP" switch (`mail:encryption:openpgp_allowed`, default on).
