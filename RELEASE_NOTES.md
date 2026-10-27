@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v1.0.0-beta.46
+
 ### Changed
 
 - **The OpenPGP Web Key Directory host `openpgpkey.<global.domain>` is now opt-in**: chart value `mail.wkd.openpgpkeyHost.enabled` (default `false`), installer `--openpgpkey-host true` (or `OPENPGPKEY_HOST=true`). Off, the name is on no Certificate, listener or route; the server still answers `/.well-known/openpgpkey` on `host` (the WKD direct method). On, the chart renders what v1.0.0-beta.45 did. **Operators who upgraded to beta.45:** either add the `openpgpkey.<domain>` record (a `CNAME` to `host`, or `A`/`AAAA` to the Gateway's address) and set the value to `true`, or leave it off. With `--gateway shared` the installer adds the `http-openpgpkey`/`https-openpgpkey` listeners to its Gateway only when it is on, and its final message now lists the DNS records each host needs.

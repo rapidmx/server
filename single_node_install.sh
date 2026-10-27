@@ -13,7 +13,7 @@ AUTH_HOST=${AUTH_HOST:-auth}
 # is never issued. The server answers the Web Key Directory on $SERVER_HOST either way.
 OPENPGPKEY_HOST=${OPENPGPKEY_HOST:-false}
 TLS=true
-VERSION="1.0.0-beta.45"
+VERSION="1.0.0-beta.46"
 NAMESPACE="rapidmx"
 # How the release is exposed through Envoy Gateway. "shared": this script creates one Gateway ($GATEWAY_NAME in
 # $GATEWAY_NAMESPACE) with a listener per host and the chart's routes attach to it. "chart": the chart creates its own

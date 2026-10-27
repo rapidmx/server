@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.46] - 2026-10-27
+
+### Added
+- Added the installer option --openpgpkey-host (OPENPGPKEY_HOST) that sets mail.wkd.openpgpkeyHost.enabled and adds the http-openpgpkey and https-openpgpkey listeners to the shared Gateway only when on
+- Added helm render tests that the openpgpkey host is absent when off and certified, listened for and routed when on in every Gateway mode
+
+### Changed
+- Make the OpenPGP Web Key Directory host openpgpkey.<global.domain> opt-in with the chart value mail.wkd.openpgpkeyHost.enabled (default false), leaving it off every Certificate, listener and route unless enabled
+- List the DNS records each host needs in the installer's final message, warning that the openpgpkey record must exist before the host is enabled
+- Describe the opt-in openpgpkey host in the README and release notes
+
+### Fixed
+- Fixed upgrades timing out waiting on a certificate that covered openpgpkey.<global.domain> where that name had no DNS record
+
 ## [1.0.0-beta.45] - 2026-10-26
 
 ### Changed
@@ -1278,7 +1292,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed test from .dockerignore, fixing yarn build's lint step failing outright when the build context is missing the test directory its tsconfig.eslint.json requires
 - Removed docker-compose.mail.yml's partial server: service block, since include: only supports merging resources that don't already exist in the including file and hard-errors ("services.server conflicts with imported resource") on a Compose version newer than whatever this had only ever been tested against locally
 
-[Unreleased]: https://github.com/rapidmx/server/compare/v1.0.0-beta.45...HEAD
+[Unreleased]: https://github.com/rapidmx/server/compare/v1.0.0-beta.46...HEAD
+[1.0.0-beta.46]: https://github.com/rapidmx/server/compare/v1.0.0-beta.45...v1.0.0-beta.46
 [1.0.0-beta.45]: https://github.com/rapidmx/server/compare/v1.0.0-beta.44...v1.0.0-beta.45
 [1.0.0-beta.44]: https://github.com/rapidmx/server/compare/v1.0.0-beta.43...v1.0.0-beta.44
 [1.0.0-beta.43]: https://github.com/rapidmx/server/compare/v1.0.0-beta.42...v1.0.0-beta.43
