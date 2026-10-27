@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Changed
+
+- **The OpenBao the installers set up listens with TLS only and keeps no long-lived token.** `single_node_install.sh` and `deploy/aws/bootstrap.sh` have cert-manager issue its listener certificate from a CA of its own (a year, renewed 30 days ahead, reloaded by a sidecar sending OpenBao `SIGHUP`, no restart), copy that CA into `<fullname>-openbao-ca`, and enable OpenBao's `kubernetes` auth method with one role per client: `<fullname>-eso` (External Secrets, as the new `<fullname>-openbao-eso` ServiceAccount), `<fullname>-server` (the server: sign and revoke on the PKI role, write but never read the DNS providers' credentials) and `<fullname>-dns-controller`. Re-running the installer on an existing install moves it over and, once External Secrets and the server log in the new way, revokes the two periodic tokens earlier versions made and deletes their Secrets. The address is now `https://openbao.openbao.svc:8200`.
+- **A vault of your own must be https** (`OPENBAO_ADDRESS`/`RAPIDMX_OPENBAO_ADDRESS`; plain http only to the host itself); `OPENBAO_CA_FILE`/`RAPIDMX_OPENBAO_CA_FILE` names its CA.
+- **Chart:** `global.openbao.caConfigMap` (External Secrets' `caProvider`, and the server's `mail:*:openbao:ca_file`), `global.openbao.auth.kubernetes.audience`, and `openbao.auth` for the server's own OpenBao identity (a projected ServiceAccount token for the audience `openbao`, refused for a pod running as the namespace's `default` ServiceAccount). `global.openbao.address` defaults to https. `openbao.pki.tokenSecret` is gone: the server's PKI client logs in with Kubernetes auth (`mail:pki:openbao:auth:*`) or, for a vault prepared by hand, with `openbao.auth.method: token` and the static token under the key `token` of the Secret `openbao.auth.tokenSecret`, and verifies the vault with `mail:pki:openbao:ca_file`. The chart refuses an OpenBao token in `service.config`, whose ConfigMap is plaintext.
+
+### Fixed
+
+- **`global.openbao.enabled=true` rendered only with `openbao.pki.*` set**: without them the chart failed with a nil pointer on `.Values.openbao.pki`.
+
 ## v1.0.0-beta.46
 
 ### Changed

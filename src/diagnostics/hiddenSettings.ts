@@ -25,6 +25,7 @@ export const CORE_HIDDEN_SETTINGS: readonly string[] = [
     "mail:scan:spam:rspamd:controller_password",
     "mail:search:opensearch:password",
     "mail:pki:openbao:token",
+    "mail:secrets:openbao:token",
     "giphy:api_key",
     "system:plugins:registry_token",
     // Static object-store credentials for a deployment that sets them (backend "s3"/SES, not the default "local"): opaque

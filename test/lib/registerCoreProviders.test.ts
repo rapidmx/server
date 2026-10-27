@@ -14,7 +14,7 @@ import {
     LocalX509CertificateAuthority,
     ManualSigningCertificateEnrollment,
     NodeDnsResolver,
-    OpenBaoPkiCertificateAuthority,
+    NullSecretStore,
     Rfc8823AcmeSigningCertificateEnrollment,
     S3BlobStore,
 } from "@rapidmx/restapi";
@@ -22,6 +22,7 @@ import { DohDnssecDnsResolver } from "../../src/dns/DohDnssecDnsResolver.js";
 import { DevBypassAvScanProvider, DevBypassSpamScanProvider } from "../../src/dev/DevScanBypass.js";
 import { DevLocalDeliveryTransportMongo } from "../../src/dev/DevLocalDeliveryTransportMongo.js";
 import { TieredRateLimiter } from "../../src/lib/TieredRateLimiter.js";
+import { OpenBaoClientPkiCertificateAuthority } from "../../src/openbao/OpenBaoClientPkiCertificateAuthority.js";
 import { registerCoreProviders } from "../../src/lib/registerCoreProviders.js";
 
 class FakeSearchProvider {}
@@ -60,6 +61,7 @@ describe("registerCoreProviders", () => {
                 "DkimKeyProvider",
                 "EncryptionCertificateAuthority",
                 "SigningCertificateEnrollment",
+                "SecretStore",
             ].sort(),
         );
     });
@@ -69,6 +71,8 @@ describe("registerCoreProviders", () => {
         expect(registered.RateLimiter).toBe(TieredRateLimiter);
         expect(registered.SearchProvider).toBe(FakeSearchProvider);
         expect(registered.DkimKeyProvider).toBe(FsDkimKeyProvider);
+        // Until its OpenBao and Kubernetes backends exist: credentials are refused, plugin secret settings stay on their rows.
+        expect(registered.SecretStore).toBe(NullSecretStore);
     });
 
     it("resolves every config-driven backend to its documented default when unset", () => {
@@ -90,7 +94,8 @@ describe("registerCoreProviders", () => {
         );
         expect(registered.BlobStore).toBe(S3BlobStore);
         expect(registered.DnsResolver).toBe(DohDnssecDnsResolver);
-        expect(registered.EncryptionCertificateAuthority).toBe(OpenBaoPkiCertificateAuthority);
+        // restapi's OpenBao PKI CA, talking through the server's client (a CA bundle, Kubernetes auth).
+        expect(registered.EncryptionCertificateAuthority).toBe(OpenBaoClientPkiCertificateAuthority);
         expect(registered.SigningCertificateEnrollment).toBe(Rfc8823AcmeSigningCertificateEnrollment);
     });
 

@@ -8,11 +8,12 @@ import {
     LocalX509CertificateAuthority,
     ManualSigningCertificateEnrollment,
     NodeDnsResolver,
-    OpenBaoPkiCertificateAuthority,
+    NullSecretStore,
     Rfc8823AcmeSigningCertificateEnrollment,
     S3BlobStore,
 } from "@rapidmx/restapi";
 import { DohDnssecDnsResolver } from "../dns/DohDnssecDnsResolver.js";
+import { OpenBaoClientPkiCertificateAuthority } from "../openbao/OpenBaoClientPkiCertificateAuthority.js";
 import type { DevLocalDeliveryTransport } from "../dev/DevLocalDeliveryTransport.js";
 import { registerMailProviders, type ClassRegistry } from "../dev/registerMailProviders.js";
 import { selectConfigDrivenBackend } from "./configDrivenBackend.js";
@@ -107,9 +108,10 @@ export function registerCoreProviders(objectFactory: ClassRegistry, config: Core
     // EncryptionCertificateAuthority backend is config-driven (mail:pki:backend) rather than hardcoded like
     // every provider above, since an admin needs to pick this per-deployment without a code change: "local"
     // (default) is zero-infra (LocalX509CertificateAuthority persists its CA key/cert to mail:pki:local_ca:dir),
-    // "openbao" delegates to a self-hosted OpenBao/Vault PKI mount (mail:pki:openbao:*) for production use.
+    // "openbao" delegates to a self-hosted OpenBao/Vault PKI mount (mail:pki:openbao:*) for production use: restapi's CA over the server's
+    // OpenBao client, which verifies the listener with mail:pki:openbao:ca_file and can log in with the pod's ServiceAccount token.
     const caBackend: string = (config.get("mail:pki:backend") as string) || "local";
-    objectFactory.register(caBackend === "openbao" ? OpenBaoPkiCertificateAuthority : LocalX509CertificateAuthority, "EncryptionCertificateAuthority");
+    objectFactory.register(caBackend === "openbao" ? OpenBaoClientPkiCertificateAuthority : LocalX509CertificateAuthority, "EncryptionCertificateAuthority");
     // SigningCertificateEnrollment backend is config-driven (mail:pki:signing_enrollment:backend) rather
     // than hardcoded, same pattern as mail:pki:backend above: "manual" (default) is the CA-agnostic,
     // human-in-the-loop flow (mail:pki:manual_enrollment:store_path); "rfc8823" automates public-CA
@@ -125,4 +127,8 @@ export function registerCoreProviders(objectFactory: ClassRegistry, config: Core
             ),
         "SigningCertificateEnrollment",
     );
+    // Where the credentials an administrator saves in the console live (DNS providers, Integrations, plugin secret settings). The
+    // null store until the OpenBao and Kubernetes-Secret backends exist: it refuses credentials, and plugin secret settings stay on
+    // their rows as before (restapi's routes resolve "SecretStore" and fail to construct without it).
+    objectFactory.register(NullSecretStore, "SecretStore");
 }

@@ -473,6 +473,18 @@ conf.defaults({
                 token: "",
                 timeout_ms: 5_000,
                 serial_map_path: "/var/lib/rapidmx/pki/openbao-serials.json",
+                // A PEM bundle to verify OpenBao's listener with, instead of the system's trust store: the CA the installer copies into the
+                // release's namespace (the chart mounts it at /etc/rapidmx/openbao-ca/ca.crt). Read on every request.
+                ca_file: "",
+                // How the client logs in. "token" (default) sends `token` above; "kubernetes" logs in to OpenBao's kubernetes auth method
+                // (mounted at mount_path) as `role`, with the pod's projected ServiceAccount token at token_file (audience "openbao"),
+                // and logs in again before the short-lived OpenBao token it gets expires. The chart sets these with openbao.auth.
+                auth: {
+                    method: "token",
+                    role: "",
+                    mount_path: "kubernetes",
+                    token_file: "/var/run/secrets/openbao/token",
+                },
             },
             // SigningCertificateEnrollment backend selection (see server.sql.ts) plus that backend's
             // own config. `signing_enrollment.backend: "manual"` (default) needs only
@@ -501,6 +513,25 @@ conf.defaults({
                 // How long a request may wait on the CA before it is failed (`order-expired`) when the CA did not say
                 // when its ACME order expires.
                 max_pending_hours: 168,
+            },
+        },
+        // The OpenBao the secret store keeps the credentials an administrator saves in the console in (DNS providers, Integrations,
+        // plugin secret settings; the installer's policies cover <kv mount>/<fullname>/integrations). Empty address: no OpenBao
+        // store. The same connection and login settings as pki.openbao above, set by the chart (openbao.auth) to log in as the
+        // installer's <fullname>-server role, which may write DNS credentials but never read them back.
+        secrets: {
+            openbao: {
+                address: "",
+                ca_file: "",
+                // Never commit a real token here - set via the mail__secrets__openbao__token env var.
+                token: "",
+                timeout_ms: 5_000,
+                auth: {
+                    method: "token",
+                    role: "",
+                    mount_path: "kubernetes",
+                    token_file: "/var/run/secrets/openbao/token",
+                },
             },
         },
         // AcmeEnrollmentDriverJobSQL's own schedule/config - registered unconditionally regardless of

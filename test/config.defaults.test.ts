@@ -203,6 +203,13 @@ describe("isProtectedPluginSettingKey", () => {
         }
     });
 
+    it("protects where the server's OpenBao clients connect and log in, and the Integrations settings", () => {
+        // A plugin pointing one at a host of its own would be sent the server's ServiceAccount token on login.
+        for (const key of ["mail:secrets:openbao:address", "mail__secrets__openbao__auth__role", "mail:pki:openbao:ca_file", "integrations:stun:urls"]) {
+            expect(isProtectedPluginSettingKey(key), key).toBe(true);
+        }
+    });
+
     it("still protects the server's own jobs, but not a job a plugin adds", () => {
         for (const key of ["mail:jobs:scan_queue:schedule", "mail:jobs:data_export:schedule", "mail:jobs:scheduled_send"]) {
             expect(isProtectedPluginSettingKey(key), key).toBe(true);

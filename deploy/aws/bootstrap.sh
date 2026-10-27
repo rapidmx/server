@@ -43,8 +43,10 @@
 #   RAPIDMX_STORAGE_CLASS    Storage class for the volumes (default gp3, created here).
 #   RAPIDMX_OPENBAO          "true" (default) installs OpenBao and keeps the release's secrets and its mail encryption
 #                            CA in it; "false" keeps them in Kubernetes Secrets.
-#   RAPIDMX_OPENBAO_ADDRESS  An OpenBao this cluster already runs, used instead of installing one - the kv path, PKI
-#                            mount and token Secrets are then yours to create (see deploy/aws/README.md).
+#   RAPIDMX_OPENBAO_ADDRESS  An OpenBao this cluster already runs (https, unless it is this host), used instead of
+#                            installing one - the kv path, PKI mount and External Secrets' token Secret are then yours to
+#                            create (see deploy/aws/README.md).
+#   RAPIDMX_OPENBAO_CA_FILE  The CA (PEM file) of that OpenBao's listener certificate, when the system doesn't trust it.
 #   RAPIDMX_CLUSTER_NAME     The kubernetes.io/cluster/<name> tag on this instance and its subnets (default rapidmx).
 #   ENVOY_GATEWAY_VERSION    Envoy Gateway release (default v1.9.1).
 #   EXTERNAL_SECRETS_VERSION The External Secrets release (default 2.10.0), which delivers the chart's OpenBao-held
@@ -73,8 +75,19 @@ OPENBAO_VERSION=${OPENBAO_VERSION:-0.29.4}
 OPENBAO_NAMESPACE=${OPENBAO_NAMESPACE:-openbao}
 OPENBAO_IMAGE=${OPENBAO_IMAGE:-openbao/openbao:2.6.2}
 OPENBAO_STORAGE_SIZE=${OPENBAO_STORAGE_SIZE:-1Gi}
+OPENBAO_CA_FILE=${RAPIDMX_OPENBAO_CA_FILE:-}
 OPENBAO_POD=openbao-0
-OPENBAO_LOCAL_ADDRESS=http://127.0.0.1:8200
+# The vault this script installs listens with TLS only, so the `bao` CLI in its pod is pointed at https too (the certificate
+# names 127.0.0.1, and the pod's BAO_CACERT trusts its CA).
+OPENBAO_LOCAL_ADDRESS=https://127.0.0.1:8200
+# The listener's certificate and the CA it is issued from, both made by cert-manager in OpenBao's namespace. The certificate
+# lasts a year and is renewed 30 days ahead; a sidecar in the vault's pod sends OpenBao SIGHUP when it is, which reloads it
+# without sealing anything.
+OPENBAO_TLS_SECRET=openbao-tls
+OPENBAO_CA_SECRET=openbao-ca
+OPENBAO_TLS_DIR=/openbao/userconfig/openbao-tls
+# The audience of the ServiceAccount tokens the release's clients log in to OpenBao with, which every role checks.
+OPENBAO_AUDIENCE=openbao
 # Holds the unseal key and the root token, which is what lets the vault unseal itself after a restart.
 OPENBAO_KEYS_SECRET=openbao-keys
 OPENBAO_KV_MOUNT=${OPENBAO_KV_MOUNT:-secret}
@@ -193,24 +206,318 @@ function gatewayService() {
     -l "gateway.envoyproxy.io/owning-gateway-name=$GATEWAY_NAME,gateway.envoyproxy.io/owning-gateway-namespace=$GATEWAY_NAMESPACE"
 }
 
+# Succeeds when $1 may be the address of a vault this script doesn't install: https, or plain http to this host only.
+function openbaoAddressAllowed() {
+  case "$1" in
+    https://*) return 0;;
+    http://127.0.0.1|http://127.0.0.1:*|http://127.0.0.1/*) return 0;;
+    http://localhost|http://localhost:*|http://localhost/*) return 0;;
+    "http://[::1]"|"http://[::1]:"*|"http://[::1]/"*) return 0;;
+  esac
+  return 1
+}
+
+# The cert-manager objects for OpenBao's listener, all in its namespace: a self-signed CA of its own (ten years, its key kept
+# when cert-manager renews it, so the copy in the release's namespace stays valid) and the listener's certificate from it, for
+# every name the vault is reached at - its Services, its pod, and 127.0.0.1 for the `bao` CLI in the pod.
+function openbaoTlsManifest() {
+  local ns=$OPENBAO_NAMESPACE
+  cat << EOF
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: openbao-selfsigned
+  namespace: $ns
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: $OPENBAO_CA_SECRET
+  namespace: $ns
+spec:
+  isCA: true
+  commonName: OpenBao CA ($ns)
+  secretName: $OPENBAO_CA_SECRET
+  duration: 87600h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Never
+  issuerRef:
+    name: openbao-selfsigned
+    kind: Issuer
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: openbao-ca
+  namespace: $ns
+spec:
+  ca:
+    secretName: $OPENBAO_CA_SECRET
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: $OPENBAO_TLS_SECRET
+  namespace: $ns
+spec:
+  secretName: $OPENBAO_TLS_SECRET
+  duration: 8760h
+  renewBefore: 720h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Always
+  dnsNames:
+    - openbao
+    - openbao.$ns
+    - openbao.$ns.svc
+    - openbao.$ns.svc.cluster.local
+    - openbao-0.openbao-internal
+    - openbao-0.openbao-internal.$ns
+    - openbao-0.openbao-internal.$ns.svc
+    - openbao-0.openbao-internal.$ns.svc.cluster.local
+    - localhost
+  ipAddresses:
+    - 127.0.0.1
+    - "::1"
+  issuerRef:
+    name: openbao-ca
+    kind: Issuer
+EOF
+}
+
+# Has cert-manager issue OpenBao's listener certificate, and waits (up to 5 minutes) until it is there: the vault's pod mounts it.
+function issueOpenbaoCertificate() {
+  kubectl create namespace "$OPENBAO_NAMESPACE" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+  # cert-manager's webhook may not take requests for a moment after it starts.
+  local startTime
+  startTime=`date +%s`
+  until openbaoTlsManifest | kubectl apply -f - >/dev/null; do
+    if [[ $(( `date +%s` - startTime )) -ge 300 ]]; then
+      fail "cert-manager doesn't accept OpenBao's listener certificate."
+    fi
+    sleep 5
+  done
+  kubectl -n "$OPENBAO_NAMESPACE" wait --for=condition=Ready "certificate/$OPENBAO_TLS_SECRET" --timeout=5m >/dev/null \
+    || fail "OpenBao's listener certificate wasn't issued (kubectl -n $OPENBAO_NAMESPACE describe certificate $OPENBAO_TLS_SECRET)."
+}
+
+# The reload sidecar's script: every $INTERVAL seconds (30) it hashes the mounted certificate and key, and when cert-manager has
+# renewed them (the kubelet swaps the Secret volume's files at once) sends SIGHUP to the `bao server` process, which re-reads its
+# listener certificate without sealing. It sees that process because the pod shares one process namespace, and may signal it
+# because it runs as the same user. A change that found no server to signal is tried again on the next round. The server is the
+# process whose first two arguments are `bao` (or a path ending in /bao) and `server`, read as separate arguments: this sidecar's
+# own shell holds the script, "bao server" included, in its command line. It also skips itself and ignores SIGHUP, to be sure.
+function openbaoReloadScript() {
+  cat << 'EOF'
+trap '' HUP
+digest() {
+  [ -s "$TLS_DIR/tls.crt" ] && [ -s "$TLS_DIR/tls.key" ] && cat "$TLS_DIR/tls.crt" "$TLS_DIR/tls.key" | sha256sum
+}
+isBaoServer() {
+  tr '\0' '\n' < "$1/cmdline" 2> /dev/null | {
+    IFS= read -r program && IFS= read -r verb && [ "$verb" = server ] &&
+      case "$program" in bao|*/bao) true;; *) false;; esac
+  }
+}
+loaded=$(digest)
+while sleep "${INTERVAL:-30}"; do
+  current=$(digest) || continue
+  [ "$current" = "$loaded" ] && continue
+  for dir in "${PROC_DIR:-/proc}"/[0-9]*; do
+    [ "${dir##*/}" != "$$" ] && isBaoServer "$dir" || continue
+    if kill -HUP "${dir##*/}"; then
+      echo "Sent OpenBao SIGHUP to reload its renewed listener certificate."
+      loaded=$current
+    fi
+  done
+done
+EOF
+}
+
+# The openbao chart's values: standalone, file storage on an EBS volume, the listener on TLS only with cert-manager's certificate,
+# and the reload sidecar, which runs the vault's own image (nothing new to pull or trust) as the vault's user, read-only, with
+# no capabilities. The sidecar injector is off - External Secrets delivers the values instead.
+function openbaoHelmValues() {
+  cat << EOF
+global:
+  tlsDisable: false
+injector:
+  enabled: false
+server:
+  standalone:
+    enabled: true
+    config: |
+      ui = true
+      listener "tcp" {
+        address = "[::]:8200"
+        cluster_address = "[::]:8201"
+        tls_cert_file = "$OPENBAO_TLS_DIR/tls.crt"
+        tls_key_file = "$OPENBAO_TLS_DIR/tls.key"
+      }
+      storage "file" {
+        path = "/openbao/data"
+      }
+  dataStorage:
+    enabled: true
+    size: $OPENBAO_STORAGE_SIZE
+    storageClass: $STORAGE_CLASS
+  extraVolumes:
+    - type: secret
+      name: $OPENBAO_TLS_SECRET
+  extraEnvironmentVars:
+    BAO_CACERT: $OPENBAO_TLS_DIR/ca.crt
+  shareProcessNamespace: true
+  extraContainers:
+    - name: tls-reload
+      image: $OPENBAO_IMAGE
+      command: ["/bin/sh", "-c"]
+      args:
+        - |
+`openbaoReloadScript | sed 's/^/          /'`
+      env:
+        - name: TLS_DIR
+          value: $OPENBAO_TLS_DIR
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 100
+        runAsGroup: 1000
+        readOnlyRootFilesystem: true
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ["ALL"]
+      resources:
+        requests:
+          cpu: 5m
+          memory: 16Mi
+        limits:
+          memory: 32Mi
+      volumeMounts:
+        - name: userconfig-$OPENBAO_TLS_SECRET
+          mountPath: $OPENBAO_TLS_DIR
+          readOnly: true
+EOF
+}
+
+# The vault's StatefulSet only replaces its pod when the pod is deleted (the chart's OnDelete strategy), so a pod older than the
+# StatefulSet's current revision - after the listener moved to TLS, say - is deleted here and comes back sealed, to be unsealed below.
+function restartOpenbaoIfChanged() {
+  local startTime revision current
+  startTime=`date +%s`
+  until [[ "`kubectl -n "$OPENBAO_NAMESPACE" get statefulset openbao -o jsonpath='{.status.observedGeneration}' 2>/dev/null`" = \
+      "`kubectl -n "$OPENBAO_NAMESPACE" get statefulset openbao -o jsonpath='{.metadata.generation}' 2>/dev/null`" ]]; do
+    if [[ $(( `date +%s` - startTime )) -ge 120 ]]; then
+      break
+    fi
+    sleep 2
+  done
+  revision=`kubectl -n "$OPENBAO_NAMESPACE" get statefulset openbao -o jsonpath='{.status.updateRevision}' 2>/dev/null`
+  current=`kubectl -n "$OPENBAO_NAMESPACE" get pod "$OPENBAO_POD" -o jsonpath='{.metadata.labels.controller-revision-hash}' 2>/dev/null`
+  if [[ -n "$revision" && -n "$current" && "$revision" != "$current" ]]; then
+    log "Restarting OpenBao with its new configuration..."
+    kubectl -n "$OPENBAO_NAMESPACE" delete pod "$OPENBAO_POD" --wait=true >/dev/null
+  fi
+}
+
+# The unsealer: it does nothing while the vault is unsealed, and unseals it within ten seconds of it coming back. It reaches the
+# vault over TLS, trusting only the CA of its listener (the ca.crt of the listener's Secret, without the key beside it).
+function openbaoUnsealerManifest() {
+  cat << EOF
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: openbao-unsealer
+  namespace: $OPENBAO_NAMESPACE
+  labels:
+    app.kubernetes.io/name: openbao-unsealer
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: openbao-unsealer
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: openbao-unsealer
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 100
+        runAsGroup: 1000
+      containers:
+        - name: unsealer
+          image: $OPENBAO_IMAGE
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              while true; do
+                if bao status -format=json 2>/dev/null | tr -d ' ' | grep -q '"sealed":true'; then
+                  if bao operator unseal "\$UNSEAL_KEY" >/dev/null 2>&1; then
+                    echo "Unsealed OpenBao."
+                  else
+                    echo "Could not unseal OpenBao; retrying."
+                  fi
+                fi
+                sleep 10
+              done
+          env:
+            - name: BAO_ADDR
+              value: $OPENBAO_ADDRESS
+            - name: BAO_CACERT
+              value: /etc/openbao-ca/ca.crt
+            - name: UNSEAL_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: $OPENBAO_KEYS_SECRET
+                  key: unseal_key
+          volumeMounts:
+            - name: openbao-ca
+              mountPath: /etc/openbao-ca
+              readOnly: true
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 64Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: openbao-ca
+          secret:
+            secretName: $OPENBAO_TLS_SECRET
+            items:
+              - key: ca.crt
+                path: ca.crt
+EOF
+}
+
 # Installs OpenBao and leaves it initialised and unsealed, with the unseal key and root token in $OPENBAO_KEYS_SECRET and
 # a small Deployment beside it that unseals the vault again whenever it comes back sealed - which a pod restart, an
 # upgrade and an instance reboot all do. Keeping that key in a Secret is the trade for a vault that heals itself on an
 # unattended instance: anyone who can read Secrets in that namespace can unseal it. A deployment that would rather
 # auto-unseal from KMS should run its own vault and name it in RAPIDMX_OPENBAO_ADDRESS.
+# The vault listens with TLS only (its certificate is issued first, since the pod mounts it); one installed by an earlier
+# version of this script, on plain HTTP, is moved to TLS and restarted.
 function installOpenbao() {
   log "Installing OpenBao $OPENBAO_VERSION..."
   helm repo add openbao https://openbao.github.io/openbao-helm >/dev/null 2>&1
   helm repo update openbao >/dev/null || fail "couldn't update the openbao helm repo."
-  # Standalone with file storage on an EBS volume: one node, one vault. The sidecar injector is off - External Secrets
-  # delivers the values instead.
+  issueOpenbaoCertificate
+  local values
+  values=`mktemp /tmp/openbao-values.XXXXXX`
+  openbaoHelmValues > "$values"
   helm upgrade --install openbao openbao/openbao --version "$OPENBAO_VERSION" \
-    -n "$OPENBAO_NAMESPACE" --create-namespace \
-    --set injector.enabled=false \
-    --set server.standalone.enabled=true \
-    --set server.dataStorage.enabled=true \
-    --set server.dataStorage.size="$OPENBAO_STORAGE_SIZE" \
-    --set server.dataStorage.storageClass="$STORAGE_CLASS" || fail "the OpenBao install failed."
+    -n "$OPENBAO_NAMESPACE" --create-namespace -f "$values" || { rm -f "$values"; fail "the OpenBao install failed."; }
+  rm -f "$values"
+  restartOpenbaoIfChanged
 
   # A sealed vault never reports Ready, and it is sealed until the next step, so this waits for the pod to answer rather
   # than for readiness. `bao status` exits non-zero while sealed but still prints the status, which is what's checked.
@@ -258,84 +565,26 @@ function installOpenbao() {
       || fail "couldn't unseal OpenBao."
   fi
 
-  # The unsealer: it does nothing while the vault is unsealed, and unseals it within ten seconds of it coming back.
-  cat << EOF | kubectl apply -f - >/dev/null || fail "couldn't install the OpenBao unsealer."
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: openbao-unsealer
-  namespace: $OPENBAO_NAMESPACE
-  labels:
-    app.kubernetes.io/name: openbao-unsealer
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app.kubernetes.io/name: openbao-unsealer
-  template:
-    metadata:
-      labels:
-        app.kubernetes.io/name: openbao-unsealer
-    spec:
-      automountServiceAccountToken: false
-      securityContext:
-        runAsNonRoot: true
-        runAsUser: 100
-        runAsGroup: 1000
-      containers:
-        - name: unsealer
-          image: $OPENBAO_IMAGE
-          command: ["/bin/sh", "-c"]
-          args:
-            - |
-              while true; do
-                if bao status -format=json 2>/dev/null | tr -d ' ' | grep -q '"sealed":true'; then
-                  if bao operator unseal "\$UNSEAL_KEY" >/dev/null 2>&1; then
-                    echo "Unsealed OpenBao."
-                  else
-                    echo "Could not unseal OpenBao; retrying."
-                  fi
-                fi
-                sleep 10
-              done
-          env:
-            - name: BAO_ADDR
-              value: $OPENBAO_ADDRESS
-            - name: UNSEAL_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: $OPENBAO_KEYS_SECRET
-                  key: unseal_key
-          resources:
-            requests:
-              cpu: 10m
-              memory: 32Mi
-            limits:
-              memory: 64Mi
-          securityContext:
-            allowPrivilegeEscalation: false
-            capabilities:
-              drop: ["ALL"]
-EOF
+  openbaoUnsealerManifest | kubectl apply -f - >/dev/null || fail "couldn't install the OpenBao unsealer."
   log "OpenBao is running and unsealed."
 }
 
-# Prepares the vault for this release: the kv v2 mount and this release's secrets, the PKI mount, issuing role and root
-# CA the server signs mail encryption certificates from, and a token for each of its two clients - External Secrets
-# (read-only on this release's secrets) and the server itself (sign and revoke on the PKI role, nothing else). It all
-# runs inside the vault's own pod, over stdin, so no token or secret reaches either host's process list; re-running it
-# changes nothing that already exists.
+# Prepares the vault for this release: the kv v2 mount and this release's secrets, the PKI mount, issuing role and root CA
+# the server signs mail encryption certificates from, and OpenBao's kubernetes auth method with a role and a policy per
+# client. Each client logs in with a short-lived token of its own ServiceAccount, for the audience $OPENBAO_AUDIENCE, which the
+# Kubernetes API vouches for (OpenBao asks it with its own ServiceAccount, which the openbao chart lets review tokens); the
+# OpenBao token it gets lasts an hour. No long-lived token is made. It all runs inside the vault's own pod, over stdin, so no
+# token or secret reaches either host's process list; re-running it changes nothing that already exists.
+#  - $OPENBAO_SERVER_ROLE (the server): the PKI role's sign and revoke, its own and the plugins' secrets under
+#    $OPENBAO_INTEGRATIONS_PATH, and the DNS providers' credentials, which it may write but never read back.
+#  - $OPENBAO_ESO_ROLE (External Secrets): reads the release's secrets and the DNS providers' credentials (for external-dns).
+#  - $OPENBAO_DNS_CONTROLLER_ROLE (the DNS controller): reads only the versions of the DNS providers' credentials, to roll an
+#    external-dns pod when they change.
 function prepareOpenbao() {
-  local needEsoToken=true
-  local needPkiToken=true
-  if kubectl -n "$NAMESPACE" get secret "$OPENBAO_ESO_SECRET" >/dev/null 2>&1; then
-    needEsoToken=false
-  fi
-  if kubectl -n "$NAMESPACE" get secret "$OPENBAO_PKI_SECRET" >/dev/null 2>&1; then
-    needPkiToken=false
-  fi
+  local kv=$OPENBAO_KV_MOUNT
+  local integrations=$OPENBAO_INTEGRATIONS_PATH
   local out
-  out=`mktemp /tmp/openbao-tokens.XXXXXX`
+  out=`mktemp /tmp/openbao-prepare.XXXXXX`
   chmod 600 "$out"
   kubectl -n "$OPENBAO_NAMESPACE" exec -i "$OPENBAO_POD" -- sh -s > "$out" << EOF || { rm -f "$out"; fail "couldn't prepare OpenBao for this release."; }
 set -e
@@ -343,15 +592,15 @@ export BAO_ADDR=$OPENBAO_LOCAL_ADDRESS
 export BAO_TOKEN=`shQuote "$OPENBAO_ROOT_TOKEN"`
 
 # The kv v2 engine the chart reads this release's secrets from (its global.openbao.kvMount).
-bao secrets list -format=json | grep -q '"$OPENBAO_KV_MOUNT/"' || bao secrets enable -path=$OPENBAO_KV_MOUNT -version=2 kv > /dev/null
+bao secrets list -format=json | grep -q '"$kv/"' || bao secrets enable -path=$kv -version=2 kv > /dev/null
 
 # A value already in the vault always wins, so an upgrade never re-keys anything.
 seed() {
-  if [ -n "\`bao kv get -mount=$OPENBAO_KV_MOUNT -field="\$1" $OPENBAO_SECRETS_PATH 2> /dev/null\`" ]; then
+  if [ -n "\`bao kv get -mount=$kv -field="\$1" $OPENBAO_SECRETS_PATH 2> /dev/null\`" ]; then
     return 0
   fi
-  bao kv patch -mount=$OPENBAO_KV_MOUNT $OPENBAO_SECRETS_PATH "\$1=\$2" > /dev/null 2>&1 ||
-    bao kv put -mount=$OPENBAO_KV_MOUNT $OPENBAO_SECRETS_PATH "\$1=\$2" > /dev/null
+  bao kv patch -mount=$kv $OPENBAO_SECRETS_PATH "\$1=\$2" > /dev/null 2>&1 ||
+    bao kv put -mount=$kv $OPENBAO_SECRETS_PATH "\$1=\$2" > /dev/null
 }
 seed auth_secret `shQuote "$AUTH_SECRET"`
 seed cookie_secret `shQuote "$COOKIE_SECRET"`
@@ -372,44 +621,185 @@ bao write $OPENBAO_PKI_MOUNT/roles/$OPENBAO_PKI_ROLE \
   ext_key_usage=EmailProtection key_usage=KeyAgreement,KeyEncipherment \
   basic_constraints_valid_for_non_ca=true ttl=9528h max_ttl=9528h > /dev/null
 
-printf 'path "$OPENBAO_KV_MOUNT/data/$OPENBAO_SECRETS_PATH" {\n  capabilities = ["read"]\n}\npath "$OPENBAO_KV_MOUNT/metadata/$OPENBAO_SECRETS_PATH" {\n  capabilities = ["read"]\n}\n' | bao policy write $FULLNAME-secrets-read - > /dev/null
-printf 'path "$OPENBAO_PKI_MOUNT/sign/$OPENBAO_PKI_ROLE" {\n  capabilities = ["update"]\n}\npath "$OPENBAO_PKI_MOUNT/revoke" {\n  capabilities = ["update"]\n}\n' | bao policy write $FULLNAME-pki - > /dev/null
+# Kubernetes auth, checked against the API server this pod runs under.
+bao auth list -format=json | grep -q '"kubernetes/"' || bao auth enable kubernetes > /dev/null
+host=\$KUBERNETES_SERVICE_HOST
+case "\$host" in *:*) host="[\$host]";; esac
+bao write auth/kubernetes/config kubernetes_host="https://\$host:\$KUBERNETES_SERVICE_PORT" > /dev/null
 
-# Periodic tokens with a very long period: nothing here renews them, and a token that expires takes the deployment down
-# with it. They are orphans so revoking the root token doesn't revoke them.
-bao auth tune -max-lease-ttl=87600h token/ > /dev/null
-if [ "$needEsoToken" = "true" ]; then
-  echo "eso_token=\`bao token create -policy=$FULLNAME-secrets-read -orphan -period=87600h -display-name=$FULLNAME-eso -field=token\`"
-fi
-if [ "$needPkiToken" = "true" ]; then
-  echo "pki_token=\`bao token create -policy=$FULLNAME-pki -orphan -period=87600h -display-name=$FULLNAME-pki -field=token\`"
-fi
+bao policy write $OPENBAO_SERVER_ROLE - > /dev/null << 'POLICY'
+path "$kv/data/$integrations/dns/*" {
+  capabilities = ["create", "update", "patch", "delete"]
+}
+path "$kv/metadata/$integrations/dns/*" {
+  capabilities = ["read", "delete"]
+}
+path "$kv/data/$integrations/server/*" {
+  capabilities = ["create", "read", "update", "patch", "delete"]
+}
+path "$kv/metadata/$integrations/server/*" {
+  capabilities = ["read", "delete"]
+}
+path "$kv/data/$integrations/plugins/*" {
+  capabilities = ["create", "read", "update", "patch", "delete"]
+}
+path "$kv/metadata/$integrations/plugins/*" {
+  capabilities = ["read", "delete"]
+}
+path "$OPENBAO_PKI_MOUNT/sign/$OPENBAO_PKI_ROLE" {
+  capabilities = ["update"]
+}
+path "$OPENBAO_PKI_MOUNT/revoke" {
+  capabilities = ["update"]
+}
+POLICY
+bao policy write $OPENBAO_ESO_ROLE - > /dev/null << 'POLICY'
+path "$kv/data/$OPENBAO_SECRETS_PATH" {
+  capabilities = ["read"]
+}
+path "$kv/metadata/$OPENBAO_SECRETS_PATH" {
+  capabilities = ["read"]
+}
+path "$kv/data/$integrations/dns/*" {
+  capabilities = ["read"]
+}
+POLICY
+bao policy write $OPENBAO_DNS_CONTROLLER_ROLE - > /dev/null << 'POLICY'
+path "$kv/metadata/$integrations/dns/*" {
+  capabilities = ["read"]
+}
+POLICY
+
+role() {
+  bao write "auth/kubernetes/role/\$1" bound_service_account_names="\$2" bound_service_account_namespaces=$NAMESPACE \
+    audience=$OPENBAO_AUDIENCE token_policies="\$1" token_ttl=1h token_max_ttl=1h > /dev/null
+}
+role $OPENBAO_SERVER_ROLE $FULLNAME
+role $OPENBAO_ESO_ROLE $OPENBAO_ESO_SERVICE_ACCOUNT
+role $OPENBAO_DNS_CONTROLLER_ROLE $FULLNAME-dns-controller
+
 # What the vault ended up holding, which is what the summary has to report: a value already there wins over the one
 # generated for this run, and ses-bridge must be given the real ingest secret.
-echo "ingest_secret=\`bao kv get -mount=$OPENBAO_KV_MOUNT -field=mail_ingest_secret $OPENBAO_SECRETS_PATH\`"
-echo "auth_secret=\`bao kv get -mount=$OPENBAO_KV_MOUNT -field=auth_secret $OPENBAO_SECRETS_PATH\`"
+echo "ingest_secret=\`bao kv get -mount=$kv -field=mail_ingest_secret $OPENBAO_SECRETS_PATH\`"
+echo "auth_secret=\`bao kv get -mount=$kv -field=auth_secret $OPENBAO_SECRETS_PATH\`"
 EOF
-
-  # The Secrets the two tokens are read from. They belong to the release's namespace, which helm hasn't created yet.
-  kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
-  local dir token
-  dir=`mktemp -d`
-  chmod 700 "$dir"
-  token=`sed -n 's/^eso_token=//p' "$out"`
-  if [[ -n "$token" ]]; then
-    printf '%s' "$token" > "$dir/token"
-    kubectl -n "$NAMESPACE" create secret generic "$OPENBAO_ESO_SECRET" --from-file="$dir/token" >/dev/null
-  fi
-  token=`sed -n 's/^pki_token=//p' "$out"`
-  if [[ -n "$token" ]]; then
-    printf '%s' "$token" > "$dir/mail__pki__openbao__token"
-    kubectl -n "$NAMESPACE" create secret generic "$OPENBAO_PKI_SECRET" --from-file="$dir/mail__pki__openbao__token" >/dev/null
-  fi
-  rm -rf "$dir"
   INGEST_SECRET=`sed -n 's/^ingest_secret=//p' "$out"`
   AUTH_SECRET=`sed -n 's/^auth_secret=//p' "$out"`
   rm -f "$out"
   log "OpenBao holds this release's secrets at $OPENBAO_KV_MOUNT/$OPENBAO_SECRETS_PATH."
+}
+
+# Copies the CA OpenBao's listener certificate comes from into the ConfigMap $OPENBAO_CA_CONFIGMAP in the release's namespace,
+# where External Secrets and the server read it (the chart's global.openbao.caConfigMap): from the vault this script installed,
+# or RAPIDMX_OPENBAO_CA_FILE for your own.
+function copyOpenbaoCa() {
+  local dir
+  dir=`mktemp -d`
+  if [[ -n "$OPENBAO_CA_FILE" ]]; then
+    cp "$OPENBAO_CA_FILE" "$dir/ca.crt"
+  else
+    kubectl -n "$OPENBAO_NAMESPACE" get secret "$OPENBAO_TLS_SECRET" -o jsonpath='{.data.ca\.crt}' | base64 -d > "$dir/ca.crt"
+  fi
+  [[ -s "$dir/ca.crt" ]] || { rm -rf "$dir"; fail "couldn't read the CA of OpenBao's listener certificate."; }
+  kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+  kubectl -n "$NAMESPACE" create configmap "$OPENBAO_CA_CONFIGMAP" --from-file="$dir/ca.crt" --dry-run=client -o yaml \
+    | kubectl apply -f - >/dev/null || { rm -rf "$dir"; fail "couldn't copy OpenBao's CA into namespace $NAMESPACE."; }
+  rm -rf "$dir"
+}
+
+# Moves an install from before Kubernetes auth off the two periodic tokens earlier versions of this script made: once every
+# SecretStore in the release's namespace is Ready and a short-lived token of External Secrets' and of the server's
+# ServiceAccount has logged in to its new role, each old token is revoked in the vault and its Secret deleted, with the two
+# policies only they used. Until then nothing is revoked, so the release keeps working and a re-run finishes the move. Every
+# token goes into the pod over stdin, never as an argument.
+function migrateOpenbaoTokens() {
+  local secrets=() tokens=() name token
+  for name in "$OPENBAO_ESO_SECRET" "$OPENBAO_PKI_SECRET"; do
+    if kubectl -n "$NAMESPACE" get secret "$name" >/dev/null 2>&1; then
+      secrets+=("$name")
+      token=`kubectl -n "$NAMESPACE" get secret "$name" -o jsonpath='{.data.*}' 2>/dev/null | base64 -d 2>/dev/null`
+      # An OpenBao token is letters, digits, dots, dashes and underscores; anything else isn't put into a script.
+      if [[ "$token" =~ ^[A-Za-z0-9._-]+$ ]]; then
+        tokens+=("$token")
+      fi
+    fi
+  done
+  if [[ ${#secrets[@]} -eq 0 ]]; then
+    return 0
+  fi
+  # External Secrets checks a SecretStore again when helm changes it; give it a moment, so an old Ready isn't taken for a new one.
+  sleep 15
+  if ! kubectl -n "$NAMESPACE" wait --for=condition=Ready secretstore --all --timeout=5m >/dev/null 2>&1; then
+    log "The old OpenBao tokens in ${secrets[*]} are kept for now: not every SecretStore in $NAMESPACE is Ready with"
+    log "Kubernetes auth yet (kubectl -n $NAMESPACE get secretstores). Re-run this script once they are to revoke them."
+    return 0
+  fi
+  local esoJwt serverJwt
+  esoJwt=`kubectl -n "$NAMESPACE" create token "$OPENBAO_ESO_SERVICE_ACCOUNT" --audience "$OPENBAO_AUDIENCE" --duration 10m 2>/dev/null`
+  serverJwt=`kubectl -n "$NAMESPACE" create token "$FULLNAME" --audience "$OPENBAO_AUDIENCE" --duration 10m 2>/dev/null`
+  if [[ ! "$esoJwt" =~ ^[A-Za-z0-9._-]+$ || ! "$serverJwt" =~ ^[A-Za-z0-9._-]+$ ]]; then
+    log "The old OpenBao tokens in ${secrets[*]} are kept for now: no token of $OPENBAO_ESO_SERVICE_ACCOUNT or $FULLNAME could be"
+    log "had to check their Kubernetes auth with. Re-run this script to revoke them."
+    return 0
+  fi
+  local revoke=""
+  for token in "${tokens[@]}"; do
+    revoke+="revoke '$token'"$'\n'
+  done
+  if ! kubectl -n "$OPENBAO_NAMESPACE" exec -i "$OPENBAO_POD" -- sh -s > /dev/null << EOF
+set -e
+export BAO_ADDR=$OPENBAO_LOCAL_ADDRESS
+export BAO_TOKEN=`shQuote "$OPENBAO_ROOT_TOKEN"`
+# Fails, revoking nothing, while the vault is sealed or the root token doesn't work.
+bao token lookup > /dev/null
+# Fails, revoking nothing, unless the role logs in with the ServiceAccount token; the OpenBao token it gets is revoked at once.
+login() {
+  token=\`printf '{"role":"%s","jwt":"%s"}' "\$1" "\$2" | bao write -field=token auth/kubernetes/login -\`
+  printf '{"token":"%s"}' "\$token" | bao write auth/token/revoke - > /dev/null
+}
+login $OPENBAO_ESO_ROLE '$esoJwt'
+login $OPENBAO_SERVER_ROLE '$serverJwt'
+revoke() {
+  printf '{"token":"%s"}' "\$1" | bao write auth/token/revoke - > /dev/null || echo "A token was already gone."
+}
+$revoke
+bao policy delete $FULLNAME-secrets-read > /dev/null
+bao policy delete $FULLNAME-pki > /dev/null
+EOF
+  then
+    log "WARNING: couldn't revoke the old OpenBao tokens in ${secrets[*]}; they are kept, and a re-run tries again."
+    return 0
+  fi
+  kubectl -n "$NAMESPACE" delete secret "${secrets[@]}" --ignore-not-found >/dev/null
+  log "Revoked the old OpenBao tokens and deleted ${secrets[*]}: the release logs in with Kubernetes auth now."
+}
+
+# After an upgrade: the certificate OpenBao serves must be the one in $OPENBAO_TLS_SECRET, which the reload sidecar makes it
+# load when cert-manager renews it. A difference is reported, not fatal - OpenBao keeps serving the older one until it restarts.
+function checkOpenbaoCertificate() {
+  if ! command -v openssl >/dev/null 2>&1; then
+    return 0
+  fi
+  local stored served pf i port=18200
+  stored=`kubectl -n "$OPENBAO_NAMESPACE" get secret "$OPENBAO_TLS_SECRET" -o jsonpath='{.data.tls\.crt}' 2>/dev/null | base64 -d 2>/dev/null | openssl x509 -noout -enddate 2>/dev/null`
+  kubectl -n "$OPENBAO_NAMESPACE" port-forward "pod/$OPENBAO_POD" "$port:8200" >/dev/null 2>&1 &
+  pf=$!
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    served=`openssl s_client -connect "127.0.0.1:$port" -servername "openbao.$OPENBAO_NAMESPACE.svc" < /dev/null 2>/dev/null | openssl x509 -noout -enddate 2>/dev/null`
+    if [[ -n "$served" ]]; then
+      break
+    fi
+    sleep 1
+  done
+  kill "$pf" 2>/dev/null
+  wait "$pf" 2>/dev/null
+  if [[ -z "$stored" || -z "$served" ]]; then
+    log "WARNING: couldn't compare the certificate OpenBao serves with the one in its $OPENBAO_TLS_SECRET Secret."
+  elif [[ "$stored" != "$served" ]]; then
+    log "WARNING: OpenBao serves a certificate ending ${served#notAfter=}, but its $OPENBAO_TLS_SECRET Secret holds one ending"
+    log "${stored#notAfter=}: the reload sidecar hasn't loaded the renewed one. Restart the vault to load it (it unseals again"
+    log "by itself): kubectl -n $OPENBAO_NAMESPACE delete pod $OPENBAO_POD"
+  fi
 }
 
 # Upserts a CNAME from $1 to $2 in RAPIDMX_HOSTED_ZONE_ID.
@@ -438,8 +828,12 @@ EOF
 OPENBAO_INSTALL=false
 if [[ "$OPENBAO" = "true" && -z "$OPENBAO_ADDRESS" ]]; then
   OPENBAO_INSTALL=true
-  OPENBAO_ADDRESS="http://openbao.$OPENBAO_NAMESPACE.svc:8200"
+  OPENBAO_ADDRESS="https://openbao.$OPENBAO_NAMESPACE.svc:8200"
+elif [[ "$OPENBAO" = "true" ]]; then
+  openbaoAddressAllowed "$OPENBAO_ADDRESS" \
+    || fail "RAPIDMX_OPENBAO_ADDRESS must be an https:// address (plain http:// only to this host): the release's secrets would cross the network unencrypted."
 fi
+[[ -z "$OPENBAO_CA_FILE" || -s "$OPENBAO_CA_FILE" ]] || fail "RAPIDMX_OPENBAO_CA_FILE ($OPENBAO_CA_FILE) isn't a readable, non-empty file."
 [[ `id -u` -eq 0 ]] || fail "This script must run as root (it is meant to run from EC2 user data)."
 SERVER_HOST=`hostFor "$DOMAIN" "$MAIL_HOST"`
 AUTH_HOST=`hostFor "$DOMAIN" "$AUTH_HOST"`
@@ -450,8 +844,23 @@ if [[ "$NAMESPACE" != *server* ]]; then
   FULLNAME="$NAMESPACE-server"
 fi
 OPENBAO_SECRETS_PATH="$FULLNAME/secrets"
+# Where the credentials an administrator saves in the console go (DNS providers under dns/, the server's own under server/,
+# plugins' under plugins/).
+OPENBAO_INTEGRATIONS_PATH="$FULLNAME/integrations"
+# The Secrets holding the tokens earlier versions of this script made: a vault this script installs has its clients log in
+# with Kubernetes auth instead, and migrateOpenbaoTokens revokes them. A vault of your own still gives External Secrets its
+# token in the first.
 OPENBAO_ESO_SECRET="$FULLNAME-openbao-eso"
 OPENBAO_PKI_SECRET="$FULLNAME-openbao-pki"
+# The copy of the CA OpenBao's listener certificate comes from, in the release's namespace (the chart's global.openbao.caConfigMap).
+OPENBAO_CA_CONFIGMAP="$FULLNAME-openbao-ca"
+# OpenBao's kubernetes auth roles, one per client, each bound to one ServiceAccount of this namespace: the server (the
+# chart's ServiceAccount, named like the release), External Secrets (a ServiceAccount the chart creates for it alone) and
+# the DNS controller.
+OPENBAO_SERVER_ROLE="$FULLNAME-server"
+OPENBAO_ESO_ROLE="$FULLNAME-eso"
+OPENBAO_DNS_CONTROLLER_ROLE="$FULLNAME-dns-controller"
+OPENBAO_ESO_SERVICE_ACCOUNT="$FULLNAME-openbao-eso"
 ACME_EMAIL=${RAPIDMX_ACME_EMAIL:-admin@$DOMAIN}
 SMTP_USERNAME=${RAPIDMX_SES_SMTP_USERNAME:-}
 SMTP_PASSWORD=${RAPIDMX_SES_SMTP_PASSWORD:-}
@@ -704,7 +1113,8 @@ if [[ -n "$HOSTED_ZONE_ID" ]] && command -v aws >/dev/null 2>&1; then
 fi
 
 # --- cert-manager ---------------------------------------------------------------------------------
-if [[ "$TLS" = "true" ]]; then
+# Also without TLS for the site: it issues the certificate of the OpenBao this script installs.
+if [[ "$TLS" = "true" || "$OPENBAO_INSTALL" = "true" ]]; then
   log "Installing cert-manager..."
   helm upgrade --install cert-manager oci://quay.io/jetstack/charts/cert-manager --version "$CERT_MANAGER_VERSION" --namespace cert-manager \
     --create-namespace --set config.apiVersion="controller.config.cert-manager.io/v1alpha1" \
@@ -753,10 +1163,14 @@ if [[ "$OPENBAO" = "true" ]]; then
   if [[ "$OPENBAO_INSTALL" = "true" ]]; then
     installOpenbao
     prepareOpenbao
+    copyOpenbaoCa
   else
     log "Keeping this release's secrets in the OpenBao at $OPENBAO_ADDRESS. It must already hold them at"
-    log "$OPENBAO_KV_MOUNT/$OPENBAO_SECRETS_PATH, with the Secrets $OPENBAO_ESO_SECRET and $OPENBAO_PKI_SECRET in"
-    log "namespace $NAMESPACE holding tokens that may read them."
+    log "$OPENBAO_KV_MOUNT/$OPENBAO_SECRETS_PATH, with the Secret $OPENBAO_ESO_SECRET in namespace $NAMESPACE holding"
+    log "a token that may read them."
+    if [[ -n "$OPENBAO_CA_FILE" ]]; then
+      copyOpenbaoCa
+    fi
   fi
 
   # --- External Secrets ------------------------------------------------------------------------
@@ -843,17 +1257,31 @@ VERSION_ARGS=(--version "$CHART_VERSION")
 if [[ -d "$CHART" ]]; then
   VERSION_ARGS=()
 fi
+# The vault this script installs is reached over TLS (its CA copied into $OPENBAO_CA_CONFIGMAP) and logged in to with Kubernetes
+# auth: External Secrets as $OPENBAO_ESO_SERVICE_ACCOUNT, the server as its own ServiceAccount. A vault of your own keeps its
+# token Secret.
 OPENBAO_ARGS=(--set global.openbao.enabled=false)
 if [[ "$OPENBAO" = "true" ]]; then
   OPENBAO_ARGS=(--set global.openbao.enabled=true
     --set global.openbao.address="$OPENBAO_ADDRESS"
     --set global.openbao.kvMount="$OPENBAO_KV_MOUNT"
     --set global.openbao.secretsPath="$OPENBAO_SECRETS_PATH"
-    --set global.openbao.auth.method=token
-    --set global.openbao.auth.tokenSecret="$OPENBAO_ESO_SECRET"
     --set openbao.pki.mount="$OPENBAO_PKI_MOUNT"
-    --set openbao.pki.role="$OPENBAO_PKI_ROLE"
-    --set openbao.pki.tokenSecret="$OPENBAO_PKI_SECRET")
+    --set openbao.pki.role="$OPENBAO_PKI_ROLE")
+  if [[ "$OPENBAO_INSTALL" = "true" ]]; then
+    OPENBAO_ARGS+=(--set global.openbao.auth.method=kubernetes
+      --set global.openbao.auth.kubernetes.role="$OPENBAO_ESO_ROLE"
+      --set global.openbao.auth.kubernetes.serviceAccount="$OPENBAO_ESO_SERVICE_ACCOUNT"
+      --set global.openbao.auth.kubernetes.audience="$OPENBAO_AUDIENCE"
+      --set openbao.auth.method=kubernetes
+      --set openbao.auth.role="$OPENBAO_SERVER_ROLE"
+      --set openbao.auth.audience="$OPENBAO_AUDIENCE")
+  else
+    OPENBAO_ARGS+=(--set global.openbao.auth.method=token --set global.openbao.auth.tokenSecret="$OPENBAO_ESO_SECRET")
+  fi
+  if [[ "$OPENBAO_INSTALL" = "true" || -n "$OPENBAO_CA_FILE" ]]; then
+    OPENBAO_ARGS+=(--set global.openbao.caConfigMap="$OPENBAO_CA_CONFIGMAP")
+  fi
 fi
 # The chart's bundled coturn (a TURN server for video calls) is left off here: it has to listen on the node's own address,
 # which needs UDP open to the internet on an address that doesn't change, and this instance's public address is not fixed and
@@ -870,6 +1298,12 @@ helm upgrade --install --create-namespace --namespace "$NAMESPACE" "$NAMESPACE" 
   -f "$VALUES_FILE" || fail "the RapidMX server chart failed to install."
 rm -f "$VALUES_FILE"
 VALUES_FILE=""
+
+if [[ "$OPENBAO_INSTALL" = "true" ]]; then
+  # The release logs in with Kubernetes auth now; the tokens an earlier version of this script made are revoked once it does.
+  migrateOpenbaoTokens
+  checkOpenbaoCertificate
+fi
 
 INGEST_LB=""
 startTime=`date +%s`
@@ -913,6 +1347,8 @@ install -d -m 0700 "`dirname "$SUMMARY_FILE"`"
     echo "Secrets live in OpenBao at $OPENBAO_KV_MOUNT/$OPENBAO_SECRETS_PATH, and External Secrets keeps them in the"
     echo "Kubernetes Secrets the pods read, so an upgrade doesn't have to pass any of them."
     if [[ "$OPENBAO_INSTALL" = "true" ]]; then
+      echo "OpenBao listens with TLS only, and External Secrets and the server log in to it with short-lived tokens of"
+      echo "their own ServiceAccounts: no long-lived token is kept anywhere."
       echo "Back up the $OPENBAO_KEYS_SECRET Secret in namespace $OPENBAO_NAMESPACE: it holds the vault's unseal key and"
       echo "root token, and without it nothing in the vault can be recovered."
     fi

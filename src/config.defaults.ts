@@ -235,6 +235,8 @@ export const PROTECTED_PLUGIN_SETTING_KEYS: readonly string[] = [
     "react",
     "static_assets",
     "giphy",
+    // What the admin console's Integrations page sets (integrations:stun:urls; its other keys are under namespaces listed here).
+    "integrations",
     "logs",
     "mail:transport",
     "mail:internal",
@@ -247,6 +249,9 @@ export const PROTECTED_PLUGIN_SETTING_KEYS: readonly string[] = [
     "mail:scan",
     "mail:dns",
     "mail:dkim",
+    // Where the server keeps the credentials an administrator saves, and how it logs in there: an address of a plugin's choosing
+    // would receive the server's ServiceAccount token on login.
+    "mail:secrets",
     "mail:domains",
     "mail:auto_provision",
     "mail:default_quota_bytes",
@@ -254,6 +259,7 @@ export const PROTECTED_PLUGIN_SETTING_KEYS: readonly string[] = [
     "mail:jobs:attachment_extraction",
     "mail:jobs:calendar_reminder",
     "mail:jobs:data_export",
+    "mail:jobs:dkim_rotation",
     "mail:jobs:domain_verification",
     "mail:jobs:erasure_execution",
     "mail:jobs:external_share_expiration",

@@ -1,0 +1,15 @@
+#!/bin/sh
+# The fake `bao` the pod scripts the installers send are run against (test/installer/openbao.test.ts): logs each call, and the
+# policy or JSON it is given on stdin, and answers the lists the scripts check.
+echo "bao $*" >> "$WORK/bao.log"
+for last; do :; done
+if [ "$last" = "-" ]; then
+  echo "<<<" >> "$WORK/bao.log"; cat >> "$WORK/bao.log"; echo ">>>" >> "$WORK/bao.log"
+fi
+case "$*" in
+  "secrets list"*) printf '%s' "$BAO_SECRETS";;
+  "auth list"*) printf '%s' "$BAO_AUTHS";;
+  "read -field=certificate"*) echo CERT;;
+  "write -field=token auth/kubernetes/login"*) echo s.login-token;;
+esac
+exit 0

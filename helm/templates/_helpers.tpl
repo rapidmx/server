@@ -288,11 +288,74 @@ kubernetes:
   role: {{ include "rrst.render" (dict "value" $auth.kubernetes.role "context" .) | quote }}
   serviceAccountRef:
     name: {{ include "rrst.render" (dict "value" $auth.kubernetes.serviceAccount "context" .) | default "default" | quote }}
+    {{- with include "rrst.render" (dict "value" ($auth.kubernetes.audience | default "") "context" .) }}
+    audiences:
+      - {{ . | quote }}
+    {{- end }}
 {{-   else -}}
 tokenSecretRef:
   name: {{ include "rrst.render" (dict "value" $auth.tokenSecret "context" .) | default (printf "%s-openbao-eso" (include "rrst.fullname" .)) | quote }}
   key: {{ $auth.tokenSecretKey | default "token" | quote }}
 {{-   end }}
+{{- end -}}
+
+{{/* The ConfigMap holding the CA OpenBao's listener certificate was signed with (global.openbao.caConfigMap), or nothing. */}}
+{{- define "rrst.vaultCaConfigMap" -}}
+{{-   include "rrst.render" (dict "value" (.Values.global.openbao.caConfigMap | default "") "context" .) -}}
+{{- end -}}
+
+{{/*
+The ServiceAccount External Secrets logs in to OpenBao as, when this chart creates it: Kubernetes auth, a name that isn't the
+namespace's "default", and openbao.externalSecrets.createServiceAccount.
+*/}}
+{{- define "rapidmx.openbaoEsoServiceAccount" -}}
+{{-   $auth := .Values.global.openbao.auth -}}
+{{-   if and (eq (include "rrst.vaultManagedSecrets" .) "true") (eq $auth.method "kubernetes") -}}
+{{-     $name := include "rrst.render" (dict "value" $auth.kubernetes.serviceAccount "context" .) -}}
+{{-     if and $name (eq $name (include "rrst.serviceAccountName" .)) -}}
+{{-       fail (printf "global.openbao.auth.kubernetes.serviceAccount is the server's own ServiceAccount (%s): External Secrets needs one of its own, since its OpenBao role may read what the server's may only write (the DNS providers' credentials)." $name) -}}
+{{-     end -}}
+{{-     if and $name (ne $name "default") (dig "externalSecrets" "createServiceAccount" true (.Values.openbao | default dict)) -}}
+{{-       $name -}}
+{{-     end -}}
+{{-   end -}}
+{{- end -}}
+
+{{/*
+"true" when the server logs in to OpenBao with its own ServiceAccount (openbao.auth.method "kubernetes", with the vault on). It
+refuses a pod without a ServiceAccount of its own, or one naming the namespace's "default": that one is every other pod's too,
+so any of them could log in as the server's role.
+*/}}
+{{- define "rapidmx.openbaoServerAuth" -}}
+{{-   if and .Values.global.openbao.enabled (eq (dig "auth" "method" "" (.Values.openbao | default dict)) "kubernetes") -}}
+{{-     $account := include "rrst.serviceAccountName" . -}}
+{{-     if or (not $account) (eq $account "default") -}}
+{{-       fail "openbao.auth.method is \"kubernetes\" but the server pod runs as the namespace's default ServiceAccount, which every other pod shares: set global.serviceAccount.create to true, or name a ServiceAccount of its own in global.serviceAccount.name." -}}
+{{-     end -}}
+true
+{{-   end -}}
+{{- end -}}
+
+{{/*
+The Secret in this namespace whose key `token` holds the static OpenBao token of the server's clients (openbao.auth.method
+"token", for a vault prepared by hand), empty for any other method. The token reaches the pod from that Secret, never from the
+ConfigMap, which anyone who can read ConfigMaps can read: so the render refuses the token keys in service.config, and method
+"token" without openbao.auth.tokenSecret.
+*/}}
+{{- define "rapidmx.openbaoTokenSecret" -}}
+{{-   range $key := list "mail__pki__openbao__token" "mail__secrets__openbao__token" -}}
+{{-     if get ($.Values.service.config | default dict) $key -}}
+{{-       fail (printf "service.config.%s would put an OpenBao token in the server's ConfigMap, readable by anyone who can read ConfigMaps in the namespace: put it under the key token of a Secret named in openbao.auth.tokenSecret, with openbao.auth.method \"token\"." $key) -}}
+{{-     end -}}
+{{-   end -}}
+{{-   $auth := dig "auth" dict (.Values.openbao | default dict) -}}
+{{-   if eq (toString ($auth.method | default "")) "token" -}}
+{{-     $name := include "rrst.render" (dict "value" ($auth.tokenSecret | default "") "context" .) -}}
+{{-     if not $name -}}
+{{-       fail "openbao.auth.method is \"token\" but openbao.auth.tokenSecret is empty: name the Secret whose key token holds the server's OpenBao token." -}}
+{{-     end -}}
+{{-     $name -}}
+{{-   end -}}
 {{- end -}}
 
 {{/****************************** AUTH SERVER ******************************/}}

@@ -64,9 +64,18 @@ global:
     level: info
   openbao:
     enabled: false
-    address: http://openbao.openbao.svc:8200
+    address: https://openbao.openbao.svc:8200
     kvMount: secret
     secretsPath: ''
+    # The ConfigMap in this namespace holding, under ca.crt, the CA that signed OpenBao's listener certificate: External Secrets and
+    # the server verify the vault with it instead of the system's trust store. The installers copy the CA of the OpenBao they set up
+    # into <fullname>-openbao-ca. Empty: the system's trust store.
+    caConfigMap: ''
+    # How External Secrets logs in to read the release's secrets: "token" (a token in the Secret tokenSecret) or "kubernetes"
+    # (OpenBao's kubernetes auth method as kubernetes.role, with a token External Secrets requests for kubernetes.serviceAccount,
+    # which this chart creates unless it is "default" or openbao.externalSecrets.createServiceAccount is false). The installers use
+    # "kubernetes" with the role <fullname>-eso and the ServiceAccount <fullname>-openbao-eso. kubernetes.audience, when set, is
+    # the audience of that token, which the role checks.
     auth:
       method: token
       tokenSecret: ''
@@ -75,6 +84,7 @@ global:
         mountPath: kubernetes
         role: ''
         serviceAccount: default
+        audience: ''
   secrets:
     existingSecret: ''
     cookies: ''
@@ -288,6 +298,28 @@ service:
     periodSeconds: 30
     timeoutSeconds: 5
     failureThreshold: 22
+# The server's own OpenBao identity, with global.openbao.enabled: what its OpenBao clients (the encryption CA's PKI mount when
+# service.config sets mail__pki__backend to "openbao", and the secret store of the admin console's integrations) log in with.
+openbao:
+  # auth.method "kubernetes": the pod mounts a projected token of its ServiceAccount (global.serviceAccount) for auth.audience,
+  # and the clients log in with it to OpenBao's kubernetes auth method (at auth.mountPath) as auth.role, <fullname>-server when
+  # empty - the role the installers create, which may write the DNS providers' credentials but never read them back. Empty: the
+  # server holds no OpenBao identity. auth.method "token", for a vault prepared by hand: the clients use the token under the key
+  # `token` of the Secret auth.tokenSecret in this namespace (never service.config, whose ConfigMap is plaintext: the chart
+  # refuses a token there).
+  auth:
+    method: ''
+    role: ''
+    mountPath: kubernetes
+    audience: openbao
+    tokenSecret: ''
+  # The PKI mount and issuing role the encryption CA signs with (mail__pki__openbao__mount/role).
+  pki:
+    mount: pki
+    role: rapidmx-encryption
+  externalSecrets:
+    # Creates global.openbao.auth.kubernetes.serviceAccount, the ServiceAccount External Secrets logs in as. No pod runs as it.
+    createServiceAccount: true
 authserver:
   create: true
   # The auth-server subchart renders its own copy of these datastores (same names as the ones above): keep them identical.

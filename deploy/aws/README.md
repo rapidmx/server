@@ -101,18 +101,23 @@ The stack's `EnableOpenBao` parameter (`RAPIDMX_OPENBAO`, on by default) install
 cluster and keeps the deployment's secrets in it - the JWT secret shared with the auth-server, the cookie, session and
 escrow audit keys and the ses-bridge ingest secret - along with the certificate authority for end-to-end encrypted mail.
 The chart doesn't install OpenBao any more than it installs cert-manager: this script does, and it also initialises the
-vault, writes each secret once (a re-run never re-keys anything), creates the PKI mount and issuing role, and hands the
-chart the two tokens it reads them with. [External Secrets](https://external-secrets.io) then copies the values into the
-Kubernetes Secrets the pods load.
+vault, writes each secret once (a re-run never re-keys anything) and creates the PKI mount and issuing role.
+[External Secrets](https://external-secrets.io) then copies the values into the Kubernetes Secrets the pods load.
+
+The vault listens with TLS only, with a certificate cert-manager issues from a CA of its own (installed for it even with
+`RAPIDMX_TLS=false`) and renews; a sidecar in the vault's pod makes OpenBao reload it. Its clients keep no token: External
+Secrets and the server log in with short-lived tokens of their own ServiceAccounts (OpenBao's `kubernetes` auth method), each
+to a role allowed only what that client needs. A re-run on a stack from before this revokes the two tokens earlier versions
+of this script made, once the new logins work. The server's README ("Secrets and OpenBao") has the roles and what each may do.
 
 The vault's unseal key and root token are kept in the `openbao-keys` Secret in the `openbao` namespace, and an
 `openbao-unsealer` Deployment uses the key to unseal the vault after a pod restart, an upgrade or an instance reboot -
 which is what makes an unattended instance come back on its own. **Back that Secret up**: without it nothing in the vault
 can be recovered, and anyone who can read Secrets in that namespace can unseal it.
 
-`RAPIDMX_OPENBAO_ADDRESS` points the chart at an OpenBao you already run, in which case this script installs and prepares
-nothing - the kv path, the PKI mount and the token Secrets are yours to create (the server's README lists the exact paths
-and fields). `EnableOpenBao=false` keeps every secret in Kubernetes Secrets instead, with the values printed in the
+`RAPIDMX_OPENBAO_ADDRESS` points the chart at an OpenBao you already run (https), in which case this script installs and
+prepares nothing - the kv path, the PKI mount and External Secrets' token Secret are yours to create (the server's README
+lists the exact paths and fields); `RAPIDMX_OPENBAO_CA_FILE` names its CA when the system doesn't trust it. `EnableOpenBao=false` keeps every secret in Kubernetes Secrets instead, with the values printed in the
 install summary.
 
 For a bare-metal or on-premises host, use `single_node_install.sh` in the repository root instead, which fronts the

@@ -22,6 +22,26 @@ data:
   {{- end }}
   cors__origins: {{ $origins | uniq | toJson | quote }}
   trusted_proxies: {{ $.Values.global.trustedProxies | default list | toJson | quote }}
+  {{- if .Values.global.openbao.enabled }}
+  {{- $openbao := .Values.openbao | default dict }}
+  {{- $caFile := ternary "/etc/rapidmx/openbao-ca/ca.crt" "" (ne (include "rrst.vaultCaConfigMap" .) "") }}
+  # Where the server's OpenBao clients connect: the encryption CA's PKI mount (with mail__pki__backend "openbao") and the
+  # integrations' secret store. The CA file is the copy of OpenBao's CA mounted from global.openbao.caConfigMap.
+  {{- range $client := list "pki" "secrets" }}
+  mail__{{ $client }}__openbao__address: {{ include "rrst.vaultAddress" $ | quote }}
+  {{- with $caFile }}
+  mail__{{ $client }}__openbao__ca_file: {{ . | quote }}
+  {{- end }}
+  {{- if eq (include "rapidmx.openbaoServerAuth" $) "true" }}
+  mail__{{ $client }}__openbao__auth__method: kubernetes
+  mail__{{ $client }}__openbao__auth__role: {{ include "rrst.render" (dict "value" (dig "auth" "role" "" $openbao) "context" $) | default (printf "%s-server" (include "rrst.fullname" $)) | quote }}
+  mail__{{ $client }}__openbao__auth__mount_path: {{ dig "auth" "mountPath" "kubernetes" $openbao | quote }}
+  mail__{{ $client }}__openbao__auth__token_file: /var/run/secrets/openbao/token
+  {{- end }}
+  {{- end }}
+  mail__pki__openbao__mount: {{ dig "pki" "mount" "pki" $openbao | quote }}
+  mail__pki__openbao__role: {{ dig "pki" "role" "rapidmx-encryption" $openbao | quote }}
+  {{- end }}
   {{- range $k, $v := $.Values.service.config }}
   {{ $k }}: {{ include "rrst.render" (dict "value" $v "context" $) | quote }}
   {{- end }}

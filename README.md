@@ -585,18 +585,51 @@ JWT secret without either value being passed in.
 default: a plain `helm install` shouldn't assume a vault is there. `single_node_install.sh` and `deploy/aws` do install
 one and turn it on (`--openbao true` / `RAPIDMX_OPENBAO`, on by default there): they install it, initialise it, keep the unseal
 key in a Kubernetes Secret with an unsealer Deployment that re-unseals the vault after any restart, write this release's
-secrets (each value once - never rewritten, so an upgrade doesn't invalidate sessions or re-key the escrow chain), set up
-the PKI mount and issuing role, and create the two token Secrets. External Secrets has to be there too; its CRDs are
-cluster-wide, so the chart can't bring it, and the render fails with the exact command when it's missing.
+secrets (each value once - never rewritten, so an upgrade doesn't invalidate sessions or re-key the escrow chain) and set up
+the PKI mount and issuing role. External Secrets has to be there too; its CRDs are cluster-wide, so the chart can't bring
+it, and the render fails with the exact command when it's missing.
 
-Point `global.openbao.address` at an OpenBao you already run to use that one instead (`auth.method: kubernetes` avoids
-storing a token at all). It has to hold, under `global.openbao.kvMount` at `global.openbao.secretsPath`
-(`<release>/secrets` by default), the fields `auth_secret`, `cookie_secret`, `session__secret`,
-`escrow_audit_hmac_key` and `mail_ingest_secret`; `global.openbao.auth.tokenSecret` names a Secret whose `token` may read
-them. For the encryption CA, a PKI mount (`openbao.pki.mount`) with an issuing role (`openbao.pki.role`) that accepts an
-email address as the common name, and `openbao.pki.tokenSecret` naming a Secret whose `mail__pki__openbao__token` may
-`update` on `<mount>/sign/<role>` and `<mount>/revoke` - the server signs client CSRs, so the CA key never leaves the
-vault. Leave `openbao.pki.tokenSecret` empty to keep the local CA on the `pki-data` volume.
+The vault the installers set up listens **with TLS only**, at `https://openbao.openbao.svc:8200`: cert-manager issues its
+certificate from a CA of its own in the `openbao` namespace (a year's certificate, renewed 30 days ahead; a sidecar in the
+vault's pod sends OpenBao `SIGHUP` when it is, which reloads it without sealing), and the installers copy that CA into
+`<fullname>-openbao-ca` in the release's namespace (`global.openbao.caConfigMap`), which External Secrets and the server
+verify the vault with. **No long-lived token is kept anywhere**: every client logs in with OpenBao's `kubernetes` auth method,
+using a short-lived token of its own ServiceAccount for the audience `openbao`, to a role bound to that ServiceAccount
+alone, and gets an OpenBao token that lasts an hour:
+
+| Role | ServiceAccount | May |
+| --- | --- | --- |
+| `<fullname>-eso` | `<fullname>-openbao-eso` (the chart creates it; External Secrets requests its tokens) | read the release's secrets and the DNS providers' credentials (for external-dns) |
+| `<fullname>-server` | the server's own (`global.serviceAccount`) | sign and revoke on the PKI role; write, but never read, the DNS providers' credentials; read and write its own and the plugins' secrets under `<fullname>/integrations` |
+| `<fullname>-dns-controller` | `<fullname>-dns-controller` | read the versions (never the values) of the DNS providers' credentials |
+
+An install from before this keeps working while it is upgraded: the installer re-runs move the vault to TLS, create the
+roles, switch the chart over, check that External Secrets' and the server's ServiceAccounts log in, and only then revoke
+the two periodic tokens earlier versions made and delete their Secrets (`<fullname>-openbao-eso`, `<fullname>-openbao-pki`).
+While a SecretStore isn't Ready the old tokens are kept, and the next run finishes the move. Note that the bundled
+auth-server's SecretStore has to verify the vault's CA too, which needs an auth-server chart that takes
+`global.openbao.caConfigMap`.
+
+The server's own identity is `openbao.auth`: with `method: kubernetes` its pod mounts a projected token of its
+ServiceAccount for `openbao.auth.audience` at `/var/run/secrets/openbao/token`, and its OpenBao clients (the encryption
+CA's PKI mount when `mail__pki__backend` is `openbao`, and the integrations' secret store) log in as `openbao.auth.role`
+(`<fullname>-server` by default), verifying the vault with the copied CA (`mail:pki:openbao:ca_file`,
+`mail:secrets:openbao:ca_file`). The chart refuses it for a pod running as the namespace's `default` ServiceAccount, which
+every other pod shares. For a vault prepared by hand, `method: token` gives the clients the token under the key `token` of
+the Secret `openbao.auth.tokenSecret` instead; the chart refuses an OpenBao token in `service.config`, whose ConfigMap is
+plaintext.
+
+Point `global.openbao.address` at an OpenBao you already run to use that one instead; the installers take it as
+`OPENBAO_ADDRESS`/`RAPIDMX_OPENBAO_ADDRESS`, which must be https (plain http only to the host itself), with
+`OPENBAO_CA_FILE`/`RAPIDMX_OPENBAO_CA_FILE` naming its CA when the system doesn't trust it. It has to hold, under
+`global.openbao.kvMount` at `global.openbao.secretsPath` (`<release>/secrets` by default), the fields `auth_secret`,
+`cookie_secret`, `session__secret`, `escrow_audit_hmac_key` and `mail_ingest_secret`. External Secrets reads them with
+`global.openbao.auth`: `method: token` and a Secret (`tokenSecret`) whose `token` may read them, or `method: kubernetes`
+with `kubernetes.role`, `kubernetes.serviceAccount` and `kubernetes.audience`, which stores no token at all. For the
+encryption CA, a PKI mount (`openbao.pki.mount`) with an issuing role (`openbao.pki.role`) that accepts an email address
+as the common name, which the server's role may `update` on `<mount>/sign/<role>` and `<mount>/revoke` - the server signs
+client CSRs, so the CA key never leaves the vault - and `mail__pki__backend: openbao` in `service.config`; without it
+the local CA on the `pki-data` volume stays in use.
 
 Keeping the unseal key in a Secret is what makes the deployment heal itself after a reboot, at the cost that anyone who
 can read Secrets in the vault's namespace can unseal it (roughly what those Secrets exposed before). A cluster with a KMS
