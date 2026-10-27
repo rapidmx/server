@@ -419,6 +419,15 @@ mail:
   # console; a value saved there wins. Each user can still turn it off for their own mailbox.
   zeroAccess:
     allowed: true
+  # OpenPGP Web Key Directory. The server always answers /.well-known/openpgpkey on `host` (the WKD direct method, which needs
+  # mail's domain itself to reach this server). openpgpkeyHost.enabled also certifies and routes `openpgpkey.<global.domain>`,
+  # the advanced-method host OpenPGP clients (Proton Mail, GnuPG, Thunderbird) try first: the name is added to `host`'s
+  # Certificate and to the Gateway's listeners and routes. It needs a DNS record first - a CNAME to `host`, or an A/AAAA record
+  # to the Gateway's address - or the Let's Encrypt HTTP-01 challenge for it never passes, the Certificate never becomes Ready
+  # (it stops `host` getting a renewed certificate too) and `helm upgrade --wait` times out.
+  wkd:
+    openpgpkeyHost:
+      enabled: false
   trustedAuthservId: ''
   relay:
     host: postfix

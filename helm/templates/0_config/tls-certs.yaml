@@ -54,8 +54,11 @@ spec:
   # answers on it too) - it is not conditional on the Autodiscover plugin being installed, since the plugin ships by
   # default and the name costs nothing to cover when a certificate is already being issued for `host`.
   - {{ include "rapidmx.autodiscoverHost" $ }}
-  # OpenPGP clients' Web Key Directory lookup (advanced method) looks for this name (see 3_gateways/service.yaml).
+  {{- if eq (include "rapidmx.openpgpkeyHostEnabled" $) "true" }}
+  # OpenPGP clients' Web Key Directory lookup (advanced method) looks for this name (see 3_gateways/service.yaml). Only with
+  # mail.wkd.openpgpkeyHost.enabled: without a DNS record for it the challenge never passes and this Certificate never issues.
   - {{ include "rapidmx.openpgpkeyHost" $ }}
+  {{- end }}
   {{- if $podTLS }}
   # global.gateway.tlsTermination: pod - the Gateway passes TLS straight through by SNI (see 3_gateways/service.yaml),
   # so this pod-mounted certificate is the only one any caller ever sees, including in-cluster callers that reach it

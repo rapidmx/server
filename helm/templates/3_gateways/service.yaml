@@ -4,6 +4,8 @@
 {{- $podTLS := eq (include "rrst.podTLS" $) "true" }}
 {{- $autodiscoverHost := include "rapidmx.autodiscoverHost" $ }}
 {{- $openpgpkeyHost := include "rapidmx.openpgpkeyHost" $ }}
+{{- /* mail.wkd.openpgpkeyHost.enabled: off, the name appears nowhere here (nor in tls-certs.yaml's Certificate). */}}
+{{- $openpgpkey := eq (include "rapidmx.openpgpkeyHostEnabled" $) "true" }}
 {{- /*
 Plain HTTP is redirected to HTTPS when this chart owns the Gateway and terminates TLS on it: the http and https listeners are
 named here, so the redirect can be attached to the http ones only (a Gateway it doesn't own names its own listeners, which
@@ -35,6 +37,7 @@ spec:
     allowedRoutes:
       namespaces:
         from: All
+  {{- if $openpgpkey }}
   # OpenPGP clients' Web Key Directory lookup (advanced method) reaches this server on this fixed name.
   - name: http-openpgpkey
     port: 80
@@ -43,6 +46,7 @@ spec:
     allowedRoutes:
       namespaces:
         from: All
+  {{- end }}
   {{- if $certificate }}
   - name: https
     {{- if $podTLS }}
@@ -87,6 +91,7 @@ spec:
     allowedRoutes:
       namespaces:
         from: All
+  {{- if $openpgpkey }}
   - name: https-openpgpkey
     {{- if $podTLS }}
     protocol: TLS
@@ -107,6 +112,7 @@ spec:
     allowedRoutes:
       namespaces:
         from: All
+  {{- end }}
   {{- end }}
 {{- end }}
 {{- if and (not $ownsGateway) $certificate (not $podTLS) }}
@@ -146,9 +152,11 @@ spec:
   - name: {{ tpl $.Values.global.gateway.name $ }}
     namespace: {{ tpl $.Values.global.gateway.namespace $ }}
     sectionName: http-autodiscover
+  {{- if $openpgpkey }}
   - name: {{ tpl $.Values.global.gateway.name $ }}
     namespace: {{ tpl $.Values.global.gateway.namespace $ }}
     sectionName: http-openpgpkey
+  {{- end }}
   {{- end }}
   {{- if and (not $podTLS) $certificate }}
   - name: {{ tpl $.Values.global.gateway.name $ }}
@@ -157,9 +165,11 @@ spec:
   - name: {{ tpl $.Values.global.gateway.name $ }}
     namespace: {{ $.Release.Namespace }}
     sectionName: https-autodiscover
+  {{- if $openpgpkey }}
   - name: {{ tpl $.Values.global.gateway.name $ }}
     namespace: {{ $.Release.Namespace }}
     sectionName: https-openpgpkey
+  {{- end }}
   {{- end }}
   {{- else }}
   # A Gateway this chart doesn't own (global.gateway.name/namespace) has listeners it names itself, so the route names
@@ -171,7 +181,9 @@ spec:
   hostnames:
   - {{ (include "rrst.render" (dict "value" $.Values.host "context" $)) | quote }}
   - {{ $autodiscoverHost | quote }}
+  {{- if $openpgpkey }}
   - {{ $openpgpkeyHost | quote }}
+  {{- end }}
   rules:
   # /internal/* (the MTA hand-off API postfix-bridge calls inside the cluster, authenticated by mail.ingestSecret) is
   # not served over this route: a rule with no backendRefs and no filters answers 404. It shares the server's port with the
@@ -253,13 +265,17 @@ spec:
   - name: {{ tpl $.Values.global.gateway.name $ }}
     namespace: {{ tpl $.Values.global.gateway.namespace $ }}
     sectionName: http-autodiscover
+  {{- if $openpgpkey }}
   - name: {{ tpl $.Values.global.gateway.name $ }}
     namespace: {{ tpl $.Values.global.gateway.namespace $ }}
     sectionName: http-openpgpkey
+  {{- end }}
   hostnames:
   - {{ (include "rrst.render" (dict "value" $.Values.host "context" $)) | quote }}
   - {{ $autodiscoverHost | quote }}
+  {{- if $openpgpkey }}
   - {{ $openpgpkeyHost | quote }}
+  {{- end }}
   rules:
   - matches:
     - path:
@@ -294,14 +310,18 @@ spec:
   - name: {{ tpl $.Values.global.gateway.name $ }}
     namespace: {{ $.Release.Namespace }}
     sectionName: https-autodiscover
+  {{- if $openpgpkey }}
   - name: {{ tpl $.Values.global.gateway.name $ }}
     namespace: {{ $.Release.Namespace }}
     sectionName: https-openpgpkey
   {{- end }}
+  {{- end }}
   hostnames:
   - {{ (include "rrst.render" (dict "value" $.Values.host "context" $)) | quote }}
   - {{ $autodiscoverHost | quote }}
+  {{- if $openpgpkey }}
   - {{ $openpgpkeyHost | quote }}
+  {{- end }}
   rules:
   - backendRefs:
     - name: {{ include "rrst.fullname" . }}-services

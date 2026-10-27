@@ -353,6 +353,16 @@ include "rapidmx.openpgpkeyHost" .
 {{- end -}}
 
 {{/*
+"true" when the chart certifies and routes the Web Key Directory host above (mail.wkd.openpgpkeyHost.enabled). Off by default:
+the name needs a DNS record before cert-manager can prove it, and without one the Certificate for `host` (which would cover it)
+never becomes Ready. The server's own /.well-known/openpgpkey on `host` (the WKD direct method) is routed either way. Usage:
+include "rapidmx.openpgpkeyHostEnabled" .
+*/}}
+{{- define "rapidmx.openpgpkeyHostEnabled" -}}
+{{-   if (((.Values.mail).wkd).openpgpkeyHost).enabled -}}true{{- else -}}false{{- end -}}
+{{- end -}}
+
+{{/*
 "true" when `global.domain` is one a public certificate authority could never issue for: `localhost` or a domain ending in
 `.local`, `.localhost`, `.test` or `.invalid` (the reserved-for-testing/local-use TLDs). Usage: include "rapidmx.isLocalDomain" .
 */}}

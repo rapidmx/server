@@ -372,6 +372,7 @@ Best for one Linux server. A single script installs k3s (a small Kubernetes), HT
 | `--mail-host` / `--auth-host` | Change `mail` / `auth` to another name, for example `--mail-host webmail` |
 | `--tls false` | No certificates: plain HTTP, for testing |
 | `--openbao false` | Keep secrets in Kubernetes Secrets instead of OpenBao |
+| `--openpgpkey-host true` | Also serve `openpgpkey.<domain>`, the OpenPGP Web Key Directory host Proton Mail and GnuPG try first (chart value `mail.wkd.openpgpkeyHost.enabled`). Off by default. Add its record (`A`/`AAAA` to the server, or a `CNAME` to `mail.<domain>`) **before** turning it on: it shares `mail.<domain>`'s certificate, which isn't issued until every name on it resolves |
 | `--version <version>` | Install a specific release |
 | `--uninstall --yes` | Remove what the script installed, including the mail data (`--uninstall` alone removes nothing). The chart itself leaves its DKIM, blob and encryption CA volumes behind on `helm uninstall` (`mail.storage.keepOnUninstall`) |
 | `--help` | List everything |
@@ -379,6 +380,7 @@ Best for one Linux server. A single script installs k3s (a small Kubernetes), HT
 > **Good to know:**
 >
 > - The certificates are requested during the install and issued once both names point at the server. You can add the DNS records afterwards; `kubectl -n rapidmx get certificate` shows when they are ready.
+> - The final message lists the DNS records each host needs.
 > - To try it without a public domain, use a name that ends in `.local`, such as `--domain example.local`. It serves plain HTTP; add both names to your hosts file, as the script reminds you.
 
 ### 4. AWS (CloudFormation)

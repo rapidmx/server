@@ -7,6 +7,11 @@ IS_WSL=false
 DOMAIN="cluster.local"
 MAIL_HOST=${MAIL_HOST:-mail}
 AUTH_HOST=${AUTH_HOST:-auth}
+# Whether the release also certifies and routes openpgpkey.<domain> (--openpgpkey-host), the OpenPGP Web Key Directory host
+# Proton Mail, GnuPG and Thunderbird look keys up on first (the chart's mail.wkd.openpgpkeyHost.enabled). Off by default: the
+# name needs a DNS record before Let's Encrypt can issue for it, and without one $SERVER_HOST's certificate (which covers it)
+# is never issued. The server answers the Web Key Directory on $SERVER_HOST either way.
+OPENPGPKEY_HOST=${OPENPGPKEY_HOST:-false}
 TLS=true
 VERSION="1.0.0-beta.45"
 NAMESPACE="rapidmx"
@@ -772,7 +777,7 @@ function uninstall() {
   echo "Uninstall complete! $USER_KUBECONFIG was left in place; delete it if it only held this cluster."
 }
 
-GETOPT=$(getopt -o h --long domain:,mail-host:,auth-host:,mail-domains:,version:,tls:,gateway:,openbao:,email:,uninstall,yes,install-cert-manager,skip-k3s,help -- "$@")
+GETOPT=$(getopt -o h --long domain:,mail-host:,auth-host:,mail-domains:,version:,tls:,gateway:,openbao:,openpgpkey-host:,email:,uninstall,yes,install-cert-manager,skip-k3s,help -- "$@")
 if [ $? -ne 0 ]; then
   exit 1
 fi
@@ -788,6 +793,7 @@ do
         --tls) TLS=$2; shift 2;;
         --gateway) GATEWAY_MODE=$2; shift 2;;
         --openbao) OPENBAO=$2; shift 2;;
+        --openpgpkey-host) OPENPGPKEY_HOST=$2; shift 2;;
         --email) ACME_EMAIL=$2; shift 2;;
         --skip-k3s) SKIP_K3S=true; shift;;
         --uninstall) UNINSTALL=true; shift;;
@@ -818,6 +824,8 @@ do
           echo -e "\t\t\t\tattach to; chart: the chart makes a Gateway for each of its hosts"
           echo -e "\t--openbao <true|false>\t\tInstalls OpenBao and keeps the release's secrets and encryption CA in it"
           echo -e "\t\t\t\t(default true; false keeps them in Kubernetes Secrets)"
+          echo -e "\t--openpgpkey-host <true|false>\tAlso serves openpgpkey.<domain>, the OpenPGP Web Key Directory host"
+          echo -e "\t\t\t\t(default false). Add its DNS record first, or the server's certificate is never issued"
           echo -e "\t--email <email>\t\tThe Let's Encrypt account email (default admin@<domain>)"
           echo -e "\t--skip-k3s\t\tSkips installation of k3s"
           echo -e "\t--uninstall\t\tUninstalls what this script installed (recorded in $STATE_FILE), including the mail data"
@@ -827,6 +835,7 @@ do
           echo -e "\tEXTERNAL_SECRETS_VERSION\tThe external-secrets release to install (default $EXTERNAL_SECRETS_VERSION)"
           echo -e "\tOPENBAO_VERSION\t\tThe openbao chart to install (default $OPENBAO_VERSION)"
           echo -e "\tOPENBAO_ADDRESS\t\tAn OpenBao this cluster already runs, used instead of installing one"
+          echo -e "\tOPENPGPKEY_HOST\t\tThe default of --openpgpkey-host (default false)"
           exit 1
           ;;
         --) shift; break;;
@@ -839,6 +848,10 @@ if [[ "$TLS" != "true" && "$TLS" != "false" ]]; then
 fi
 if [[ "$OPENBAO" != "true" && "$OPENBAO" != "false" ]]; then
   echo "--openbao must be true or false."
+  exit 1
+fi
+if [[ "$OPENPGPKEY_HOST" != "true" && "$OPENPGPKEY_HOST" != "false" ]]; then
+  echo "--openpgpkey-host must be true or false."
   exit 1
 fi
 if [[ "$GATEWAY_MODE" != "shared" && "$GATEWAY_MODE" != "chart" ]]; then
@@ -1119,16 +1132,21 @@ fi
 # chart then has cert-manager issue "<host>-tls-cert" Secrets in $NAMESPACE for $SERVER_HOST and $AUTH_HOST, and the
 # Gateway terminates TLS with them. The chart's own Certificate for $SERVER_HOST also covers $AUTODISCOVER_HOST (mail
 # clients' Autodiscover probe looks for it regardless of $MAIL_HOST) on the very same Secret, so it needs no Certificate
-# of its own - just another listener pointed at $SERVER_HOST's.
+# of its own - just another listener pointed at $SERVER_HOST's. With --openpgpkey-host true, so does $OPENPGPKEY_HOSTNAME.
 AUTODISCOVER_HOST="autodiscover.$DOMAIN"
+OPENPGPKEY_HOSTNAME="openpgpkey.$DOMAIN"
 GATEWAY_TLS=false
 HTTPS_LISTENER=""
 AUTH_HTTPS_LISTENER=""
 AUTODISCOVER_HTTPS_LISTENER=""
+OPENPGPKEY_HTTPS_LISTENER=""
 if [[ "$TLS" = "true" && "$SERVER_HOST" != "localhost" && ! "$SERVER_HOST" =~ \.(local|localhost)$ ]]; then
   GATEWAY_TLS=true
   HTTPS_LISTENER="https"
   AUTODISCOVER_HTTPS_LISTENER="https-autodiscover"
+  if [[ "$OPENPGPKEY_HOST" = "true" ]]; then
+    OPENPGPKEY_HTTPS_LISTENER="https-openpgpkey"
+  fi
   # The auth-server subchart only issues a certificate for a host that isn't localhost, *.local or *.localhost.
   if [[ "$AUTH_HOST" != "localhost" && ! "$AUTH_HOST" =~ \.(local|localhost)$ ]]; then
     AUTH_HTTPS_LISTENER="https-auth"
@@ -1159,10 +1177,25 @@ spec:
     port: 80
     protocol: HTTP
 EOF
+  # The Web Key Directory host gets listeners named as on a Gateway the chart makes itself (http-openpgpkey, https-openpgpkey).
+  # Its route attaches here by host name, so the catch-all "http" would serve it too; the named one keeps the two modes alike.
+  if [[ "$OPENPGPKEY_HOST" = "true" ]]; then
+  cat << EOF
+  - allowedRoutes:
+      namespaces:
+        from: All
+    name: http-openpgpkey
+    hostname: "$OPENPGPKEY_HOSTNAME"
+    port: 80
+    protocol: HTTP
+EOF
+  fi
   # name:hostname:certHost - certHost names the Secret ("<certHost>-tls-cert") the listener's certificateRefs read,
-  # which is the listener's own host except for Autodiscover, which reads $SERVER_HOST's (see AUTODISCOVER_HOST above).
+  # which is the listener's own host except for Autodiscover and the Web Key Directory, which read $SERVER_HOST's (see
+  # AUTODISCOVER_HOST above).
   for listener in "$HTTPS_LISTENER:$SERVER_HOST:$SERVER_HOST" "$AUTH_HTTPS_LISTENER:$AUTH_HOST:$AUTH_HOST" \
-      "$AUTODISCOVER_HTTPS_LISTENER:$AUTODISCOVER_HOST:$SERVER_HOST"; do
+      "$AUTODISCOVER_HTTPS_LISTENER:$AUTODISCOVER_HOST:$SERVER_HOST" \
+      "$OPENPGPKEY_HTTPS_LISTENER:$OPENPGPKEY_HOSTNAME:$SERVER_HOST"; do
     IFS=: read -r name hostname certHost <<< "$listener"
     if [[ -n "$name" ]]; then
   cat << EOF
@@ -1483,6 +1516,7 @@ if ! helm upgrade --install --create-namespace --namespace "$NAMESPACE" "$NAMESP
   "${OPENBAO_ARGS[@]}" \
   --set global.gateway.tls="$GATEWAY_TLS" --set global.gateway.hsts=true "${GATEWAY_ARGS[@]}" \
   --set authserver.host="$AUTH_HOST" \
+  --set mail.wkd.openpgpkeyHost.enabled="$OPENPGPKEY_HOST" \
   --set-json "global.corsHosts=[\"$SERVER_HOST\",\"$AUTH_HOST\"]" \
   -f "$VALUES_FILE"; then
   echo "There was a problem installing the RapidMX server."
@@ -1568,4 +1602,19 @@ if [[ $SERVER_HOST =~ \.local(host)?$ || $SERVER_HOST = "localhost" ]]; then
   echo "Please update the hosts file to resolve the following:"
   echo -e "\t $SERVER_HOST"
   echo -e "\t $AUTH_HOST"
+else
+  # Every name the release answers on has to reach this machine (nginx forwards ports 80 and 443 to the Gateway), and Let's
+  # Encrypt checks each name a certificate covers over HTTP before issuing it.
+  echo "DNS records these hosts need (A/AAAA records point at this machine's public address):"
+  echo -e "\t $SERVER_HOST\t\tA/AAAA to this machine"
+  echo -e "\t $AUTH_HOST\t\tA/AAAA to this machine, or CNAME $SERVER_HOST"
+  echo -e "\t $AUTODISCOVER_HOST\tA/AAAA to this machine, or CNAME $SERVER_HOST (mail clients' Autodiscover)"
+  if [[ "$OPENPGPKEY_HOST" = "true" ]]; then
+    echo -e "\t $OPENPGPKEY_HOSTNAME\tA/AAAA to this machine, or CNAME $SERVER_HOST (OpenPGP Web Key Directory)"
+    echo "$OPENPGPKEY_HOSTNAME is on $SERVER_HOST's certificate: until its record resolves here, that certificate isn't issued."
+  else
+    echo "$OPENPGPKEY_HOSTNAME (the OpenPGP Web Key Directory host) isn't served. To serve it, add its record (A/AAAA to"
+    echo "this machine, or CNAME $SERVER_HOST) first, then re-run with --openpgpkey-host true: before the record exists the"
+    echo "certificate covering it is never issued."
+  fi
 fi
