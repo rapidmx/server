@@ -9,6 +9,18 @@ any one machine's global Claude memory), so it travels with the code.
 decision, finding, or reverted approach worth remembering, add a dated entry under Session Log.
 Keep entries terse — this is a reference, not a transcript.
 
+## Agent model assignments (JP, 2026-10-28)
+
+Standing rule for every AI agent working on this project (applies to all RapidMX and RapidREST repositories):
+
+| Kind of work | Model |
+|---|---|
+| Design (specs, plans, architecture proposals) | Opus 5.5 (`claude-opus-5-5`) |
+| Architectural review | Opus 5.5 (`claude-opus-5-5`) |
+| Code review (finding and verifying defects in diffs or code) | Sonnet 5.5 (`claude-sonnet-5-5`) |
+| Fixes (implementing review findings and other code changes) | Sonnet 5.5 (`claude-sonnet-5-5`) |
+| Simple operations (file operations, renames, project initialization and similar mechanical tasks) | Haiku 5.5 (`claude-haiku-5-5`) |
+
 ## Standing decisions
 
 - **Quick Lookup** - For a small, factual, single-answer lookup (does file X exist, where is symbol Y defined, what
@@ -6960,15 +6972,3 @@ Spec: `../restapi/specs/dns_publishing_and_integrations.md` (server steps). Buil
   - **Release blocker:** the bundled auth-server subchart's SecretStore renders no `caProvider`, so with the vault on TLS it can't verify it (fresh install never gets its secrets; upgrade keeps stale ones). The auth-server chart must render `caProvider` from `global.openbao.caConfigMap` and the `authserver` dependency move to that release first.
   - Open: restapi `CORE_CONFIG_NAMESPACES` should list `mail:secrets`; ESO honouring `serviceAccountRef.audiences` and the roles need a live check on powerlevel.gg; `src/routes/BaseVideoMeetingRoute.ts` is untracked and not from this work.
   - Verified: `yarn build`, `helm lint`, the openbao 0.29.4 chart rendered with the installer's values, full suite 76 files / 1075 tests green with coverage.
-
-## Agent model assignments (JP, 2026-10-28)
-
-Standing rule for every AI agent working on this project (applies to all RapidMX and RapidREST repositories):
-
-| Kind of work | Model |
-|---|---|
-| Design (specs, plans, architecture proposals) | Opus 5.5 (`claude-opus-5-5`) |
-| Architectural review | Opus 5.5 (`claude-opus-5-5`) |
-| Code review (finding and verifying defects in diffs or code) | Sonnet 5.5 (`claude-sonnet-5-5`) |
-| Fixes (implementing review findings and other code changes) | Sonnet 5.5 (`claude-sonnet-5-5`) |
-| Simple operations (file operations, renames, project initialization and similar mechanical tasks) | Haiku 5.5 (`claude-haiku-5-5`) |
