@@ -52,6 +52,23 @@ data:
   {{- end }}
   # The pods of this Deployment, which the server lists (with the Diagnostics Role's read access) to wait for the rollout before it encrypts plugin secret settings.
   config_encryption__plugin_secrets__pod_selector: {{ include "rapidmx.serverPodSelector" $ | quote }}
+  # The domains this installation is for, which the server creates once when it starts (mail.domains in values.yaml).
+  mail__domains: {{ include "rapidmx.seedDomains" $ | quote }}
+  {{- if eq (include "rapidmx.dnsPublishingEnabled" $) "true" }}
+  # DNS publishing (restapi's specs/dns_publishing_and_integrations.md, 6.3, 6.4 and 7.3): the DNS controller's ServiceAccount, the only caller the
+  # server's /internal/dns accepts; what to publish for the deployment's own hosts; and the external-dns image the server tells the controller to run,
+  # which is the one the controller is pinned to.
+  mail__dns__controller__subject: {{ printf "system:serviceaccount:%s:%s-dns-controller" $.Release.Namespace (include "rrst.fullname" $) | quote }}
+  mail__dns__publish__ttl: {{ int $.Values.dns.ttl | quote }}
+  mail__dns__publish__external_dns_image: {{ $.Values.dns.externalDns.image | quote }}
+  mail__dns__publish__addresses: {{ $.Values.dns.publicAddresses | default list | toJson | quote }}
+  mail__dns__publish__hosts: {{ include "rapidmx.dnsPublishHosts" $ | quote }}
+  {{- end }}
+  {{- with include "rapidmx.dnsBootstrapProvider" $ }}
+  # The DNS provider config the installer asked for, created once when the server starts, with the credentials of the Secret mounted below (service.yaml).
+  mail__dns__bootstrap_provider: {{ . | quote }}
+  mail__dns__bootstrap_credentials_dir: /etc/rapidmx/dns-bootstrap
+  {{- end }}
   {{- range $k, $v := $.Values.service.config }}
   {{ $k }}: {{ include "rrst.render" (dict "value" $v "context" $) | quote }}
   {{- end }}

@@ -1070,6 +1070,47 @@ again at the next start.
    first list adopted, not created. Under `yarn dev`, `example.com` is seeded (creating a domain writes its DKIM key to `mail:dkim:key_dir`, so that directory must be
    writable, as when adding a domain in the console).
 
+## DNS Publishing in the Chart
+
+With `dns.publishing.enabled` (off by default) the chart deploys what publishes the DNS records of the deployment and of each domain through
+[external-dns](https://github.com/kubernetes-sigs/external-dns), using the DNS provider configs an administrator manages in the admin console. Off, none of it is
+rendered and every record is published by hand, as each domain's DNS checklist says.
+
+| Value | Default | What it does |
+| --- | --- | --- |
+| `dns.publishing.enabled` | `false` | Renders the DNS controller and external-dns's rights, and sets the server's `mail:dns:controller:subject` and `mail:dns:publish:*`. |
+| `dns.controller.image` | `ghcr.io/rapidmx/dns-controller`, `tag` (`digest` instead of it when set) | The controller's image, an exact release moved together with the server's. **Empty until the controller's first release is published**: enabling publishing with neither a tag nor a digest fails the render, instead of pulling an image that does not exist. |
+| `dns.controller.resyncMinutes`, `dns.controller.resources` | `10`, small requests and a memory limit | How often the controller reconciles everything again; its resources. |
+| `dns.controller.longPollTimeoutSeconds`, `dns.controller.statusIntervalSeconds` | `0`, `0` | The controller's wait for the server's long-poll answer and its status interval; `0` keeps its defaults (75 and 60), except that a `service.config` `mail__dns__desired_state__long_poll_seconds` above 55 raises the wait to that plus 20, so the poll never ends as a timeout. |
+| `dns.controller.serverCA.configMap`, `.key` | none, `ca.crt` | With `global.gateway.tlsTermination: pod` the controller calls the server over TLS; when the Issuer's certificate is not signed by a public CA, the ConfigMap holding the CA bundle, which the controller trusts for that call (`NODE_EXTRA_CA_CERTS`). |
+| `dns.externalDns.image` | external-dns v0.23.0 by digest | The only image the controller runs for a provider config (also `mail:dns:publish:external_dns_image`). |
+| `dns.externalDns.resources`, `dns.externalDns.serviceAccount.annotations` | none | The external-dns containers' resources; annotations of the ServiceAccount they run as (`eks.amazonaws.com/role-arn` for a Route 53 config without access keys). |
+| `dns.publicAddresses` | none | The IPv4/IPv6 addresses the mail host's A/AAAA records point at (`mail:dns:publish:addresses`). Global unicast only; empty publishes nothing for the hosts. |
+| `dns.ttl` | `300` | The TTL of published records (`mail:dns:publish:ttl`). |
+| `dns.bootstrapProvider` | none | The provider config the installer asks for (`{ name, type, zones, options }`, optionally `allowTakeover`), created once by the server (above). The server pods mount the Secret `<fullname>-dns-bootstrap` with its credentials (optional) at `/etc/rapidmx/dns-bootstrap`; no other pod does. Set with or without `dns.publishing.enabled`. |
+| `mail.domains` | `global.domain` and `postfixBridge.domains` | The domains the server seeds (above), as `mail:domains`; each on the `bootstrap` provider while `dns.bootstrapProvider` is set (the server creates it whether or not publishing is on yet; a domain seeded without it is never assigned to it later). |
+| `mail.wkd.openpgpkeyHost.enabled` | `auto` | `auto` serves `openpgpkey.<global.domain>` only when a provider config comes with the release (`dns.publishing.enabled` and a `dns.bootstrapProvider` whose zones cover `global.domain`) and so publishes its record; `true` and `false` force it. |
+
+The controller is the only workload that creates Kubernetes objects (the external-dns Deployments, their credentials Secrets, `DNSEndpoint` resources and the
+one-shot Jobs of a credentials test, takeover and restore). Its ServiceAccount `<fullname>-dns-controller` has a Role in the release's namespace only (no ClusterRole)
+and a token projected for the audience `rapidmx-internal-dns`, which the server checks on every call to `/internal/dns` against the cluster's service-account keys
+(`mail:dns:controller:subject` is that ServiceAccount). Nothing calls the controller, so it has no Service or NetworkPolicy; it listens only on its health port, runs
+non-root with a read-only root filesystem and mounts nothing else (no keyring, database or Redis). The external-dns instances run as `<fullname>-external-dns`, which
+may read `DNSEndpoint`s and write their status and nothing else. The server's own Roles gain nothing. The `DNSEndpoint` CRD is cluster-scoped and not shipped by the
+chart: the installer applies it, and without it the controller reports publishing unavailable.
+
+The chart renders `mail:dns:publish:hosts` from what it serves: the mail host (`mail:dns:mx_hostname`) gets A/AAAA records for `dns.publicAddresses`, and
+`host` (when it is not the mail host), `auth.<global.domain>` (with the bundled auth-server), `autodiscover.<global.domain>` (the Gateway and the Certificate answer it
+whether or not the plugin is installed) and, with the host on, `openpgpkey.<global.domain>` get CNAMEs to it. A host outside every provider config's zones stays manual.
+
+**Turning publishing off.** Helm removes the controller and its rights with `dns.publishing.enabled: false` or `helm uninstall`, but not what the controller made, which Helm
+does not own: the external-dns Deployments (`<fullname>-external-dns-<provider uid>`), their credentials Secrets (`<fullname>-dns-<provider uid>`, which hold the providers'
+API tokens and go with their Deployment) and the `DNSEndpoint`s. Remove the publishing first, while the controller runs: unassign the domains or delete the provider configs
+in the admin console, and the controller deletes the records it published and, two minutes later, the instances and the Secrets; then set `dns.publishing.enabled: false`.
+What is left after the controller is gone is removed by label, in the release's namespace:
+`kubectl delete dnsendpoints,deployments,jobs,secrets -l app.kubernetes.io/managed-by=rapidmx-dns-controller,app.kubernetes.io/instance=<release>` (the records already in DNS stay
+until you delete them at the provider; kept apex TXT values are restored by the installer's `--uninstall` and the console only).
+
 ## Administrators and Other Users' Mail
 
 An administrator is an ordinary user with more powers over the *platform* (domains, policies, plugins, branding, mailbox settings) - **not** over other people's mail. In the mail client and its settings an

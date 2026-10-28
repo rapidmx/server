@@ -1,0 +1,110 @@
+{{- if eq (include "rapidmx.dnsPublishingEnabled" $) "true" }}
+---
+# The DNS controller's ServiceAccount (restapi's specs/dns_publishing_and_integrations.md, 7.2 and 7.6). The server checks its token, by this name,
+# on every call to /internal/dns (mail:dns:controller:subject).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "rrst.fullname" . }}-dns-controller
+  labels:
+    {{- include "rrst.labels" . | nindent 4 }}
+---
+# What the controller writes, in this namespace only (a Role, not a ClusterRole): the external-dns Deployments and their credentials Secrets (the
+# controller reads a Secret's metadata, never its values), the DNSEndpoint resources, and the one-shot Jobs of the credentials test, takeover and
+# restore. It is the only workload of the release that can create any of them; the server stays read-only (diagnostics-rbac.yaml). Its Secret
+# names are not fixed (<fullname>-dns-<provider uid>), so they can't be listed here; the controller checks a Secret's labels before it changes or
+# deletes one. A create can't be limited to a name, so the Lease it must hold before it writes is created by anyone of this Role and read and renewed
+# by name.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "rrst.fullname" . }}-dns-controller
+  labels:
+    {{- include "rrst.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "create", "update", "patch", "delete"]
+  # To find out why an operation's Job failed, and to scrape the external-dns pods' metrics.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "create", "delete"]
+  - apiGroups: ["externaldns.k8s.io"]
+    resources: ["dnsendpoints"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["create"]
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    resourceNames: [{{ include "rrst.fullname" . }}-dns-controller]
+    verbs: ["get", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "rrst.fullname" . }}-dns-controller
+  labels:
+    {{- include "rrst.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "rrst.fullname" . }}-dns-controller
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "rrst.fullname" . }}-dns-controller
+    namespace: {{ .Release.Namespace }}
+---
+# The ServiceAccount every external-dns instance the controller creates runs as (DNS_CONTROLLER_EXTERNAL_DNS_SERVICE_ACCOUNT). Shared by all of them,
+# since what they may do is the same: read the DNSEndpoints and write their status. A Route 53 config without access keys gets its AWS IAM role
+# through the annotations (dns.externalDns.serviceAccount.annotations).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "rrst.fullname" . }}-external-dns
+  labels:
+    {{- include "rrst.labels" . | nindent 4 }}
+  {{- with ((($.Values.dns).externalDns).serviceAccount).annotations }}
+  annotations:
+    {{- range $key, $value := . }}
+    {{ $key }}: {{ tpl (toString $value) $ | quote }}
+    {{- end }}
+  {{- end }}
+---
+# What external-dns needs with --source=crd in a single namespace (as its own chart renders it with namespaced: true): no nodes, namespaces,
+# services or ingresses, and no right on any other resource.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "rrst.fullname" . }}-external-dns
+  labels:
+    {{- include "rrst.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["externaldns.k8s.io"]
+    resources: ["dnsendpoints"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["externaldns.k8s.io"]
+    resources: ["dnsendpoints/status"]
+    verbs: ["update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "rrst.fullname" . }}-external-dns
+  labels:
+    {{- include "rrst.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "rrst.fullname" . }}-external-dns
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "rrst.fullname" . }}-external-dns
+    namespace: {{ .Release.Namespace }}
+{{- end }}

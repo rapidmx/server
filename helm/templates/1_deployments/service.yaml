@@ -18,6 +18,7 @@ than leaving extra pods stuck in ContainerCreating on a Multi-Attach error.
 {{- $openbaoAuth := eq (include "rapidmx.openbaoServerAuth" $) "true" }}
 {{- $openbaoTokenSecret := include "rapidmx.openbaoTokenSecret" $ }}
 {{- $openbaoCa := ternary (include "rrst.vaultCaConfigMap" $) "" $.Values.global.openbao.enabled }}
+{{- $dnsBootstrap := include "rapidmx.dnsBootstrapProvider" $ }}
 {{- if ne $.Values.mail.pki.storage.accessMode "ReadWriteMany" }}
 {{- $rwoVolumes = append $rwoVolumes "mail.pki.storage" }}
 {{- end }}
@@ -253,6 +254,14 @@ spec:
             - name: config-keyring
               mountPath: /etc/rapidmx/config-keyring
               readOnly: true
+            {{- if $dnsBootstrap }}
+            # The credentials of the installer's DNS provider (mail:dns:bootstrap_credentials_dir), one file per credential field: the server
+            # seals them into the provider config's row the first time it starts and the installer deletes the Secret once the rollout is
+            # ready. This Deployment's pods are the only ones that mount it.
+            - name: dns-bootstrap
+              mountPath: /etc/rapidmx/dns-bootstrap
+              readOnly: true
+            {{- end }}
       volumes:
         - name: plugins
           emptyDir: {}
@@ -279,6 +288,14 @@ spec:
         - name: config-keyring
           secret:
             secretName: {{ include "rapidmx.configKeyringSecretName" . }}
+        {{- if $dnsBootstrap }}
+        # Optional: a provider that needs no credentials (unsigned rfc2136, Route 53 through IRSA) has no Secret, and the installer deletes it
+        # once the config exists, after which a pod that restarts finds it gone.
+        - name: dns-bootstrap
+          secret:
+            secretName: {{ include "rrst.fullname" . }}-dns-bootstrap
+            optional: true
+        {{- end }}
         {{- if $openbaoAuth }}
         # A token of the pod's own ServiceAccount for OpenBao alone (its audience), valid for an hour and rotated by the kubelet:
         # the OpenBao role checks the audience, so the token the pod uses for the Kubernetes API can't log in, and this one is

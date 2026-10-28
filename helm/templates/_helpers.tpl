@@ -414,13 +414,149 @@ include "rapidmx.openpgpkeyHost" .
 {{- end -}}
 
 {{/*
-"true" when the chart certifies and routes the Web Key Directory host above (mail.wkd.openpgpkeyHost.enabled). Off by default:
-the name needs a DNS record before cert-manager can prove it, and without one the Certificate for `host` (which would cover it)
+"true" when the chart certifies and routes the Web Key Directory host above (mail.wkd.openpgpkeyHost.enabled): "true" and "false" as
+set, and "auto" (the default) when a DNS provider publishes the install domain's records with the release (rapidmx.dnsBootstrapCoversDomain),
+since the name needs a DNS record before cert-manager can prove it, and without one the Certificate for `host` (which would cover it)
 never becomes Ready. The server's own /.well-known/openpgpkey on `host` (the WKD direct method) is routed either way. Usage:
 include "rapidmx.openpgpkeyHostEnabled" .
 */}}
 {{- define "rapidmx.openpgpkeyHostEnabled" -}}
-{{-   if (((.Values.mail).wkd).openpgpkeyHost).enabled -}}true{{- else -}}false{{- end -}}
+{{-   $setting := toString (dig "wkd" "openpgpkeyHost" "enabled" "auto" (.Values.mail | default dict)) -}}
+{{-   if eq $setting "true" -}}
+true
+{{-   else if eq $setting "false" -}}
+false
+{{-   else if eq $setting "auto" -}}
+{{-     if and (eq (include "rapidmx.dnsPublishingEnabled" .) "true") (eq (include "rapidmx.dnsBootstrapCoversDomain" .) "true") -}}true{{- else -}}false{{- end -}}
+{{-   else -}}
+{{-     fail (printf "mail.wkd.openpgpkeyHost.enabled is %q, but it must be true, false or auto." $setting) -}}
+{{-   end -}}
+{{- end -}}
+
+{{/******************************** DNS PUBLISHING ********************************/}}
+
+{{/* "true" when DNS publishing is on (dns.publishing.enabled): the controller, external-dns's rights and the server's publishing settings. */}}
+{{- define "rapidmx.dnsPublishingEnabled" -}}
+{{-   if ((.Values.dns).publishing).enabled -}}true{{- else -}}false{{- end -}}
+{{- end -}}
+
+{{/*
+The DNS provider config the installer asks for (dns.bootstrapProvider) as JSON, or nothing: the server creates it once when it starts
+(mail:dns:bootstrap_provider), with the credentials of the Secret `<fullname>-dns-bootstrap` mounted into its pods.
+*/}}
+{{- define "rapidmx.dnsBootstrapProvider" -}}
+{{-   with (.Values.dns).bootstrapProvider -}}{{ toJson . }}{{- end -}}
+{{- end -}}
+
+{{/*
+"true" when a zone of the bootstrap provider is global.domain or a parent of it, so the provider publishes the install domain's records
+(including openpgpkey.<global.domain>). Compared whole labels, so "ample.com" doesn't cover "example.com".
+*/}}
+{{- define "rapidmx.dnsBootstrapCoversDomain" -}}
+{{-   $domain := lower (include "rrst.render" (dict "value" .Values.global.domain "context" .)) -}}
+{{-   $covers := false -}}
+{{-   range $zone := (dig "zones" (list) (((.Values.dns).bootstrapProvider) | default dict)) -}}
+{{-     $zone = lower (toString $zone) -}}
+{{-     if or (eq $domain $zone) (hasSuffix (printf ".%s" $zone) $domain) -}}
+{{-       $covers = true -}}
+{{-     end -}}
+{{-   end -}}
+{{-   if $covers -}}true{{- else -}}false{{- end -}}
+{{- end -}}
+
+{{/*
+The host the deployment's mail is reached at (mail:dns:mx_hostname): mail.mxHostname, else postfixBridge.hostname, which is
+mail.<global.domain>. It is the target of the A/AAAA records of dns.publicAddresses and of the CNAMEs of the other hosts.
+*/}}
+{{- define "rapidmx.mailHost" -}}
+{{-   .Values.mail.mxHostname | default (include "rrst.render" (dict "value" .Values.postfixBridge.hostname "context" .)) -}}
+{{- end -}}
+
+{{/* The host name of the bundled auth-server: authserver.host, else auth.<global.domain>. */}}
+{{- define "rapidmx.authServerHost" -}}
+{{-   tpl (toString (.Values.authserver.host | default (printf "auth.%s" (toString .Values.global.domain)))) . -}}
+{{- end -}}
+
+{{/*
+The hosts this release serves, which DNS publishing keeps records for (mail:dns:publish:hosts, a JSON list of { name, type }): the mail
+host gets A/AAAA records for dns.publicAddresses and every other host a CNAME to it. A host is in the list exactly when the chart serves
+it: the host the chart is reached at (`host`) when it is not the mail host, the auth-server's with the bundled one, autodiscover.<global.domain>
+always (the Gateway and the Certificate answer it whether or not the plugin is installed), openpgpkey.<global.domain> with the host on
+(rapidmx.openpgpkeyHostEnabled).
+*/}}
+{{- define "rapidmx.dnsPublishHosts" -}}
+{{-   $mailHost := include "rapidmx.mailHost" . -}}
+{{-   $hosts := list (dict "name" $mailHost "type" "address") -}}
+{{-   $host := lower (include "rrst.render" (dict "value" .Values.host "context" .)) -}}
+{{-   if and $host (ne $host (lower $mailHost)) -}}
+{{-     $hosts = append $hosts (dict "name" $host "type" "cname") -}}
+{{-   end -}}
+{{-   if .Values.authserver.create -}}
+{{-     $hosts = append $hosts (dict "name" (include "rapidmx.authServerHost" .) "type" "cname") -}}
+{{-   end -}}
+{{-   $hosts = append $hosts (dict "name" (include "rapidmx.autodiscoverHost" .) "type" "cname") -}}
+{{-   if eq (include "rapidmx.openpgpkeyHostEnabled" .) "true" -}}
+{{-     $hosts = append $hosts (dict "name" (include "rapidmx.openpgpkeyHost" .) "type" "cname") -}}
+{{-   end -}}
+{{-   toJson $hosts -}}
+{{- end -}}
+
+{{/*
+mail:domains as JSON: the domains this installation is for, which the server creates once when it starts. mail.domains as it is (a list of
+names and objects, or a comma-separated string); empty, global.domain and each domain of postfixBridge.domains, each once, each on the
+installer's DNS provider ("bootstrap") while there is one (dns.bootstrapProvider): the server creates that config whether or not publishing
+is on yet, and a domain seeded without it is never assigned to it afterwards (seeding is once), so the assignment can't wait for publishing.
+*/}}
+{{- define "rapidmx.seedDomains" -}}
+{{-   $configured := (.Values.mail).domains | default list -}}
+{{-   if kindIs "string" $configured -}}
+{{-     $configured = splitList "," (include "rrst.render" (dict "value" $configured "context" .)) -}}
+{{-   else -}}
+{{-     $configured = include "rrst.render" (dict "value" $configured "context" .) | fromYamlArray -}}
+{{-   end -}}
+{{-   $entries := list -}}
+{{-   range $entry := $configured -}}
+{{-     if kindIs "string" $entry -}}
+{{-       $entry = trim $entry -}}
+{{-     end -}}
+{{-     if $entry -}}
+{{-       $entries = append $entries $entry -}}
+{{-     end -}}
+{{-   end -}}
+{{-   if not $entries -}}
+{{-     $names := list (include "rrst.render" (dict "value" .Values.global.domain "context" .)) -}}
+{{-     range $name := splitList "," (include "rrst.render" (dict "value" ((.Values.postfixBridge).domains | default "") "context" .)) -}}
+{{-       $names = append $names $name -}}
+{{-     end -}}
+{{-     $seen := dict -}}
+{{-     range $name := $names -}}
+{{-       $name = lower (trim $name) -}}
+{{-       if and $name (not (hasKey $seen $name)) -}}
+{{-         $_ := set $seen $name true -}}
+{{-         if include "rapidmx.dnsBootstrapProvider" $ -}}
+{{-           $entries = append $entries (dict "name" $name "dnsProvider" "bootstrap") -}}
+{{-         else -}}
+{{-           $entries = append $entries $name -}}
+{{-         end -}}
+{{-       end -}}
+{{-     end -}}
+{{-   end -}}
+{{-   toJson $entries -}}
+{{- end -}}
+
+{{/*
+The DNS controller's image: dns.controller.image's digest when set, else its tag. Fails the render with neither, since the controller is the
+one workload that may create Deployments and Secrets and must run a release the chart names. Usage: include "rapidmx.dnsControllerImage" .
+*/}}
+{{- define "rapidmx.dnsControllerImage" -}}
+{{-   $image := .Values.dns.controller.image -}}
+{{-   if $image.digest -}}
+{{-     printf "%s/%s@%s" $image.registry $image.repository $image.digest -}}
+{{-   else if $image.tag -}}
+{{-     printf "%s/%s:%s" $image.registry $image.repository (toString $image.tag) -}}
+{{-   else -}}
+{{-     fail "dns.publishing.enabled is true, but dns.controller.image has neither a tag nor a digest: set the rapidmx/dns-controller release to run." -}}
+{{-   end -}}
 {{- end -}}
 
 {{/*
@@ -516,8 +652,8 @@ Generates the URL to the auth server.
 Usage: include "rapidmx.authServerURL" .
 */}}
 {{- define "rapidmx.authServerURL" -}}
-{{- /* authserver.host is unset until the auth-server subchart's own default is merged in, which needs the subchart present in charts/ (it isn't for `helm lint` of a checkout, where the tarballs are ignored), so fall back to the same default global.jwt.issuer uses. */ -}}
-{{-   $host := tpl (toString ($.Values.authserver.host | default (printf "auth.%s" (toString $.Values.global.domain)))) . -}}
+{{- /* authserver.host is unset until the auth-server subchart's own default is merged in, which needs the subchart present in charts/ (it isn't for `helm lint` of a checkout, where the tarballs are ignored), so rapidmx.authServerHost falls back to the same default global.jwt.issuer uses. */ -}}
+{{-   $host := include "rapidmx.authServerHost" . -}}
 {{-   if $.Values.global.gateway.tls -}}
 {{-     printf "https://%s" $host -}}
 {{-   else -}}

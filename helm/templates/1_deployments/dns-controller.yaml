@@ -1,0 +1,143 @@
+{{- if eq (include "rapidmx.dnsPublishingEnabled" $) "true" }}
+{{- $image := include "rapidmx.dnsControllerImage" $ }}
+{{- $fullname := include "rrst.fullname" $ }}
+{{- /* The same rule as postfix-bridge's ingestBaseUrl: the server only speaks TLS with pod-terminated TLS, and plain HTTP otherwise. */}}
+{{- $scheme := ternary "https" "http" (eq (include "rrst.podTLS" $) "true") }}
+{{- $controller := $.Values.dns.controller }}
+{{- /* The long poll's timeout must exceed the server's wait (mail__dns__desired_state__long_poll_seconds, 55 unless service.config raises it): follow a raised one by the controller's own margin (75 over 55). */}}
+{{- $serverPoll := int (include "rrst.render" (dict "value" (toString (dig "mail__dns__desired_state__long_poll_seconds" "55" ($.Values.service.config | default dict))) "context" $)) }}
+{{- $longPoll := int ($controller.longPollTimeoutSeconds | default 0) }}
+{{- if and (not $longPoll) (gt $serverPoll 55) }}
+{{-   $longPoll = min 900 (add $serverPoll 20) }}
+{{- end }}
+{{- $serverCA := ($controller.serverCA | default dict) }}
+---
+# The DNS controller (restapi's specs/dns_publishing_and_integrations.md, 7.2): the one workload that may create Deployments, Secrets and Jobs
+# (dns-controller-rbac.yaml), so it is a small image of its own (rapidmx/dns-controller: distroless, non-root, no run-time dependencies) and not the
+# server image with another command. It reads what to publish from the server's /internal/dns, turns it into external-dns Deployments, their
+# credentials Secrets and DNSEndpoint resources, and reports back. It listens only on its health port: nothing calls it, so it has no Service
+# and no NetworkPolicy admitting the server.
+# One replica, stopped before its replacement starts: it also holds a Lease before it writes, so two never write together.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullname }}-dns-controller
+  labels:
+    {{- include "rrst.labels" $ | nindent 4 }}
+    app: dns-controller
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: dns-controller
+      app.kubernetes.io/instance: {{ $fullname }}-dns-controller
+  template:
+    metadata:
+      labels:
+        app: dns-controller
+        app.kubernetes.io/instance: {{ $fullname }}-dns-controller
+    spec:
+      serviceAccountName: {{ $fullname }}-dns-controller
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: dns-controller
+          image: {{ $image | quote }}
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            # The server's internal DNS API; the Service answers on 80. The token it presents is the projected one below (the controller's default path).
+            - name: DNS_CONTROLLER_SERVER_URL
+              value: {{ printf "%s://%s-services/internal/dns" $scheme $fullname | quote }}
+            # What the controller names and finds its objects by.
+            - name: DNS_CONTROLLER_FULLNAME
+              value: {{ $fullname | quote }}
+            - name: DNS_CONTROLLER_RELEASE
+              value: {{ $.Release.Name | quote }}
+            - name: DNS_CONTROLLER_LEASE_NAME
+              value: {{ printf "%s-dns-controller" $fullname | quote }}
+            # The only external-dns image it runs: the one the server tells it to (mail:dns:publish:external_dns_image), pinned by digest.
+            - name: DNS_CONTROLLER_EXTERNAL_DNS_IMAGE
+              value: {{ $.Values.dns.externalDns.image | quote }}
+            - name: DNS_CONTROLLER_EXTERNAL_DNS_SERVICE_ACCOUNT
+              value: {{ printf "%s-external-dns" $fullname | quote }}
+            {{- with $.Values.dns.externalDns.resources }}
+            - name: DNS_CONTROLLER_EXTERNAL_DNS_RESOURCES
+              value: {{ toJson . | quote }}
+            {{- end }}
+            - name: DNS_CONTROLLER_RESYNC_MINUTES
+              value: {{ int $controller.resyncMinutes | toString | quote }}
+            {{- if $longPoll }}
+            - name: DNS_CONTROLLER_LONG_POLL_TIMEOUT_SECONDS
+              value: {{ $longPoll | toString | quote }}
+            {{- end }}
+            {{- if $controller.statusIntervalSeconds }}
+            - name: DNS_CONTROLLER_STATUS_INTERVAL_SECONDS
+              value: {{ int $controller.statusIntervalSeconds | toString | quote }}
+            {{- end }}
+            {{- if $serverCA.configMap }}
+            # The CA of the server's certificate (dns.controller.serverCA), for the call to the server alone: the Kubernetes API is reached with the cluster CA, scoped to it.
+            - name: NODE_EXTRA_CA_CERTS
+              value: /etc/rapidmx/server-ca/{{ $serverCA.key | default "ca.crt" }}
+            {{- end }}
+          ports:
+            - name: health
+              containerPort: 8081
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+            periodSeconds: 10
+            timeoutSeconds: 5
+          {{- with $.Values.dns.controller.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: internal-dns-token
+              mountPath: /var/run/secrets/rapidmx/internal-dns
+              readOnly: true
+            {{- if $serverCA.configMap }}
+            - name: server-ca
+              mountPath: /etc/rapidmx/server-ca
+              readOnly: true
+            {{- end }}
+      volumes:
+        # A token of this pod's ServiceAccount for the server alone (its audience), valid for an hour and rotated by the kubelet; the controller
+        # reads the file again on every call. The server checks it against the cluster's service-account keys, so it needs no shared secret. It is
+        # no use against the Kubernetes API, which the pod reaches with the default token.
+        - name: internal-dns-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  audience: rapidmx-internal-dns
+                  expirationSeconds: 3600
+                  path: token
+        {{- if $serverCA.configMap }}
+        - name: server-ca
+          configMap:
+            name: {{ $serverCA.configMap | quote }}
+        {{- end }}
+{{- end }}

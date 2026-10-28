@@ -245,9 +245,7 @@ service:
     # except with pod-terminated TLS, where the Gateway can't answer 404 for /internal itself and the server's refusal is all there is.
     mail__internal__allow_forwarded: '{{ and .Values.mail.ingestService.enabled (ne (include "rrst.podTLS" .) "true") }}'
     mail__security__trusted_authserv_id: '{{ include "rapidmx.trustedAuthservId" . }}'
-    mail__dns__mx_hostname: >-
-      {{ .Values.mail.mxHostname | default (include "rrst.render" (dict "value"
-      .Values.postfixBridge.hostname "context" .)) }}
+    mail__dns__mx_hostname: '{{ include "rapidmx.mailHost" . }}'
     # The bundled coturn (coturn.create). Only the address is here: the user name and password come from the coturn Secret,
     # which the server pod loads alongside this ConfigMap as mail__videoconf__turn__username and __credential.
     mail__videoconf__turn__url: '{{ include "rapidmx.coturnURL" . }}'
@@ -350,6 +348,66 @@ configEncryption:
   openbao:
     # The keyring's KV path under global.openbao.kvMount. Empty: <fullname>/config-keyring.
     path: ''
+# DNS publishing (restapi's specs/dns_publishing_and_integrations.md): the records a domain and this deployment's hosts need (MX, SPF,
+# DKIM, DMARC, the ownership TXT, mail./auth./autodiscover./openpgpkey.) are published through external-dns, with per-domain provider
+# configs an administrator manages in the admin console. The server only records what must be published; the DNS controller below is the
+# only workload that creates Kubernetes objects (the external-dns Deployments, their credentials Secrets, DNSEndpoint resources and
+# one-shot Jobs), in this namespace only. Nothing calls the controller, so it has no Service or NetworkPolicy; it calls the server's
+# /internal/dns with a token of its own ServiceAccount (audience rapidmx-internal-dns), which the server checks.
+# The DNSEndpoint CRD is cluster-scoped and not shipped here: the installer applies it (like cert-manager's), and without it the
+# controller reports publishing unavailable and everything else works.
+dns:
+  publishing:
+    # Off: none of this is rendered, and every domain is published by hand, as the Domain DNS setup checklist says. Turning it off
+    # removes the controller, not the external-dns Deployments, Secrets and DNSEndpoints it made: see the README.
+    enabled: false
+  # The IPv4/IPv6 addresses the mail host's A/AAAA records point at. Global unicast only (the server refuses private, loopback and
+  # link-local addresses); empty publishes nothing for the hosts and the admin console says why.
+  publicAddresses: []
+  # The TTL of published records, in seconds (Cloudflare needs at least 120; the server raises it there).
+  ttl: 300
+  # The DNS provider config the installer asks for, created once by the server when it starts: { name, type, zones, options } and
+  # optionally allowTakeover, with the credentials in the Secret <fullname>-dns-bootstrap (one file per credential field, e.g.
+  # apiToken), which the installer creates and deletes once the rollout is ready. Only the server pods mount it. Empty: none.
+  bootstrapProvider: {}
+  # What the controller runs for each provider config. Pinned, and by digest: the controller refuses any other image.
+  externalDns:
+    image: registry.k8s.io/external-dns/external-dns:v0.23.0@sha256:1854499e2b08cee47c40a08e356bff20dcb192dbcfde8378fc3f900f12cad5a3
+    # The external-dns containers' resources (JSON passed to the controller). Empty: none.
+    resources: {}
+    serviceAccount:
+      # Annotations of the ServiceAccount every external-dns instance runs as (<fullname>-external-dns): where an AWS IAM role for a
+      # Route 53 config without access keys goes (eks.amazonaws.com/role-arn).
+      annotations: {}
+  controller:
+    # Pinned to an exact rapidmx/dns-controller release, moved together with the server release (the handshake refuses a pair that does
+    # not speak the same API version). digest, when set, is used instead of the tag. Empty until the first release of the controller
+    # is published (rapidmx/dns-controller has no tag or image yet): enabling dns.publishing with neither fails the render, rather
+    # than pinning an image that does not exist and leaving a pod in ImagePullBackOff. Set the tag, by its YAML key path, when it is out.
+    image:
+      registry: ghcr.io
+      repository: rapidmx/dns-controller
+      tag: ''
+      digest: ''
+    # How often the whole desired state is reconciled again while nothing changes.
+    resyncMinutes: 10
+    # How long the controller waits for the server's answer to a desired-state long poll, and how often it reports its status when
+    # nothing changes (its defaults, 75 and 60, when 0). The wait must exceed the server's mail__dns__desired_state__long_poll_seconds
+    # (55): left at 0, it follows that setting from service.config (plus 20) when it is raised above 55.
+    longPollTimeoutSeconds: 0
+    statusIntervalSeconds: 0
+    # With global.gateway.tlsTermination: pod the controller reaches the server over TLS, with the certificate the server's Issuer
+    # made. A certificate that a public CA did not sign needs its CA here: the name of a ConfigMap in this namespace holding the
+    # PEM bundle under `key`, which the controller then trusts besides the public roots (NODE_EXTRA_CA_CERTS). Empty: public roots only.
+    serverCA:
+      configMap: ''
+      key: ca.crt
+    resources:
+      requests:
+        cpu: 10m
+        memory: 64Mi
+      limits:
+        memory: 256Mi
 authserver:
   create: true
   # The auth-server subchart renders its own copy of these datastores (same names as the ones above): keep them identical.
@@ -461,6 +519,12 @@ mail:
       service.beta.kubernetes.io/aws-load-balancer-internal: 'true'
     loadBalancerSourceRanges: []
   mxHostname: ''
+  # The domains this installation is for. The server creates each one when it starts, once (a domain deleted in the admin console
+  # stays deleted, and a name taken off this list is not deleted), instead of the administrator adding it again by hand. Each entry
+  # is a domain name or an object { name, dnsProvider, dmarcPolicy, dmarcReportEmail, aliasOf }, where dnsProvider is the uid of a
+  # DNS provider config, or "bootstrap" for the one dns.bootstrapProvider creates. A comma-separated string works too. Empty:
+  # global.domain and each domain of postfixBridge.domains, each on the bootstrap provider while dns.publishing.enabled.
+  domains: []
   # Outlook (MAPI/HTTP) and Exchange ActiveSync clients can only send HTTP Basic credentials: on /mapi and
   # /Microsoft-Server-ActiveSync the server accepts a username and an app password (created on the auth-server account page,
   # which is how a user with two-factor sign-in on signs in) as well as a JWT, checking them with the auth-server. Nothing
@@ -487,9 +551,13 @@ mail:
   # Certificate and to the Gateway's listeners and routes. It needs a DNS record first - a CNAME to `host`, or an A/AAAA record
   # to the Gateway's address - or the Let's Encrypt HTTP-01 challenge for it never passes, the Certificate never becomes Ready
   # (it stops `host` getting a renewed certificate too) and `helm upgrade --wait` times out.
+  #   auto: on when a DNS provider is configured for the install domain with the release (dns.publishing.enabled and a
+  #     dns.bootstrapProvider whose zones cover global.domain), which publishes the record; else off.
+  #   true / false: always on / off. An install that waits for the record to be published installs with false first and then
+  #     upgrades to auto (or true) once openpgpkey.<global.domain> resolves.
   wkd:
     openpgpkeyHost:
-      enabled: false
+      enabled: auto
   trustedAuthservId: ''
   relay:
     host: postfix
