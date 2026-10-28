@@ -15,6 +15,7 @@ export {
     CalendarEventAttendeeLinkSQL,
     CalendarEventSQL,
     CalendarShareLinkSQL,
+    ConfigKeyStateSQL,
     ContactListSQL,
     ContactSQL,
     CorrespondentSQL,

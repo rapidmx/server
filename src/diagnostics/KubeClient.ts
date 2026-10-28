@@ -10,8 +10,12 @@ export const SERVICE_ACCOUNT_DIR = "/var/run/secrets/kubernetes.io/serviceaccoun
 const MAX_BODY_BYTES = 32 * 1024 * 1024;
 
 export interface KubeRequest {
+    /** GET unless said otherwise. The only write is the PUT of the configuration keyring Secret (`KubernetesConfigKeyringStore`). */
+    method?: "GET" | "PUT";
     url: URL;
     headers: Record<string, string>;
+    /** The JSON text of a PUT. */
+    body?: string;
     /** PEM CA certificate(s) to verify the peer with (the cluster's, from the service account). */
     ca?: string;
     rejectUnauthorized: boolean;
@@ -23,7 +27,7 @@ export interface KubeResponse {
     body: string;
 }
 
-/** Performs one GET. Replaceable so tests need no cluster. */
+/** Performs one request. Replaceable so tests need no cluster. */
 export type KubeTransport = (request: KubeRequest) => Promise<KubeResponse>;
 
 /** An error answer, or no answer, from the API server. */
@@ -43,7 +47,7 @@ export function httpsTransport(request: KubeRequest): Promise<KubeResponse> {
         const req = https.request(
             request.url,
             {
-                method: "GET",
+                method: request.method ?? "GET",
                 headers: request.headers,
                 ca: request.ca,
                 rejectUnauthorized: request.rejectUnauthorized,
@@ -66,7 +70,7 @@ export function httpsTransport(request: KubeRequest): Promise<KubeResponse> {
         );
         req.on("timeout", () => req.destroy(new Error(`no answer within ${request.timeoutMs} ms`)));
         req.on("error", reject);
-        req.end();
+        req.end(request.body);
     });
 }
 
@@ -80,8 +84,9 @@ export interface KubeClientOptions {
 }
 
 /**
- * A minimal read-only Kubernetes client for the pod's own service account: JSON GETs against the API server. It is not `@kubernetes/client-node` on purpose - the Diagnostics page reads a handful of
- * endpoints, all inside its own namespace, and this keeps a large dependency, and its own transitive ones, out of the mail server.
+ * A minimal Kubernetes client for the pod's own service account: JSON GETs against the API server, and the one PUT that replaces the configuration keyring Secret
+ * (the chart's Role allows it nowhere else). It is not `@kubernetes/client-node` on purpose - the Diagnostics page reads a handful of endpoints, all inside its own
+ * namespace, and this keeps a large dependency, and its own transitive ones, out of the mail server.
  */
 export class KubeClient {
     private readonly dir: string;
@@ -139,17 +144,35 @@ export class KubeClient {
 
     /** GETs `path` (e.g. `/version`) from the API server. */
     async get<T>(path: string): Promise<T> {
-        const host = this.options.host.includes(":") ? `[${this.options.host}]` : this.options.host;
-        return this.getJson<T>(new URL(`https://${host}:${this.options.port}${path}`));
+        return this.send<T>("GET", path);
     }
 
-    private async getJson<T>(url: URL): Promise<T> {
+    /**
+     * PUTs `body` (as JSON) to `path`, replacing the object there. The body's `metadata.resourceVersion` makes the API server refuse the write (409) when the object
+     * changed since it was read. Errors name the host, path and status, never the body.
+     */
+    async put<T>(path: string, body: unknown): Promise<T> {
+        return this.send<T>("PUT", path, JSON.stringify(body));
+    }
+
+    private async send<T>(method: "GET" | "PUT", path: string, body?: string): Promise<T> {
+        const host = this.options.host.includes(":") ? `[${this.options.host}]` : this.options.host;
+        return this.getJson<T>(new URL(`https://${host}:${this.options.port}${path}`), method, body);
+    }
+
+    private async getJson<T>(url: URL, method: "GET" | "PUT", body?: string): Promise<T> {
         const token = await this.token();
         let response: KubeResponse;
         try {
             response = await this.transport({
+                method,
                 url,
-                headers: { Accept: "application/json", Authorization: `Bearer ${token}` },
+                headers: {
+                    Accept: "application/json",
+                    Authorization: `Bearer ${token}`,
+                    ...(body !== undefined ? { "Content-Type": "application/json", "Content-Length": String(Buffer.byteLength(body)) } : {}),
+                },
+                ...(body !== undefined ? { body } : {}),
                 ca: await this.clusterCa(),
                 rejectUnauthorized: true,
                 timeoutMs: this.timeoutMs,
@@ -158,7 +181,7 @@ export class KubeClient {
             throw new KubeError(`${url.host}${url.pathname}: ${err?.code ?? err?.message ?? String(err)}`);
         }
         if (response.status < 200 || response.status >= 300) {
-            throw new KubeError(`${url.host}${url.pathname}: HTTP ${response.status}${forbiddenHint(response.status)}`, response.status);
+            throw new KubeError(`${url.host}${url.pathname}: HTTP ${response.status}${forbiddenHint(response.status, method)}`, response.status);
         }
         try {
             return JSON.parse(response.body) as T;
@@ -168,8 +191,11 @@ export class KubeClient {
     }
 }
 
-function forbiddenHint(status: number): string {
-    return status === 401 || status === 403
-        ? " (the server's service account may not read this; the Helm chart's global.diagnostics.rbac.create grants it, in this namespace only)"
-        : "";
+function forbiddenHint(status: number, method: "GET" | "PUT"): string {
+    if (status !== 401 && status !== 403) {
+        return "";
+    }
+    return method === "PUT"
+        ? " (the server's service account may not update this; the Helm chart's configEncryption.rbac.create grants it for the keyring Secret only)"
+        : " (the server's service account may not read this; the Helm chart's global.diagnostics.rbac.create grants it, in this namespace only)";
 }

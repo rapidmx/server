@@ -15,7 +15,7 @@ import { MongoMemoryServer } from "mongodb-memory-server";
 import { Logger, sleep } from "@rapidrest/core";
 import { ObjectFactory, Server } from "@rapidrest/service-core";
 import { LocalFsBlobStore, NodeDnsResolver, ManualSigningCertificateEnrollment } from "@rapidmx/restapi";
-import { FolderMongo, MailboxMongo, MessageMongo } from "@rapidmx/restapi/mongo";
+import { ConfigCipherMongo, FolderMongo, MailboxMongo, MessageMongo } from "@rapidmx/restapi/mongo";
 import { MongoTextSearchProvider } from "@rapidmx/restapi/search";
 import { DevLocalDeliveryTransportMongo } from "../../src/dev/DevLocalDeliveryTransportMongo.js";
 import { registerCoreProviders } from "../../src/lib/registerCoreProviders.js";
@@ -42,6 +42,7 @@ describe("MailComposeRoute (MongoDB)", () => {
         config.set("listen_host", "127.0.0.1");
         registerCoreProviders(objectFactory, config, {
             searchProvider: MongoTextSearchProvider,
+            configCipher: ConfigCipherMongo,
             devDeliveryTransport: DevLocalDeliveryTransportMongo,
             environment: "test",
             blobStore: LocalFsBlobStore,

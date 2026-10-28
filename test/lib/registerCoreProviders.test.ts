@@ -15,6 +15,7 @@ import {
     ManualSigningCertificateEnrollment,
     NodeDnsResolver,
     Rfc8823AcmeSigningCertificateEnrollment,
+    RedisConfigKeyChannel,
     S3BlobStore,
 } from "@rapidmx/restapi";
 import { DohDnssecDnsResolver } from "../../src/dns/DohDnssecDnsResolver.js";
@@ -22,9 +23,16 @@ import { DevBypassAvScanProvider, DevBypassSpamScanProvider } from "../../src/de
 import { DevLocalDeliveryTransportMongo } from "../../src/dev/DevLocalDeliveryTransportMongo.js";
 import { TieredRateLimiter } from "../../src/lib/TieredRateLimiter.js";
 import { OpenBaoClientPkiCertificateAuthority } from "../../src/openbao/OpenBaoClientPkiCertificateAuthority.js";
+import { KubePodRolloutCheck } from "../../src/secrets/KubePodRolloutCheck.js";
+import { KubernetesConfigKeyringStore } from "../../src/secrets/KubernetesConfigKeyringStore.js";
+import { OpenBaoConfigKeyringStore } from "../../src/secrets/OpenBaoConfigKeyringStore.js";
 import { registerCoreProviders } from "../../src/lib/registerCoreProviders.js";
 
 class FakeSearchProvider {}
+class FakeConfigCipher {}
+
+/** The two Redis datastores the configuration keyring is coordinated through (the chart configures both). */
+const REDIS = { "datastores:cache": { url: "redis://cache" }, "datastores:events": { url: "redis://events" } };
 
 function fakeConfig(values: Record<string, unknown> = {}): { get(key: string): unknown } {
     return { get: (key: string) => values[key] };
@@ -37,6 +45,7 @@ function recordRegistrations(config: { get(key: string): unknown }, overrides: P
         config,
         {
             searchProvider: FakeSearchProvider,
+            configCipher: FakeConfigCipher,
             devDeliveryTransport: DevLocalDeliveryTransportMongo,
             environment: "production",
             ...overrides,
@@ -60,8 +69,41 @@ describe("registerCoreProviders", () => {
                 "DkimKeyProvider",
                 "EncryptionCertificateAuthority",
                 "SigningCertificateEnrollment",
+                "ConfigCipher",
+                "ServerRolloutCheck",
             ].sort(),
         );
+    });
+
+    it("registers the configuration cipher the entry point names (Mongo or SQL) and the pod rollout check", () => {
+        const registered = recordRegistrations(fakeConfig());
+        expect(registered.ConfigCipher).toBe(FakeConfigCipher);
+        expect(registered.ServerRolloutCheck).toBe(KubePodRolloutCheck);
+    });
+
+    it("registers the Redis channel the server copies coordinate keys through when both Redis datastores are configured, and leaves it out otherwise", () => {
+        expect(recordRegistrations(fakeConfig(REDIS)).ConfigKeyChannel).toBe(RedisConfigKeyChannel);
+        // Without them (the test harnesses) restapi uses its in-process channel outside production, and has none in production.
+        expect(recordRegistrations(fakeConfig()).ConfigKeyChannel).toBeUndefined();
+        expect(recordRegistrations(fakeConfig({ "datastores:cache": { url: "redis://cache" } })).ConfigKeyChannel).toBeUndefined();
+    });
+
+    it("registers the Redis channel for the shipped configurations, which always name both Redis datastores, so the in-process channel is only a test one", async () => {
+        for (const file of ["../../src/config.mongo.js", "../../src/config.sql.js"]) {
+            vi.resetModules();
+            const { default: shipped } = await import(file);
+            expect(recordRegistrations(shipped).ConfigKeyChannel, file).toBe(RedisConfigKeyChannel);
+        }
+    });
+
+    it("registers the keyring store for the backend config_encryption:keyring_store:backend names", () => {
+        const store = (backend?: string) => recordRegistrations(fakeConfig({ "config_encryption:keyring_store:backend": backend })).ConfigKeyringStore;
+        expect(store("kubernetes")).toBe(KubernetesConfigKeyringStore);
+        expect(store("openbao")).toBe(OpenBaoConfigKeyringStore);
+        // restapi serves "file" itself, and with "none" (a keyring given inline) rotation is refused.
+        for (const backend of ["file", "none", undefined, "other"]) {
+            expect(store(backend), String(backend)).toBeUndefined();
+        }
     });
 
     it("registers the shared, non-config-driven providers unconditionally", () => {

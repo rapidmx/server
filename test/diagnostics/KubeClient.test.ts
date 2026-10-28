@@ -105,6 +105,57 @@ describe("KubeClient", () => {
         expect(error.message).toMatch(/HTTP 404$/);
     });
 
+    describe("put()", () => {
+        it("sends an authenticated JSON PUT with the body's length, and answers the parsed result", async () => {
+            const transport = vi.fn().mockResolvedValue({ status: 200, body: '{"metadata":{"resourceVersion":"8"}}' });
+            const body = { metadata: { resourceVersion: "7" }, data: { "keyring.json": "e30=" } };
+            expect(await client(transport).put("/api/v1/namespaces/mail/secrets/rel-config-keyring", body)).toEqual({ metadata: { resourceVersion: "8" } });
+            const request = transport.mock.calls[0][0] as KubeRequest;
+            expect(request).toMatchObject({
+                method: "PUT",
+                body: JSON.stringify(body),
+                headers: {
+                    Accept: "application/json",
+                    Authorization: "Bearer tok-1",
+                    "Content-Type": "application/json",
+                    "Content-Length": String(Buffer.byteLength(JSON.stringify(body))),
+                },
+                ca: "CA-PEM",
+                rejectUnauthorized: true,
+            });
+            expect(request.url.href).toBe("https://10.43.0.1/api/v1/namespaces/mail/secrets/rel-config-keyring");
+        });
+
+        it("keeps a GET a GET with no body", async () => {
+            const transport = vi.fn().mockResolvedValue({ status: 200, body: "{}" });
+            await client(transport).get("/version");
+            const request = transport.mock.calls[0][0] as KubeRequest;
+            expect(request.method ?? "GET").toBe("GET");
+            expect(request.body).toBeUndefined();
+        });
+
+        it("reports a conflict with its status, and a refusal by RBAC as one that can't update", async () => {
+            const conflict = await client(vi.fn().mockResolvedValue({ status: 409, body: '{"message":"the object has been modified"}' }))
+                .put("/x", {})
+                .catch((e) => e);
+            expect(conflict).toBeInstanceOf(KubeError);
+            expect(conflict.status).toBe(409);
+            // Never the answer's body, which may echo what was sent.
+            expect(conflict.message).toMatch(/HTTP 409$/);
+            const forbidden = await client(vi.fn().mockResolvedValue({ status: 403, body: "{}" })).put("/x", {}).catch((e) => e);
+            expect(forbidden.message).toMatch(/HTTP 403.*may not update this.*configEncryption\.rbac\.create/);
+            expect(forbidden.message).not.toMatch(/may not read/);
+        });
+
+        it("never puts the body in an error", async () => {
+            const refused = await client(vi.fn().mockRejectedValue(Object.assign(new Error("no"), { code: "ECONNRESET" })))
+                .put("/x", { data: { secret: "hunter2" } })
+                .catch((e) => e);
+            expect(refused.message).toMatch(/ECONNRESET/);
+            expect(refused.message).not.toMatch(/hunter2/);
+        });
+    });
+
     it("reports a connection failure and a non-JSON answer", async () => {
         const refused = await client(vi.fn().mockRejectedValue(Object.assign(new Error("no"), { code: "ECONNREFUSED" })))
             .get("/x")

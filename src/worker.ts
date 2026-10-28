@@ -25,14 +25,16 @@ import {
 import { DevLocalDeliveryTransportMongo } from "./dev/DevLocalDeliveryTransportMongo.js";
 import { registerCoreProviders } from "./lib/registerCoreProviders.js";
 import { enableBasicAuthIfApplicable } from "./lib/enableBasicAuth.js";
+import { assertConfigKeyringIsSet, createPluginHostCipher, ensureDevelopmentKeyring, startConfigEncryption, type ConfigEncryptionRuntime } from "./lib/configEncryption.js";
 
 import * as fs from "fs";
 import { readFile } from "fs/promises";
 import { assertProductionSecretsAreSet, DEVELOPMENT_ENVIRONMENTS, trustedAuthservIdWarning, weakIngestSecretWarning } from "./config.defaults.js";
 import { configMs, DEFAULT_RELEASE_TIMEOUT_MS, drainAndStop, withTimeout } from "./lib/gracefulShutdown.js";
 import { startTelemetryToken } from "./lib/telemetryToken.js";
-import { PluginMongo, MailboxMongo } from "@rapidmx/restapi/mongo";
+import { ConfigKeyStateMongo, MailboxMongo, PluginMongo, PluginSecretEncryptorMongo } from "@rapidmx/restapi/mongo";
 import { PluginHost } from "./plugins/PluginHost.js";
+import { TrackedConfigCipherMongo } from "./secrets/TrackedConfigCipherMongo.js";
 import { MONGO_PLUGIN_PURGE, MONGO_PLUGIN_UI_HOSTS } from "./plugins/hosts/mongo.js";
 import { notifyListening, restartWorker } from "./plugins/supervisor.js";
 
@@ -44,6 +46,8 @@ const environment: string = process.env.NODE_ENV || "production";
 // The raw NODE_ENV: only an explicit dev/development allows the checked-in development secrets - see
 // SECRETS_GUARD_SKIP_ENVIRONMENTS's own doc comment for why `test` does not.
 assertProductionSecretsAreSet(config, process.env.NODE_ENV);
+// Likewise a production server refuses to start without the keyring the credentials, API keys and tokens saved in the admin console are encrypted with.
+assertConfigKeyringIsSet(config, process.env.NODE_ENV);
 
 const logLevel: string = config.get("logger:level") || (environment === "production" ? "info" : "debug");
 const logger = Logger(logLevel, config.get("logger:file"));
@@ -70,6 +74,7 @@ const objectFactory = new ObjectFactory(config, logger);
 // worker.mongo.ts, just the generic `yarn dev` one.
 registerCoreProviders(objectFactory, config, {
     searchProvider: MongoTextSearchProvider,
+    configCipher: TrackedConfigCipherMongo,
     devDeliveryTransport: DevLocalDeliveryTransportMongo,
     environment: process.env.NODE_ENV,
 });
@@ -77,6 +82,7 @@ registerCoreProviders(objectFactory, config, {
 let server: any = undefined;
 let pluginHost: PluginHost | undefined = undefined;
 let telemetry: { stop: () => void } | undefined = undefined;
+let configEncryption: ConfigEncryptionRuntime | undefined = undefined;
 
 const start = async function (config: any, logger: any) {
     // Load the release notes file
@@ -88,6 +94,9 @@ const start = async function (config: any, logger: any) {
     } catch (err) {
         logger.debug(err);
     }
+
+    // Under `yarn dev` only: the keyring that encrypts the configuration secrets, generated into data/ on first use - see lib/configEncryption.ts.
+    await ensureDevelopmentKeyring(config, process.env.NODE_ENV, logger);
 
     // Initialize EventUtils to be able to send out telemetry events, with a short-lived token that carries no trusted
     // roles and is renewed while the server runs - see lib/telemetryToken.ts.
@@ -101,11 +110,15 @@ const start = async function (config: any, logger: any) {
 
     // Create and start the server
     // Install and load this deployment's plugins before the server scans for classes - see plugins/PluginHost.ts.
-    pluginHost = await PluginHost.prepare({ config, logger, datastore: "mongo", pluginClass: PluginMongo, appRoot: process.cwd(), uiHosts: MONGO_PLUGIN_UI_HOSTS, purge: MONGO_PLUGIN_PURGE });
+    pluginHost = await PluginHost.prepare({ config, logger, datastore: "mongo", pluginClass: PluginMongo, configKeyStateClass: ConfigKeyStateMongo, cipher: await createPluginHostCipher(objectFactory), appRoot: process.cwd(), uiHosts: MONGO_PLUGIN_UI_HOSTS, purge: MONGO_PLUGIN_PURGE });
     server = new Server({ config, basePath: config.get("base_path"), logger, objectFactory, classLoader: pluginHost.classLoader });
     await server.start();
     notifyListening();
     await pluginHost.start(objectFactory, restartForPlugins);
+
+    // The datastores are connected: report the keys this copy has loaded to the others, and encrypt the plugin secret settings once the rollout is done.
+    // Both run in the background and neither can stop the server.
+    configEncryption = await startConfigEncryption(objectFactory, PluginSecretEncryptorMongo, logger);
 
     // DEV-ONLY (see enableDevAutoLogin.ts) — a no-op outside of `yarn dev`.
     await mountDevImpersonationRouteIfApplicable(server, objectFactory, logger);
@@ -117,6 +130,7 @@ void start(config, logger);
 let stopping: Promise<void> | undefined;
 const stopServer = (): Promise<void> =>
     (stopping ??= (async () => {
+        await withTimeout(configEncryption?.stop() ?? Promise.resolve(), DEFAULT_RELEASE_TIMEOUT_MS);
         // Bounded like shutdown's own release below: with Redis down this would otherwise use up the whole stop timeout.
         await withTimeout(pluginHost?.stop() ?? Promise.resolve(), DEFAULT_RELEASE_TIMEOUT_MS);
         if (server) {

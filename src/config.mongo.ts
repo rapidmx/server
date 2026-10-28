@@ -467,6 +467,47 @@ conf.defaults({
     giphy: {
         api_key: DEFAULT_GIPHY_API_KEY,
     },
+    // The configuration keyring (restapi specs/dns_publishing_and_integrations.md section 5): the AES-256-GCM key that the credentials,
+    // API keys and tokens saved in the admin console (DNS providers, Giphy, the plugin registry and its namespaces, a plugin's secret settings) are encrypted
+    // with in the database. A database dump or backup alone reveals none of them, and is useless without the keyring - back both up together.
+    // A production server refuses to start without one; `yarn dev` generates one into data/config-keyring.json.
+    config_encryption: {
+        // The keyring: a JSON document { "keys": [ { "kid", "key" (32 bytes, base64), "createdAt" } ] }, in a file (the chart mounts its Secret at
+        // /etc/rapidmx/config-keyring/keyring.json) or, for development and tests, as the JSON itself. The file wins when both are set. It is re-read every
+        // minute, so a key a rotation adds reaches every process without a restart.
+        keyring_file: "",
+        keyring: "",
+        // Where the server writes a new keyring when an administrator rotates the key: "kubernetes" (the Secret secret_name; the chart's choice without
+        // OpenBao), "openbao" (the KV v2 secret kv_mount/kv_path, which External Secrets syncs into that Secret; the chart's choice with OpenBao), "file"
+        // (keyring_file; `yarn dev`) or "none" (a keyring given inline: rotation is refused).
+        keyring_store: {
+            backend: "none",
+            secret_name: "",
+            kv_mount: "secret",
+            kv_path: "",
+        },
+        // A new key encrypts only once every running server copy has reported loading it: each copy reports every heartbeat_seconds (and is dropped
+        // three beats after it stops), and the console warns after warn_minutes that the usual cause is a node that hasn't refreshed the Secret.
+        activation: {
+            heartbeat_seconds: 30,
+            warn_minutes: 15,
+        },
+        // How often ConfigKeyRotationJob looks for work (cron syntax, seconds field included); a run with no rotation in progress reads one row and returns.
+        rotation: {
+            schedule: "*/30 * * * * *",
+        },
+        // Rows re-encrypted per page by a rotation.
+        reencrypt: {
+            batch_size: 100,
+        },
+        // Plugin secret settings are encrypted in their rows once every pod of the server Deployment runs this release (a pod of the previous one would hand a
+        // plugin an envelope as a value). pod_selector is the label selector of those pods, which the chart renders; wait_for_rollout: false skips the check, for
+        // an operator who has checked the rollout. Outside Kubernetes it runs at once.
+        plugin_secrets: {
+            pod_selector: "",
+            wait_for_rollout: true,
+        },
+    },
     // Deployment-wide settings.
     system: {
         // Plugins (see src/plugins/PluginHost.ts). Administrators add, upgrade, configure and remove plugins in the admin

@@ -228,6 +228,8 @@ export const PROTECTED_PLUGIN_SETTING_KEYS: readonly string[] = [
     "max_body_size",
     "shutdown",
     "system",
+    // The configuration keyring and where it is read from and written to: a plugin pointing them elsewhere would have the server encrypt with its key.
+    "config_encryption",
     "metrics",
     "diagnostics",
     "class_loader",

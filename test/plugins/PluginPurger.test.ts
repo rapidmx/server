@@ -205,6 +205,33 @@ describe("PluginPurger: when the data is deleted", () => {
         expect(await tables()).not.toContain("note_x_sql");
     });
 
+    it("hashes the plugin rows with the cipher, so it agrees with the copies that hash a secret by its decrypted value", async () => {
+        const envelope = { $enc: 1, kid: "k1", iv: "iv", ct: "ct", tag: "tag" };
+        const cipher = { decrypt: vi.fn(() => "decrypted-token") };
+        const other = { uid: "row-2", name: "@rapidmx/hosted", packageVersion: "1.0.0", enabled: true, settings: { "mail:hosted:api_token": envelope }, manifest: MANIFEST };
+        rows = [removedRow(), other];
+        await uninstalled();
+        // What every other copy reports: the hash of the same rows with the secret decrypted.
+        const hash = computePluginStateHash(rows, cipher);
+        snapshot.instances = [report("pod-a", { hash }), report("pod-b", { hash })];
+
+        await purger({ cipher: cipher }).check();
+        expect((await ledger.get(PLUGIN))!.state).toBe("done");
+    });
+
+    it("waits when it has no cipher for an envelope the other copies decrypted, rather than guess", async () => {
+        const envelope = { $enc: 1, kid: "k1", iv: "iv", ct: "ct", tag: "tag" };
+        const cipher = { decrypt: vi.fn(() => "decrypted-token") };
+        const other = { uid: "row-2", name: "@rapidmx/hosted", packageVersion: "1.0.0", enabled: true, settings: { "mail:hosted:api_token": envelope }, manifest: MANIFEST };
+        rows = [removedRow(), other];
+        await uninstalled();
+        const hash = computePluginStateHash(rows, cipher);
+        snapshot.instances = [report("pod-a", { hash }), report("pod-b", { hash })];
+
+        await purger().check();
+        expect((await ledger.get(PLUGIN))!.state).toBe("pending");
+    });
+
     it("treats a copy that fails to load the plugin as still running it, but not one in safe mode or one that went away", async () => {
         await uninstalled();
         snapshot.instances = [report("pod-a", { errors: [{ name: PLUGIN, message: "boom" }], hash: "old" })];

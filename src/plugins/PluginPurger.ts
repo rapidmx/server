@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import { computePluginStateHash, type Plugin } from "@rapidmx/restapi";
+import { computePluginStateHash, type ConfigCipher, type Plugin } from "@rapidmx/restapi";
 import {
     assertPurgeable,
     coreCollections,
@@ -64,6 +64,8 @@ export interface PluginPurgerOptions {
     loadedPlugins: () => Map<string, PluginOwnedModel[]>;
     /** Every plugin row, removed ones included. */
     readRows: () => Promise<Plugin[]>;
+    /** Decrypts the rows' secret settings for the plugin-state hash it compares with the other copies' (spec 5.7). */
+    cipher?: Pick<ConfigCipher, "decrypt">;
     /** Empties the saved settings of a removed plugin's row (only while it is still removed). */
     clearSettings: (row: Plugin) => Promise<void>;
     hooks: PurgeHookRunner;
@@ -228,7 +230,7 @@ export class PluginPurger {
         } catch (err: any) {
             return { ok: false, reason: `the other servers' status can't be read (${err.message}), so they might still run the plugin.` };
         }
-        const { blocking, total } = blockingInstances(snapshot.instances, record.name, computePluginStateHash(rows), now);
+        const { blocking, total } = blockingInstances(snapshot.instances, record.name, computePluginStateHash(rows, this.options.cipher), now);
         if (blocking.length > 0) {
             return {
                 ok: false,

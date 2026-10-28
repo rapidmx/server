@@ -20,6 +20,7 @@ import {
     NodeDnsResolver,
     PostfixSendmailTransport,
 } from "@rapidmx/restapi";
+import { ConfigCipherMongo } from "@rapidmx/restapi/mongo";
 import { MongoTextSearchProvider } from "@rapidmx/restapi/search";
 import { ClamAvScanProvider, RspamdSpamScanProvider } from "@rapidmx/restapi/scan";
 import config from "../../src/config.mongo.js";
@@ -52,6 +53,8 @@ describe("PluginRoute over HTTP (MongoDB)", () => {
     objectFactory.register(LocalX509CertificateAuthority, "EncryptionCertificateAuthority");
     objectFactory.register(ManualSigningCertificateEnrollment, "SigningCertificateEnrollment");
     objectFactory.register(TieredRateLimiter, "RateLimiter");
+    // Reads the active key from the datastore.
+    objectFactory.register(ConfigCipherMongo, "ConfigCipher");
     let server: Server;
     let port: number;
     let db: any;

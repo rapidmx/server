@@ -23,6 +23,7 @@ import {
     NodeDnsResolver,
     PostfixSendmailTransport,
 } from "@rapidmx/restapi";
+import { ConfigCipherMongo } from "@rapidmx/restapi/mongo";
 import { MongoTextSearchProvider } from "@rapidmx/restapi/search";
 import { ClamAvScanProvider, RspamdSpamScanProvider } from "@rapidmx/restapi/scan";
 import { TieredRateLimiter } from "../../src/lib/TieredRateLimiter.js";
@@ -88,6 +89,8 @@ describe("StaticAssetRoute over a real HTTP server", () => {
     objectFactory.register(LocalX509CertificateAuthority, "EncryptionCertificateAuthority");
     objectFactory.register(ManualSigningCertificateEnrollment, "SigningCertificateEnrollment");
     objectFactory.register(CountingRateLimiter, "RateLimiter");
+    // Reads the active key from the datastore.
+    objectFactory.register(ConfigCipherMongo, "ConfigCipher");
 
     let server: Server;
     let port: number;

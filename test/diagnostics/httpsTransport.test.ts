@@ -12,7 +12,8 @@ function fakeRequest(respond: (res: EventEmitter & { statusCode?: number }, req:
         req.destroy = vi.fn((err?: Error) => {
             if (err) req.emit("error", err);
         });
-        req.end = () => {
+        req.end = (body?: string) => {
+            req.sent = body;
             const res: any = new EventEmitter();
             respond(res, req);
             if (callback && res.statusCode !== undefined) callback(res);
@@ -45,6 +46,21 @@ describe("httpsTransport", () => {
         });
         expect(await httpsTransport(request)).toEqual({ status: 200, body: '{"a":1}' });
         expect(spy.mock.calls[0][1]).toMatchObject({ method: "GET", ca: "CA", rejectUnauthorized: true, timeout: 50, headers: request.headers });
+    });
+
+    it("sends a PUT with its body, and a GET with none", async () => {
+        let sent: unknown = "unset";
+        const spy = fakeRequest((res, req) => {
+            sent = (req as any).sent;
+            res.statusCode = 200;
+            queueMicrotask(() => res.emit("end"));
+        });
+        await httpsTransport({ ...request, method: "PUT", body: '{"a":1}' });
+        expect(spy.mock.calls[0][1]).toMatchObject({ method: "PUT" });
+        expect(sent).toBe('{"a":1}');
+        await httpsTransport(request);
+        expect(spy.mock.calls[1][1]).toMatchObject({ method: "GET" });
+        expect(sent).toBeUndefined();
     });
 
     it("reports a status of 0 when there is none", async () => {

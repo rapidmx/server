@@ -15,6 +15,7 @@ export {
     CalendarEventAttendeeLinkMongo,
     CalendarEventMongo,
     CalendarShareLinkMongo,
+    ConfigKeyStateMongo,
     ContactListMongo,
     ContactMongo,
     CorrespondentMongo,

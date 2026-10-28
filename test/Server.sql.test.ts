@@ -11,7 +11,7 @@ process.env[`cors__origins`] = JSON.stringify(corsOrigins);
 
 import config from "../src/config.sql.js";
 import { Logger, sleep } from "@rapidrest/core";
-import { ObjectFactory, Server } from "@rapidrest/service-core";
+import { ObjectFactory, RepoUtils, Server } from "@rapidrest/service-core";
 import {
     FsDkimKeyProvider,
     LocalFsBlobStore,
@@ -19,10 +19,17 @@ import {
     ManualSigningCertificateEnrollment,
     NodeDnsResolver,
     PostfixSendmailTransport,
+    CONFIG_KEY_STATE_UID,
+    configKeyCopyId,
+    generateConfigKeyring,
+    sharedLocalConfigKeyChannel,
 } from "@rapidmx/restapi";
+import { ConfigKeyStateSQL, PluginSecretEncryptorSQL } from "@rapidmx/restapi/sql";
 import { PostgresFullTextSearchProvider } from "@rapidmx/restapi/search";
 import { ClamAvScanProvider, RspamdSpamScanProvider } from "@rapidmx/restapi/scan";
+import { startConfigEncryption } from "../src/lib/configEncryption.js";
 import { TieredRateLimiter } from "../src/lib/TieredRateLimiter.js";
+import { TrackedConfigCipherSQL } from "../src/secrets/TrackedConfigCipherSQL.js";
 import { OpenBaoClientPkiCertificateAuthority } from "../src/openbao/OpenBaoClientPkiCertificateAuthority.js";
 import { setDraining } from "../src/plugins/readiness.js";
 import { freePort, localRequest } from "./helpers/serverTestUtils.js";
@@ -79,10 +86,14 @@ describe("Server Tests", () => {
     // network calls against a real certificate authority.
     objectFactory.register(ManualSigningCertificateEnrollment, "SigningCertificateEnrollment");
     objectFactory.register(TieredRateLimiter, "RateLimiter");
+    // Reads the active key from the datastore; the keyring is the one beforeAll() configures.
+    objectFactory.register(TrackedConfigCipherSQL, "ConfigCipher");
     let server: Server;
     let port: number;
 
     beforeAll(async () => {
+        // The keyring the configuration cipher reads when the server starts.
+        config.set("config_encryption:keyring", JSON.stringify(generateConfigKeyring()));
         // A free port on 127.0.0.1 rather than the default 3000, which a running `yarn dev` server may already hold.
         port = await freePort();
         config.set("port", port);
@@ -125,6 +136,28 @@ describe("Server Tests", () => {
         await server.stop();
     });
 
+    // First, while the instances the server built on this start are the ones in the ObjectFactory: the harness restarts the server for every test without destroying the
+    // factory, so after the first start they still hold the datastore connection of the one before.
+    it("Starts the configuration encryption: the keyring heartbeat reports this copy, and the plugin secret encryption completes against the datastore.", async () => {
+        const runtime = await startConfigEncryption(objectFactory, PluginSecretEncryptorSQL, logger);
+        try {
+            const states = await objectFactory.newInstance<RepoUtils<any>>(RepoUtils, { name: "config-key-state-probe", args: [ConfigKeyStateSQL] });
+            let state: any;
+            for (let attempt = 0; attempt < 50 && !state?.pluginSecrets?.encryptedAt; attempt++) {
+                await sleep(100);
+                state = await states.findOne(CONFIG_KEY_STATE_UID, { ignoreACL: true, skipCache: true });
+            }
+            // No plugin holds a secret in plaintext, so the first run completes at once (a Kubernetes server would wait for its rollout first).
+            expect(state?.pluginSecrets?.encryptedAt).toBeDefined();
+            const beats = await sharedLocalConfigKeyChannel().heartbeats();
+            const mine = beats.find((beat) => beat.copy === configKeyCopyId());
+            expect(mine?.kids).toHaveLength(1);
+            expect(mine?.encrypting).toBe(mine?.kids[0]);
+        } finally {
+            await runtime.stop();
+        }
+    });
+
     it("Can start server.", async () => {
         expect(server.isRunning()).toBe(true);
         // Cors Check
@@ -141,6 +174,13 @@ describe("Server Tests", () => {
             expect((await localRequest(port, "GET", "/api/status")).status).toBe(503);
         } finally {
             setDraining(false);
+        }
+    });
+
+    it("Mounts the configuration key console, the DNS provider configs and the Integrations settings, which need a signed-in administrator.", async () => {
+        for (const path of ["/api/system/config-keys", "/api/system/dns-providers", "/api/system/integrations"]) {
+            const result = await localRequest(port, "GET", path);
+            expect([401, 403], path).toContain(result.status);
         }
     });
 

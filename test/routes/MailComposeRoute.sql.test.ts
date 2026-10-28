@@ -14,7 +14,7 @@ import config from "../../src/config.sql.js";
 import { Logger, sleep } from "@rapidrest/core";
 import { ObjectFactory, Server } from "@rapidrest/service-core";
 import { LocalFsBlobStore, NodeDnsResolver, ManualSigningCertificateEnrollment } from "@rapidmx/restapi";
-import { FolderSQL, MailboxSQL, MessageSQL } from "@rapidmx/restapi/sql";
+import { ConfigCipherSQL, FolderSQL, MailboxSQL, MessageSQL } from "@rapidmx/restapi/sql";
 import { PostgresFullTextSearchProvider } from "@rapidmx/restapi/search";
 import { DevLocalDeliveryTransportSQL } from "../../src/dev/DevLocalDeliveryTransportSQL.js";
 import { registerCoreProviders } from "../../src/lib/registerCoreProviders.js";
@@ -40,6 +40,7 @@ describe("MailComposeRoute (SQL)", () => {
         config.set("listen_host", "127.0.0.1");
         registerCoreProviders(objectFactory, config, {
             searchProvider: PostgresFullTextSearchProvider,
+            configCipher: ConfigCipherSQL,
             devDeliveryTransport: DevLocalDeliveryTransportSQL,
             environment: "test",
             blobStore: LocalFsBlobStore,

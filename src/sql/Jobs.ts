@@ -8,6 +8,7 @@ export {
     AcmeEnrollmentDriverJobSQL,
     AttachmentExtractionJobSQL,
     CalendarReminderJobSQL,
+    ConfigKeyRotationJobSQL,
     DataExportJobSQL,
     DomainVerificationJobSQL,
     ErasureExecutionJobSQL,

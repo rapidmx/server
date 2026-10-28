@@ -217,6 +217,12 @@ describe("isProtectedPluginSettingKey", () => {
         }
     });
 
+    it("protects the configuration keyring settings, which a plugin could point at a keyring of its own", () => {
+        for (const key of ["config_encryption:keyring", "config_encryption:keyring_file", "config_encryption__keyring_store__backend", "config_encryption:plugin_secrets:wait_for_rollout"]) {
+            expect(isProtectedPluginSettingKey(key), key).toBe(true);
+        }
+    });
+
     it("no longer reserves mail:secrets, which nothing reads since the secret store was dropped", () => {
         expect(isProtectedPluginSettingKey("mail:secrets:openbao:address")).toBe(false);
         expect(isProtectedPluginSettingKey("mail__secrets__openbao__token")).toBe(false);
@@ -332,4 +338,22 @@ describe("applyPluginSetting", () => {
         applyPluginSetting({ set, stores: {} }, "c", 3);
         expect(set.mock.calls).toEqual([["a:b", 2], ["c", 3]]);
     });
+});
+
+describe("config_encryption in the shipped configuration", () => {
+    for (const file of ["../src/config.mongo.js", "../src/config.sql.js"]) {
+        it(`${file} sets the documented defaults, with no keyring and no store`, async () => {
+            vi.resetModules();
+            const { default: conf } = await import(file);
+            expect(conf.get("config_encryption")).toEqual({
+                keyring_file: "",
+                keyring: "",
+                keyring_store: { backend: "none", secret_name: "", kv_mount: "secret", kv_path: "" },
+                activation: { heartbeat_seconds: 30, warn_minutes: 15 },
+                rotation: { schedule: "*/30 * * * * *" },
+                reencrypt: { batch_size: 100 },
+                plugin_secrets: { pod_selector: "", wait_for_rollout: true },
+            });
+        });
+    }
 });

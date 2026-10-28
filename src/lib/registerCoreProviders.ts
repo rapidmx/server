@@ -8,11 +8,15 @@ import {
     LocalX509CertificateAuthority,
     ManualSigningCertificateEnrollment,
     NodeDnsResolver,
+    RedisConfigKeyChannel,
     Rfc8823AcmeSigningCertificateEnrollment,
     S3BlobStore,
 } from "@rapidmx/restapi";
 import { DohDnssecDnsResolver } from "../dns/DohDnssecDnsResolver.js";
 import { OpenBaoClientPkiCertificateAuthority } from "../openbao/OpenBaoClientPkiCertificateAuthority.js";
+import { KubePodRolloutCheck } from "../secrets/KubePodRolloutCheck.js";
+import { KubernetesConfigKeyringStore } from "../secrets/KubernetesConfigKeyringStore.js";
+import { OpenBaoConfigKeyringStore } from "../secrets/OpenBaoConfigKeyringStore.js";
 import type { DevLocalDeliveryTransport } from "../dev/DevLocalDeliveryTransport.js";
 import { registerMailProviders, type ClassRegistry } from "../dev/registerMailProviders.js";
 import { selectConfigDrivenBackend } from "./configDrivenBackend.js";
@@ -27,6 +31,8 @@ export interface RegisterCoreProvidersOptions {
     /** `MongoTextSearchProvider`/`PostgresFullTextSearchProvider` - the one thing that isn't config-driven, since the
      * search backend follows the datastore each entry point is already wired to, not a separate setting. */
     searchProvider: any;
+    /** `ConfigCipherMongo`/`ConfigCipherSQL`, which read the active key from the datastore each entry point is wired to: the other thing that follows the datastore. */
+    configCipher: any;
     /** The datastore's `DevLocalDeliveryTransport` subclass, passed through to `registerMailProviders()` and used
      * only under a development `NODE_ENV`. */
     devDeliveryTransport: new () => DevLocalDeliveryTransport;
@@ -126,4 +132,25 @@ export function registerCoreProviders(objectFactory: ClassRegistry, config: Core
             ),
         "SigningCertificateEnrollment",
     );
+    // The configuration encryption (restapi spec 5): the cipher the routes, jobs and the key heartbeat share, and what the key rotation and the plugin secret
+    // encryption need of the deployment.
+    objectFactory.register(options.configCipher, "ConfigCipher");
+    // How the server copies agree on a rotation (each reports the keys it has loaded, one takes the lock, a notice makes every copy look again) is Redis, the
+    // same two datastores the plugin restart lock and its change notice use. The shipped configuration (config.mongo.ts/config.sql.ts) always names both, so
+    // the server always registers it, and Redis being down is a rotation that waits, as for the restart lock. Only a configuration without them, which is what
+    // the Server.*.test.ts harnesses build, gets restapi's in-process channel outside production (and none in production, where rotation is unavailable).
+    if (config.get("datastores:cache") && config.get("datastores:events")) {
+        objectFactory.register(RedisConfigKeyChannel, "ConfigKeyChannel");
+    }
+    // Where a rotation writes the new keyring is config-driven (config_encryption:keyring_store:backend): the chart picks "kubernetes" or, with OpenBao,
+    // "openbao"; restapi serves "file" (yarn dev) itself, and "none" (a keyring given inline) leaves rotation refused.
+    const keyringBackend: unknown = config.get("config_encryption:keyring_store:backend");
+    if (keyringBackend === "kubernetes") {
+        objectFactory.register(KubernetesConfigKeyringStore, "ConfigKeyringStore");
+    } else if (keyringBackend === "openbao") {
+        objectFactory.register(OpenBaoConfigKeyringStore, "ConfigKeyringStore");
+    }
+    // Whether the rolling upgrade has finished, which PluginSecretEncryptor waits for before encrypting plugin secret settings (answers "rolled out" at once
+    // outside Kubernetes).
+    objectFactory.register(KubePodRolloutCheck, "ServerRolloutCheck");
 }

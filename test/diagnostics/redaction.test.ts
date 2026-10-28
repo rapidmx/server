@@ -234,6 +234,21 @@ describe("describeEnvironment", () => {
         }
     });
 
+    it("hides the inline configuration keyring, and shows where the keyring is read from and written to", () => {
+        for (const name of ["config_encryption:keyring", "config_encryption__keyring", "CONFIG_ENCRYPTION__KEYRING"]) {
+            expect(isHiddenSetting(name), name).toBe(true);
+        }
+        for (const name of [
+            "config_encryption:keyring_file",
+            "config_encryption:keyring_store:backend",
+            "config_encryption:keyring_store:secret_name",
+            "config_encryption:keyring_store:kv_path",
+            "config_encryption:plugin_secrets:pod_selector",
+        ]) {
+            expect(isHiddenSetting(name), name).toBe(false);
+        }
+    });
+
     it("no longer lists mail:secrets:openbao:token, whose settings were removed with the secret store", () => {
         expect(CORE_HIDDEN_SETTINGS).not.toContain("mail:secrets:openbao:token");
     });

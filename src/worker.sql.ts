@@ -21,6 +21,7 @@ import {
 import { DevLocalDeliveryTransportSQL } from "./dev/DevLocalDeliveryTransportSQL.js";
 import { registerCoreProviders } from "./lib/registerCoreProviders.js";
 import { enableBasicAuthIfApplicable } from "./lib/enableBasicAuth.js";
+import { assertConfigKeyringIsSet, createPluginHostCipher, ensureDevelopmentKeyring, startConfigEncryption, type ConfigEncryptionRuntime } from "./lib/configEncryption.js";
 
 import * as fs from "fs";
 import { readFile } from "fs/promises";
@@ -28,8 +29,9 @@ import { assertProductionSecretsAreSet, DEVELOPMENT_ENVIRONMENTS, escrowAuditKey
 import { configMs, DEFAULT_RELEASE_TIMEOUT_MS, drainAndStop, withTimeout } from "./lib/gracefulShutdown.js";
 import { startTelemetryToken } from "./lib/telemetryToken.js";
 import { applySqlColumnTypes } from "./lib/sqlColumnTypes.js";
-import { PluginSQL, MailboxSQL } from "@rapidmx/restapi/sql";
+import { ConfigKeyStateSQL, MailboxSQL, PluginSQL, PluginSecretEncryptorSQL } from "@rapidmx/restapi/sql";
 import { PluginHost } from "./plugins/PluginHost.js";
+import { TrackedConfigCipherSQL } from "./secrets/TrackedConfigCipherSQL.js";
 import { SQL_PLUGIN_PURGE, SQL_PLUGIN_UI_HOSTS } from "./plugins/hosts/sql.js";
 import { notifyListening, restartWorker } from "./plugins/supervisor.js";
 
@@ -41,6 +43,8 @@ const environment: string = process.env.NODE_ENV || "production";
 // The raw NODE_ENV: only an explicit dev/development allows the checked-in development secrets - see
 // SECRETS_GUARD_SKIP_ENVIRONMENTS's own doc comment for why `test` does not.
 assertProductionSecretsAreSet(config, process.env.NODE_ENV);
+// Likewise a production server refuses to start without the keyring the credentials, API keys and tokens saved in the admin console are encrypted with.
+assertConfigKeyringIsSet(config, process.env.NODE_ENV);
 
 const logLevel: string = config.get("logger:level") || (environment === "production" ? "info" : "debug");
 const logger = Logger(logLevel, config.get("logger:file"));
@@ -81,6 +85,7 @@ const objectFactory = new ObjectFactory(config, logger);
 // rather than gated - just don't assume it's inert.
 registerCoreProviders(objectFactory, config, {
     searchProvider: PostgresFullTextSearchProvider,
+    configCipher: TrackedConfigCipherSQL,
     devDeliveryTransport: DevLocalDeliveryTransportSQL,
     environment: process.env.NODE_ENV,
 });
@@ -88,6 +93,7 @@ registerCoreProviders(objectFactory, config, {
 let server: any = undefined;
 let pluginHost: PluginHost | undefined = undefined;
 let telemetry: { stop: () => void } | undefined = undefined;
+let configEncryption: ConfigEncryptionRuntime | undefined = undefined;
 
 const start = async function (config: any, logger: any) {
     // Load the release notes file
@@ -100,6 +106,9 @@ const start = async function (config: any, logger: any) {
         logger.debug(err);
     }
 
+    // Under `yarn dev` only: the keyring that encrypts the configuration secrets, generated into data/ on first use - see lib/configEncryption.ts.
+    await ensureDevelopmentKeyring(config, process.env.NODE_ENV, logger);
+
     // Initialize EventUtils to be able to send out telemetry events, with a short-lived token that carries no trusted
     // roles and is renewed while the server runs - see lib/telemetryToken.ts.
     telemetry = await startTelemetryToken(config, logger);
@@ -111,8 +120,11 @@ const start = async function (config: any, logger: any) {
     configureDevAutoProvisioningIfApplicable(config, logger);
 
     // Create and start the server
+    // The plugin host reads the Plugin and ConfigKeyState tables on a connection of its own that synchronizes them, so on MySQL/MariaDB their column types
+    // are widened first: the main connection's would otherwise differ, and each start would drop and re-add (emptying) every column that differs.
+    await applySqlColumnTypes(config.get("datastores:sql:type"), [PluginSQL, ConfigKeyStateSQL], logger);
     // Install and load this deployment's plugins before the server scans for classes - see plugins/PluginHost.ts.
-    pluginHost = await PluginHost.prepare({ config, logger, datastore: "sql", pluginClass: PluginSQL, appRoot: process.cwd(), uiHosts: SQL_PLUGIN_UI_HOSTS, purge: SQL_PLUGIN_PURGE });
+    pluginHost = await PluginHost.prepare({ config, logger, datastore: "sql", pluginClass: PluginSQL, configKeyStateClass: ConfigKeyStateSQL, cipher: await createPluginHostCipher(objectFactory), appRoot: process.cwd(), uiHosts: SQL_PLUGIN_UI_HOSTS, purge: SQL_PLUGIN_PURGE });
     // MySQL/MariaDB column types for restapi's and the plugins' SQL models, applied once they're all loaded and before
     // the datastore connects (a no-op on Postgres) - see lib/sqlColumnTypes.ts.
     pluginHost.classLoader.afterLoad = async (classes) => {
@@ -126,6 +138,10 @@ const start = async function (config: any, logger: any) {
     notifyListening();
     await pluginHost.start(objectFactory, restartForPlugins);
 
+    // The datastores are connected: report the keys this copy has loaded to the others, and encrypt the plugin secret settings once the rollout is done.
+    // Both run in the background and neither can stop the server.
+    configEncryption = await startConfigEncryption(objectFactory, PluginSecretEncryptorSQL, logger);
+
     // DEV-ONLY (see enableDevAutoLogin.ts) — a no-op outside of `yarn dev`.
     await mountDevImpersonationRouteIfApplicable(server, objectFactory, logger);
 };
@@ -136,6 +152,7 @@ void start(config, logger);
 let stopping: Promise<void> | undefined;
 const stopServer = (): Promise<void> =>
     (stopping ??= (async () => {
+        await withTimeout(configEncryption?.stop() ?? Promise.resolve(), DEFAULT_RELEASE_TIMEOUT_MS);
         // Bounded like shutdown's own release below: with Redis down this would otherwise use up the whole stop timeout.
         await withTimeout(pluginHost?.stop() ?? Promise.resolve(), DEFAULT_RELEASE_TIMEOUT_MS);
         if (server) {

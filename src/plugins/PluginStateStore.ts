@@ -6,7 +6,12 @@ import fs from "fs";
 import zlib from "zlib";
 import { ConnectionManager, ObjectFactory } from "@rapidrest/service-core";
 import {
+    CONFIG_KEY_STATE_UID,
     defaultPluginSettings,
+    isPlaintextSecretValue,
+    isSecretSetting,
+    sealPluginSecretSettings,
+    type ConfigCipher,
     NpmRegistryClient,
     normalizePluginHost,
     parsePluginManifest,
@@ -23,6 +28,23 @@ export interface DefaultPlugin {
     /** Whether the plugin starts out enabled; defaults to `true`. Only applies when the plugin is first added - after
      * that, administrators turn it on and off in the admin console. */
     enabled?: boolean;
+}
+
+/** What seeding a default plugin's secret settings encrypted needs (spec 5.7). */
+export interface PluginSecretSeeding {
+    /** Encrypts a secret default for the row it is seeded as, and says which key it encrypts with (the oldest: it has no datastore to read the active one from). */
+    cipher: Pick<ConfigCipher, "encrypt" | "currentKid">;
+    /** The server's `ConfigKeyState` model, which says whether the first encryption run has completed. */
+    configKeyStateClass: any;
+}
+
+/** What the short-lived connection can say about the key state. */
+export interface PluginSecretsState {
+    /**
+     * Whether `ConfigKeyState.pluginSecrets.encryptedAt` is set (only from then on is a secret setting saved as an envelope), and the key a rotation has made
+     * active, if any.
+     */
+    pluginSecrets(): Promise<{ encrypted: boolean; activeKid?: string }>;
 }
 
 /** The repository operations this store needs - the subset the Mongo and TypeORM SQL repositories share. */
@@ -85,15 +107,20 @@ export function readTarballPackageJson(file: string): any {
  * `Plugin` model lives in, and seeds the server's default plugins into it.
  */
 export class PluginStateStore {
+    /**
+     * @param secrets Encrypts the secret settings of the default plugins it seeds, once the first encryption run has completed. Without it they are seeded in
+     * plaintext, which that run encrypts like any other.
+     */
     constructor(
         private readonly config: any,
         private readonly logger: any,
         private readonly datastore: string,
         private readonly pluginClass: any,
+        private readonly secrets?: PluginSecretSeeding,
     ) {}
 
-    /** Runs `work` against the plugin repository on a connection that's closed afterwards. */
-    public async withRepository<R>(work: (repo: PluginRepository) => Promise<R>): Promise<R> {
+    /** Runs `work` against the plugin repository on a connection that's closed afterwards, with what it can say about the key state. */
+    public async withRepository<R>(work: (repo: PluginRepository, state: PluginSecretsState) => Promise<R>): Promise<R> {
         const objectFactory = new ObjectFactory(this.config, this.logger);
         // service-core keeps each SQL DataSource for the life of the process by datastore name, and a later connect under
         // that name reuses it with the entities it was first given. Connecting as the server's own datastore (`sql`) here
@@ -101,20 +128,36 @@ export class PluginStateStore {
         // query failed with "No metadata". So this connection gets a name of its own, and the Plugin model is named as
         // its entity (its @DataStore is the server's name), on a copy of the datastore config.
         const name: string = `${this.datastore}-plugin-state`;
-        const datasource: any = { ...this.config.get(`datastores:${this.datastore}`), entities: [this.pluginClass.name] };
+        const stateClass: any = this.secrets?.configKeyStateClass;
+        const datasource: any = { ...this.config.get(`datastores:${this.datastore}`), entities: [this.pluginClass.name, ...(stateClass ? [stateClass.name] : [])] };
         // The connection manager records the datastore a model was connected on; the server's own connect sets it again.
         const previousDatasource: any = this.pluginClass.datasource;
+        const previousStateDatasource: any = stateClass?.datasource;
         try {
             const connectionManager: ConnectionManager = await objectFactory.newInstance(ConnectionManager, { name: "plugins" });
             const models = new Map<string, any>([[this.pluginClass.name, this.pluginClass]]);
+            if (stateClass) {
+                models.set(stateClass.name, stateClass);
+            }
             await connectionManager.connect({ [name]: datasource }, models);
             try {
-                return await work(pluginRepository(connectionManager.connections.get(name), this.pluginClass));
+                const connection: any = connectionManager.connections.get(name);
+                const state: PluginSecretsState = {
+                    pluginSecrets: async () => {
+                        const rows: any[] = await findAllPlugins(pluginRepository(connection, stateClass));
+                        const keyState: any = rows.find((row) => row?.uid === CONFIG_KEY_STATE_UID);
+                        return { encrypted: !!keyState?.pluginSecrets?.encryptedAt, activeKid: keyState?.activeKid ?? undefined };
+                    },
+                };
+                return await work(pluginRepository(connection, this.pluginClass), state);
             } finally {
                 await connectionManager.disconnect();
             }
         } finally {
             this.pluginClass.datasource = previousDatasource;
+            if (stateClass) {
+                stateClass.datasource = previousStateDatasource;
+            }
             await objectFactory.destroy();
         }
     }
@@ -129,7 +172,7 @@ export class PluginStateStore {
         registryFor: (packageName: string) => NpmRegistryClient,
         sources: Record<string, string>,
     ): Promise<Plugin[]> {
-        return this.withRepository(async (repo) => {
+        return this.withRepository(async (repo, state) => {
             let rows: Plugin[] = await findAllPlugins(repo);
             const known: Set<string> = new Set(rows.map((row) => row.name));
             let seeds: Partial<Plugin>[] = [];
@@ -175,13 +218,40 @@ export class PluginStateStore {
             );
             const unmet: Map<string, string> = new Map(dropped.map((plugin) => [plugin.name, plugin.message]));
 
+            // Whether secret defaults are saved as envelopes (spec 5.7): only once the first encryption run has completed, since until then a pod of the previous
+            // release may still be reading the plugin rows. Looked at only when a seed has a secret, and plaintext when the state can't be read: the run encrypts it.
+            // This cipher has no datastore, so it seals with the oldest key: once a rotation has made another key active, that would seal a copy the rotation's
+            // retirement of the old key leaves unreadable (or, for a compromised key, under it), so it is seeded in plaintext, which stays valid, instead.
+            let encrypt: boolean | undefined;
+            const sealing = async (): Promise<boolean> => {
+                if (encrypt === undefined) {
+                    try {
+                        const { encrypted, activeKid } = this.secrets ? await state.pluginSecrets() : { encrypted: false, activeKid: undefined };
+                        encrypt = encrypted && (activeKid === undefined || activeKid === this.secrets!.cipher.currentKid());
+                        if (encrypted && !encrypt) {
+                            this.logger?.warn("A key rotation has made another configuration key active, so default plugin secrets are added in plaintext.");
+                        }
+                    } catch (err: any) {
+                        this.logger?.warn(`Could not tell whether plugin secret settings are encrypted yet (${err.message}), so default secrets are added in plaintext.`);
+                        encrypt = false;
+                    }
+                }
+                return encrypt;
+            };
+
             for (const seeded of seeds) {
                 if (seeded.enabled && unmet.has(seeded.name!)) {
                     seeded.enabled = false;
                     this.logger?.warn(`Default plugin ${seeded.name} is added disabled: ${unmet.get(seeded.name!)}`);
                 }
                 try {
-                    await repo.save(new this.pluginClass(seeded));
+                    const entity: any = new this.pluginClass(seeded);
+                    const hasSecret: boolean = Object.entries(seeded.settings ?? {}).some(([key, value]) => isPlaintextSecretValue(value) && isSecretSetting(key, seeded.manifest));
+                    if (hasSecret && (await sealing())) {
+                        // Bound to the uid the new row is saved with, which the entity generated on construction.
+                        entity.settings = sealPluginSecretSettings(this.secrets!.cipher, entity.uid, seeded.manifest, seeded.settings!);
+                    }
+                    await repo.save(entity);
                     this.logger?.info(`Added default plugin ${seeded.name}@${seeded.packageVersion}.`);
                 } catch (err: any) {
                     this.logger?.warn(`Could not add default plugin ${seeded.name}: ${err.message}`);

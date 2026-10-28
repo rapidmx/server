@@ -13,7 +13,7 @@ import config from "../src/config.mongo.js";
 import { MongoMemoryServer } from "mongodb-memory-server";
 import { JWTUtils, Logger, sleep } from "@rapidrest/core";
 import { ConnectionManager, ObjectFactory, Server } from "@rapidrest/service-core";
-import { MailboxMongo, PluginMongo } from "@rapidmx/restapi/mongo";
+import { ConfigCipherMongo, MailboxMongo, PluginMongo } from "@rapidmx/restapi/mongo";
 import { MongoTextSearchProvider } from "@rapidmx/restapi/search";
 import { DevLocalDeliveryTransportMongo } from "../src/dev/DevLocalDeliveryTransportMongo.js";
 import { enableBasicAuthIfApplicable } from "../src/lib/enableBasicAuth.js";
@@ -61,7 +61,7 @@ describe("Basic sign-in through a real server", () => {
         config.set("port", port);
         config.set("listen_host", "127.0.0.1");
         const objectFactory = new ObjectFactory(config, logger);
-        registerCoreProviders(objectFactory, config, { searchProvider: MongoTextSearchProvider, devDeliveryTransport: DevLocalDeliveryTransportMongo, environment: "development" });
+        registerCoreProviders(objectFactory, config, { searchProvider: MongoTextSearchProvider, configCipher: ConfigCipherMongo, devDeliveryTransport: DevLocalDeliveryTransportMongo, environment: "development" });
         // As the worker does, before the server exists.
         await enableBasicAuthIfApplicable(objectFactory, config, logger, MailboxMongo);
         server = new Server({ config, basePath: "./src/mongo", logger, objectFactory });

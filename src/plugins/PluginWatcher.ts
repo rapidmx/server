@@ -5,6 +5,7 @@
 import { createClient } from "redis";
 import {
     computePluginStateHash,
+    type ConfigCipher,
     PLUGIN_CHANGED_EVENT,
     PLUGIN_EVENTS_CHANNEL,
     PLUGIN_STATUS_KEY,
@@ -175,6 +176,8 @@ export interface PluginWatcherOptions {
     status: Omit<PluginInstanceStatus, "instance" | "hash" | "updatedAt">;
     /** Reads the current plugin rows. */
     readPlugins: () => Promise<Plugin[]>;
+    /** Decrypts the rows' secret settings for the hash, which counts them by their decrypted value (spec 5.7) exactly as the host loaded them. */
+    cipher?: Pick<ConfigCipher, "decrypt">;
     /** Stops this copy so it can start again with the new plugin set. */
     restart: () => Promise<void>;
     eventsUrl?: string;
@@ -360,7 +363,7 @@ export class PluginWatcher {
     }
 
     private async desiredHash(): Promise<string> {
-        return computePluginStateHash(await this.options.readPlugins());
+        return computePluginStateHash(await this.options.readPlugins(), this.options.cipher);
     }
 
     private async needsRestart(): Promise<boolean> {

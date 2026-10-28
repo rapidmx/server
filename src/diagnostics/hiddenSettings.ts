@@ -25,6 +25,8 @@ export const CORE_HIDDEN_SETTINGS: readonly string[] = [
     "mail:scan:spam:rspamd:controller_password",
     "mail:search:opensearch:password",
     "mail:pki:openbao:token",
+    // The keyring itself when it is given inline (development and tests); where it is read from and written to is shown.
+    "config_encryption:keyring",
     "giphy:api_key",
     "system:plugins:registry_token",
     // Static object-store credentials for a deployment that sets them (backend "s3"/SES, not the default "local"): opaque

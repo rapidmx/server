@@ -7,11 +7,13 @@ import path from "path";
 import { ConnectionManager, ObjectFactory, RepoUtils } from "@rapidrest/service-core";
 import {
     computePluginStateHash,
+    type ConfigCipher,
     DEFAULT_ALLOWED_PLUGIN_PACKAGES,
     DEFAULT_PLUGIN_NAMESPACES,
     DEFAULT_PLUGIN_REGISTRY,
     findPluginNamespace,
     findPluginUiMountConflicts,
+    isSecretSetting,
     isValidPackageName,
     matchesAllowedPackage,
     normalizeAllowedPackages,
@@ -20,6 +22,7 @@ import {
     orderByDependencies,
     PluginRegistry,
     pruneUnmetRequirements,
+    resolvePluginSettings,
     AuditLogUtils,
     type AuditAction,
     type Plugin,
@@ -76,6 +79,13 @@ export interface PluginHostOptions {
     datastore: "mongo" | "sql";
     /** The server's `Plugin` model for that datastore. */
     pluginClass: any;
+    /** The server's `ConfigKeyState` model for that datastore, which says whether plugin secret settings are saved encrypted yet (spec 5.7). Without it
+     * default plugins are always seeded with their secret defaults in plaintext, for the encryption run to encrypt. */
+    configKeyStateClass?: any;
+    /** Decrypts the envelopes of the plugins' secret settings into the `plugins` config layer and into the plugin-state hash, and encrypts the secret defaults
+     * of the default plugins it seeds (spec 5.7). It has no datastore behind it - the host runs before any connects - only the keyring. Without one, an
+     * envelope is left out (the deployment's value or the plugin's default applies) and named in a warning, never applied as a value. */
+    cipher?: Pick<ConfigCipher, "currentKid" | "decrypt" | "encrypt">;
     /** The server's own directory. */
     appRoot: string;
     /** The base route of each plugin UI host for this datastore (see `PluginUiRoutes.ts`). Without them no plugin UI is
@@ -187,7 +197,15 @@ export class PluginHost {
         if (safeMode) {
             logger.warn("Starting without plugins: recent starts failed after loading them. Fix or disable the failing plugin; they're also tried again automatically.");
         } else {
-            const store: PluginStateStore = options.store ?? new PluginStateStore(config, logger, datastore, options.pluginClass);
+            const store: PluginStateStore =
+                options.store ??
+                new PluginStateStore(
+                    config,
+                    logger,
+                    datastore,
+                    options.pluginClass,
+                    options.cipher && options.configKeyStateClass ? { cipher: options.cipher, configKeyStateClass: options.configKeyStateClass } : undefined,
+                );
             try {
                 rows = await store.loadAndSeed(defaults, registryFor, sources);
                 known = true;
@@ -261,10 +279,21 @@ export class PluginHost {
         const declaredKeys: Map<string, string[]> = new Map(
             installed.map((plugin) => [plugin.name, (plugin.manifest.settings ?? []).map((setting) => setting.key)]),
         );
-        // The settings a plugin's manifest marks `secret: true` are the ones the Diagnostics never shows.
-        hideSettings(installed.flatMap((plugin) => (plugin.manifest.settings ?? []).filter((setting) => setting.secret === true).map((setting) => setting.key)));
+        // The settings that are secrets - a manifest says `secret: true` or a `password` type, or the key names one - are the ones the Diagnostics never shows,
+        // and the ones saved encrypted (spec 5.7); isSecretSetting() is the one rule for both.
+        hideSettings(
+            installed.flatMap((plugin) =>
+                (plugin.manifest.settings ?? []).filter((setting) => isSecretSetting(setting.key, plugin.manifest)).map((setting) => setting.key),
+            ),
+        );
         for (const row of enabled.filter((plugin) => declaredKeys.has(plugin.name))) {
-            for (const [key, value] of Object.entries(row.settings ?? {})) {
+            // A secret setting is an envelope on the row once the encryption run has completed: the plugin reads the plaintext, so it is decrypted here, in
+            // memory for the life of the process. One that can't be decrypted is left out, so the deployment's value or the plugin's default applies.
+            const { values, unresolved } = resolvePluginSettings(row, options.cipher);
+            for (const key of unresolved) {
+                logger.warn(`Plugin ${row.name}'s secret setting ${key} is set but can't be read (its key isn't in the configuration keyring, or there is none), so it was left out: enter it again in the admin console.`);
+            }
+            for (const [key, value] of Object.entries(values)) {
                 // An empty value (or null) means "not set": a plugin's manifest may declare "" as a default, which is saved when
                 // the plugin is installed. It must not be applied, or it would hide the deployment's own configuration for the
                 // same key (the Helm chart's bundled coturn sets mail:videoconf:turn:* through the environment, for one). A
@@ -320,7 +349,7 @@ export class PluginHost {
               }
             : { retryDelayMs, haltRollout: !!result.installFailures };
 
-        return new PluginHost(options, computePluginStateHash(safeMode ? [] : rows), errors, safeMode, installed, ui, retry, restartLock, {
+        return new PluginHost(options, computePluginStateHash(safeMode ? [] : rows, options.cipher), errors, safeMode, installed, ui, retry, restartLock, {
             pluginsDir,
             installer: installerOptions,
         });
@@ -439,6 +468,7 @@ export class PluginHost {
                 errors: [...this.errors, ...this.classLoader.errors],
                 safeMode: this.safeMode,
             },
+            cipher: this.options.cipher,
             readPlugins: async () => {
                 const connection: any = objectFactory.getInstance<ConnectionManager>(ConnectionManager)?.connections.get(datastore);
                 return findAllPlugins(pluginRepository(connection, pluginClass));
@@ -510,6 +540,7 @@ export class PluginHost {
                 leaseMs,
                 coordination,
                 connections,
+                cipher: this.options.cipher,
                 coreClasses: () => this.classLoader.coreClasses(),
                 loadedPlugins: () => loadedModels,
                 readRows: () => findAllPlugins(pluginRepository(connection, pluginClass)),
