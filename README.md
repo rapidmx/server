@@ -78,6 +78,8 @@ For anything that is not Docker Compose on your own computer, you need:
   ```
 
   `mail` is the web app and `auth` is the sign-in page. Add matching `AAAA` records if the server has an IPv6 address. (On AWS you create `CNAME` records to the load balancer instead.)
+
+  If your domain's DNS is at Cloudflare, Route 53, Google Cloud DNS or Azure DNS, or on a server that takes RFC 2136 updates, RapidMX can **publish these records for you**, and the MX, DKIM and DMARC records of each of your mail domains too (the SPF record once you opt the domain in, and some providers hold fewer: see [DNS Publishing](#dns-publishing)). The [standalone installer](#3-standalone-k3s-server) does it with `--dns-provider`, and with it you can skip the two records above, once the DNS controller has a published release to deploy (see there).
 - **These ports open** to the internet: `80` and `443` for the web, and `25` for mail (not on AWS, where SES handles mail).
 - **Outbound port 25 allowed** by your hosting provider. Many block it by default, and mail can't be sent without it.
 - **A reverse DNS (PTR) record** for the server's address that points to `mail.example.com`. You set it at your hosting provider. It isn't required, but mail from servers without one is often treated as spam.
@@ -372,16 +374,49 @@ Best for one Linux server. A single script installs k3s (a small Kubernetes), HT
 | `--mail-host` / `--auth-host` | Change `mail` / `auth` to another name, for example `--mail-host webmail` |
 | `--tls false` | No certificates: plain HTTP, for testing |
 | `--openbao false` | Keep secrets in Kubernetes Secrets instead of OpenBao |
-| `--openpgpkey-host true` | Also serve `openpgpkey.<domain>`, the OpenPGP Web Key Directory host Proton Mail and GnuPG try first (chart value `mail.wkd.openpgpkeyHost.enabled`). Off by default. Add its record (`A`/`AAAA` to the server, or a `CNAME` to `mail.<domain>`) **before** turning it on: it shares `mail.<domain>`'s certificate, which isn't issued until every name on it resolves |
+| `--openpgpkey-host true\|false\|auto` | Whether to also serve `openpgpkey.<domain>`, the OpenPGP Web Key Directory host Proton Mail and GnuPG try first (chart value `mail.wkd.openpgpkeyHost.enabled`). The default, `auto`, serves it once its DNS record points at the server: at once when the record exists, or, with `--dns-provider`, in a second step after the provider has published it (a release that serves it already keeps serving it). `true` serves it regardless, so its record must exist before the server's certificate, which covers it, can be issued (with `--dns-provider` and a zone that covers the name, `true` also waits for the published record, as `auto` does); `false` turns it off |
+| `--dns-provider <type>` | Publish the DNS records of this install and of its domains: `cloudflare`, `route53`, `rfc2136`, `google` or `azure` (see [Publishing DNS records](#publishing-dns-records-with-the-installer)) |
+| `--dns-zone <zone>` | The DNS zone to publish into, when `--domain` is below the zone's apex (default `--domain`; for Cloudflare, the zone the token can see for `--domain` or a parent of it) |
+| `--dns-credentials-file <path>` | A file of `NAME=value` lines with the provider's credentials and settings, read once and never run. What it doesn't set is read from the environment. Never put a credential on the command line |
+| `--dns-takeover` | Let the provider replace records that already exist at the names RapidMX publishes (the old MX of the domain's earlier provider, for example). Without it they are left alone and shown as conflicts |
+| `--public-address <ip>` | The public address the mail host's `A`/`AAAA` records point at; repeatable. Detected when you give none: the server's global IPv4 addresses, else the one seen from outside. An IPv6 address is published only when you give it here, since this k3s serves mail over IPv4 only |
+| `--keep-dns` | With `--uninstall`: leave the records RapidMX published in DNS (the DNS software is stopped first, so nothing is deleted) |
 | `--version <version>` | Install a specific release |
-| `--uninstall --yes` | Remove what the script installed, including the mail data (`--uninstall` alone removes nothing). The chart itself leaves its DKIM, blob and encryption CA volumes behind on `helm uninstall` (`mail.storage.keepOnUninstall`) |
+| `--uninstall --yes` | Remove what the script installed, including the mail data (`--uninstall` alone removes nothing) and, first, the DNS records it published (see [Publishing DNS records](#publishing-dns-records-with-the-installer)). The chart itself leaves its DKIM, blob and encryption CA volumes behind on `helm uninstall` (`mail.storage.keepOnUninstall`) |
 | `--help` | List everything |
 
 > **Good to know:**
 >
 > - The certificates are requested during the install and issued once both names point at the server. You can add the DNS records afterwards; `kubectl -n rapidmx get certificate` shows when they are ready.
-> - The final message lists the DNS records each host needs.
+> - The final message lists the DNS records each host needs, or, with `--dns-provider`, the ones being published for you and the ones that stay manual.
 > - To try it without a public domain, use a name that ends in `.local`, such as `--domain example.local`. It serves plain HTTP; add both names to your hosts file, as the script reminds you.
+
+#### Publishing DNS records with the installer
+
+With `--dns-provider` the script publishes the DNS records for you, so there is nothing to add at your DNS host: the addresses of `mail.<domain>`, the `auth.`, `autodiscover.` and `openpgpkey.` names, and for each mail domain its ownership, MX, DKIM, DMARC and autodiscover records (see [DNS Publishing](#dns-publishing) for what is published and what stays manual). Your domain's DNS zone must be at the provider you name. Give the provider's credentials in a file of `NAME=value` lines (a file only you can read, passed with `--dns-credentials-file`; it is read as text and never run) or in the environment (`sudo` drops them unless you run `sudo -E`); a credential is never a command-line option, where every local user could read it, and the script never prints one.
+
+```bash
+DNS_CONTROLLER_TAG=<the dns-controller release> ./single_node_install.sh --domain example.com --email you@example.com \
+  --dns-provider cloudflare --dns-credentials-file ./dns.env     # dns.env holds the line CF_API_TOKEN=<your token>
+```
+
+| `--dns-provider` | Credentials and settings |
+| --- | --- |
+| `cloudflare` | `CF_API_TOKEN`: an API token with Zone:Zone:Read and Zone:DNS:Edit on the zone. A token limited to one zone works. If the token is restricted by client IP address, list **every** address the server goes out from, IPv4 **and** IPv6 |
+| `route53` | `AWS_REGION` (required), `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` (both or neither: with neither, the IAM role of external-dns's service account is used), `EXTERNAL_DNS_AWS_ZONE_TYPE`, `EXTERNAL_DNS_AWS_ASSUME_ROLE` |
+| `rfc2136` | `EXTERNAL_DNS_RFC2136_HOST` (required), `EXTERNAL_DNS_RFC2136_PORT`, `EXTERNAL_DNS_RFC2136_ZONE` (default: the DNS zone), `EXTERNAL_DNS_RFC2136_TSIG_KEYNAME`, `EXTERNAL_DNS_RFC2136_TSIG_SECRET`, `EXTERNAL_DNS_RFC2136_TSIG_SECRET_ALG`, `EXTERNAL_DNS_RFC2136_INSECURE`; a TSIG key and secret unless the server takes unsigned updates |
+| `google` | `GOOGLE_APPLICATION_CREDENTIALS` (the path of a service account's key file) and `EXTERNAL_DNS_GOOGLE_PROJECT` |
+| `azure` | `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID` and `AZURE_RESOURCE_GROUP` |
+
+Everything is checked before anything is installed: an option used without `--dns-provider`, a name in the credentials file that is not a setting of the provider, a credential of a wrong form, a `--domain` outside the zone. Then:
+
+- The `DNSEndpoint` custom resource definition of external-dns is installed when the cluster has none (it is cluster-wide, so a copy somebody else installed is left alone), the release gets the DNS controller, and the credentials go into the Secret `<fullname>-dns-bootstrap`, which only the server pod mounts. The server turns them into a DNS provider config in its database, with the credentials encrypted, before it reports ready, and the script deletes the Secret once the server has rolled out and says it has the config. If the config could not be made, the Secret is kept and the script says why.
+- **The DNS controller has no published release yet, so `--dns-provider` cannot complete until it has one.** From its first release, set `DNS_CONTROLLER_TAG` (or `DNS_CONTROLLER_DIGEST`) to the release to deploy, as in the example above. Without it the chart refuses to render, naming `dns.controller.image`, and the script finds that out only when it installs the release, after k3s and the other components are in place and the credentials are in the Secret, so set it before you run the script.
+- `mail.<domain>` is published at the server's public addresses: the global IPv4 addresses of the machine, else the address it is seen from outside. IPv6 is published only for an address you give with `--public-address`. `--dns-zone` names the zone when `--domain` is below its apex, and the `--mail-domains` outside the zone stay manual, as the final message says.
+- **Existing records.** A record that is already at a name RapidMX publishes (the MX of the domain's earlier mail provider) is left alone and shown as a conflict, with the existing value, until you take it over for that domain in the admin console. `--dns-takeover` allows it for the whole provider from the start. The SPF record at the domain's root is never taken over by either; see [DNS Publishing](#dns-publishing).
+- **A release installed without publishing** keeps its domains as they are (the server never changes a domain that exists), so adding `--dns-provider` to it publishes the hosts and installs the controller, but nothing for those domains, and the script does not wait for `openpgpkey.<domain>`. Assign each domain to the provider in the admin console (the domain's DNS panel), then run the script again.
+- **Pass the same `--dns-*` options on every run that upgrades.** A run without `--dns-provider` turns publishing off and says what stays behind. The provider config exists once the server has created it, and from then on it is changed in the admin console: a new credential, zone or `--dns-takeover` on a later run is not applied, and the script says so.
+- **Uninstalling.** `--uninstall --yes` stops the DNS controller, deletes the records it published (the `DNSEndpoint`s, then waits up to ten minutes, `DNS_CLEANUP_WAIT_SECONDS`, for the DNS software to remove them; a record that was at the provider before RapidMX and was left alone stays), removes what the controller left in the cluster, and removes the custom resource definition only if the script installed it and no `DNSEndpoint` is left. While RapidMX manages a domain's root TXT set (the opt-in for SPF, see below) it **stops, with nothing removed**, and names the domain: opt it out in the admin console first, which puts the SPF and the values you kept back, then run it again. `--keep-dns` leaves every record in DNS instead (the DNS software is stopped before the `DNSEndpoint`s go, so it deletes nothing) and skips that check.
 
 ### 4. AWS (CloudFormation)
 
@@ -651,6 +686,8 @@ server to hold an OpenBao identity (`openbao.auth.method`); without one a rotati
 to `none`) and the keyring is only delivered. The ExternalSecret owns the Secret, so **leaving OpenBao** (turning it or External Secrets off on
 an upgrade) is refused by the chart until the Secret is released: `kubectl delete externalsecret <fullname>-config-keyring --cascade=orphan`, after
 saving the keyring, or Kubernetes would delete the Secret with the ExternalSecret and the next upgrade would generate a new ring.
+
+**Rotating the configuration key** is something an administrator starts, never a schedule: `POST system/config-keys/rotate` (the console's "Rotate configuration key"; a trusted role and an elevated token; `{ "compromised": true }` for a keyring that may have leaked) adds a key to the ring, waits until every server copy has loaded it, re-encrypts every secret in the database and removes the old key. `GET system/config-keys` shows the keys (their age and how many values each encrypts, never the key), which one is active and the rotation's progress, including the copies still waiting to load the new key; `POST system/config-keys/activate` activates it anyway when you know a stale copy is being replaced (that copy cannot read what the others then save until it is). Rotating needs the server to be able to write the keyring (the Role above, or an OpenBao identity); without that it is refused. **Back the keyring up again when a rotation finishes**: a copy taken before it no longer decrypts what a backup of the database made after it holds, and a copy taken after it no longer decrypts a backup made before.
 
 Keeping the unseal key in a Secret is what makes the deployment heal itself after a reboot, at the cost that anyone who
 can read Secrets in the vault's namespace can unseal it (roughly what those Secrets exposed before). A cluster with a KMS
@@ -1026,11 +1063,11 @@ with the route above.
 
 The third-party services an administrator picks in the admin console's Integrations (Giphy, STUN, the signing certificate authority, the DNS resolver, the plugin
 registry; `system/integrations`, which needs a trusted role and, to write, an elevated token) take effect **without a restart**. What an administrator sets is
-saved in the `IntegrationSettings` row (its secrets encrypted with the configuration keyring) and becomes a configuration layer, `integrations`, directly below
+saved in the `IntegrationSettings` row (its secrets encrypted with the [configuration keyring](#secrets-and-openbao), the Secret `<fullname>-config-keyring`, which you must back up together with the database) and becomes a configuration layer, `integrations`, directly below
 the plugin settings: it outranks the environment, the command line and the shipped defaults until the administrator resets the field, which puts the deployment's
 own value back. Every copy of the server rebuilds the layer when it hears `rapidmx:integrations:changed` on the `events` Redis, and compares the row's version
 every minute in case it missed one; the Giphy key and the registry tokens are decrypted then and kept in memory, never decrypted per request. A secret that
-can't be decrypted (the keyring lost its key) is left out, so the deployment's value applies, and the console shows it as "Set, but can't be read: enter it again".
+can't be decrypted (the keyring lost its key) is left out, so the deployment's value applies, and `system/integrations` answers `{ "secret": true, "unreadable": true }` for it, which the console shows as "Set, but can't be read: enter it again".
 
 | Section | Config keys it overrides | Applies |
 |---|---|---|
@@ -1070,6 +1107,61 @@ again at the next start.
    first list adopted, not created. Under `yarn dev`, `example.com` is seeded (creating a domain writes its DKIM key to `mail:dkim:key_dir`, so that directory must be
    writable, as when adding a domain in the console).
 
+## DNS Publishing
+
+RapidMX can publish the DNS records a deployment and its domains need, through [external-dns](https://github.com/kubernetes-sigs/external-dns), so a domain added
+in the admin console starts receiving mail without a trip to your DNS host. An administrator creates **DNS provider configs** (a provider type, the DNS zones it
+serves and its credentials, encrypted in the database with the [configuration keyring](#secrets-and-openbao)) and assigns each mail domain to the one that serves
+it. A domain with no provider stays **manual**: its DNS checklist shows the records to add, as before. The routes are `system/dns-providers` (list, create, update, delete,
+`POST /:id/test` to try the credentials, `POST /:id/takeover`, `GET /types`, `GET /controller` for what the DNS controller last reported) and
+`PUT /mail/domains/:id/dns-provider` to assign a domain; they need a trusted role and, to write, an elevated token. They are REST routes today, and the admin console's
+pages for them arrive with the web-client release. Publishing is the chart's `dns.publishing.enabled`, which the installer turns on with `--dns-provider` (below, and
+[Publishing DNS records with the installer](#publishing-dns-records-with-the-installer)); the provider config the installer asks for is created by the server at its first start.
+
+The records are exactly the ones the domain's DNS checklist (`GET /mail/domains/:id/dns-setup`) recommends, built by one function for both, so the two cannot disagree:
+
+| Record | Name | Published |
+| --- | --- | --- |
+| Ownership | `_rapidmx-verify.<domain>`, TXT `rapidmx-domain-verification=<token>` | Always, and kept after the domain is verified |
+| MX | `<domain>` | `10 <mail host>` |
+| DKIM | `<selector>._domainkey.<domain>` | The active key, and during a [rotation](#dkim-key-rotation) the next and the previous one |
+| DMARC | `_dmarc.<domain>` | As the checklist recommends |
+| openpgpkey | `openpgpkey.<domain>`, CNAME to the mail host | Always, once the mail host is set, as the checklist recommends. The deployment serves the name only with the host on (`--openpgpkey-host`, `mail.wkd.openpgpkeyHost.enabled`), so with it off, leave the record out or serve the host |
+| Autodiscover | `autodiscover.<domain>` CNAME and `_autodiscover._tcp.<domain>` SRV | While the Autodiscover plugin is active |
+| SPF | `<domain>`, TXT `v=spf1 mx ~all` | **Only after the domain opts in** (see below); otherwise manual |
+
+The deployment's own hosts are published through the provider config whose zones cover them: the mail host (`mail.<global.domain>`) as `A`/`AAAA` records at
+`dns.publicAddresses`, and `auth.`, `autodiscover.` and `openpgpkey.<global.domain>` as CNAMEs to it. What cannot be published is shown **manual** with its reason,
+never guessed: no provider, a name outside every provider's zones, a record kind or value the provider cannot hold, or an SPF record not yet opted in. The domain's DNS
+checklist shows each record as automatic (published, pending or conflict) or manual, beside the live check, which stays the source of truth for whether it works.
+
+| Provider | Notes |
+| --- | --- |
+| Cloudflare | Tested live. A token limited to the zone works (the zone's id is kept in the config). Records are never proxied. A token restricted by client IP must list every address the cluster goes out from, IPv4 **and** IPv6 |
+| Route 53 | Not yet live-tested. With no access keys, the IAM role of the `<fullname>-external-dns` ServiceAccount (annotate it with `dns.externalDns.serviceAccount.annotations`) |
+| rfc2136 | Not yet live-tested. A DNS server taking TSIG-signed updates and zone transfers. It cannot hold MX or SRV records, nor a TXT value that is not one plain string (SPF, DKIM and DMARC), so those stay manual |
+| Google Cloud DNS, Azure DNS | Not yet live-tested. Azure holds one value per TXT name, so a domain with values to keep at its root cannot opt in there |
+
+**Existing records and takeover.** external-dns only changes records it created, so a record already at a name RapidMX publishes (the MX of the domain's earlier provider)
+is not overwritten: it shows as a **conflict**, with the existing value beside the wanted one. Taking it over is a per-domain action
+(`POST system/dns-providers/:id/takeover`, elevated, audited; the console's "Take over"), or for the whole provider from the start with its `allowTakeover` setting (the
+installer's `--dns-takeover`). After a takeover RapidMX owns the whole record set at that name and type: a value added at your DNS host by hand is removed at the next sync, and
+removing the record removes all of it.
+
+**The root TXT set and SPF.** The TXT records at a domain's root usually hold other services' verification values, so RapidMX never takes that set over on its own. The
+ownership record lives at `_rapidmx-verify.<domain>` for that reason, and SPF stays manual until an administrator opts the domain in (`PUT /mail/domains/:id/apex-txt`, elevated and
+audited; `GET` shows every value at the root and suggests the ones to keep). RapidMX then owns the set: it publishes `v=spf1 mx ~all` (or the SPF you already have, when it
+authorizes the domain's own MX hosts) and the values on the keep list, and **while the domain is managed this is the only place to edit them**, since values added at the DNS host
+are removed within a minute. Opting out, or deleting the domain, puts the SPF and the kept values back (the set is absent for up to a sync interval and the restoring job's run
+in between). A managed domain cannot be reassigned to another provider or to manual until it opts out.
+
+**Verifying a domain.** The ownership record is read at `_rapidmx-verify.<domain>`. While `mail:domain_verification:accept_legacy_apex` is `true` (the default), a domain not yet verified is
+also verified by the old record at its root, and its checklist says to publish the new one; a verified domain stays verified. The default flips to `false` in a later minor release,
+announced one release ahead.
+
+**Watching it.** The domain's DNS panel in the admin console (the records and their state; `GET system/dns-providers` for each config's status), `kubectl -n <namespace> get dnsendpoints` and
+`kubectl -n <namespace> logs deployment/<fullname>-dns-controller`.
+
 ## DNS Publishing in the Chart
 
 With `dns.publishing.enabled` (off by default) the chart deploys what publishes the DNS records of the deployment and of each domain through
@@ -1082,7 +1174,7 @@ rendered and every record is published by hand, as each domain's DNS checklist s
 | `dns.controller.image` | `ghcr.io/rapidmx/dns-controller`, `tag` (`digest` instead of it when set) | The controller's image, an exact release moved together with the server's. **Empty until the controller's first release is published**: enabling publishing with neither a tag nor a digest fails the render, instead of pulling an image that does not exist. |
 | `dns.controller.resyncMinutes`, `dns.controller.resources` | `10`, small requests and a memory limit | How often the controller reconciles everything again; its resources. |
 | `dns.controller.longPollTimeoutSeconds`, `dns.controller.statusIntervalSeconds` | `0`, `0` | The controller's wait for the server's long-poll answer and its status interval; `0` keeps its defaults (75 and 60), except that a `service.config` `mail__dns__desired_state__long_poll_seconds` above 55 raises the wait to that plus 20, so the poll never ends as a timeout. |
-| `dns.controller.serverCA.configMap`, `.key` | none, `ca.crt` | With `global.gateway.tlsTermination: pod` the controller calls the server over TLS; when the Issuer's certificate is not signed by a public CA, the ConfigMap holding the CA bundle, which the controller trusts for that call (`NODE_EXTRA_CA_CERTS`). |
+| `dns.controller.serverCA.configMap`, `dns.controller.serverCA.key` | none, `ca.crt` | With `global.gateway.tlsTermination: pod` the controller calls the server over TLS; when the Issuer's certificate is not signed by a public CA, the ConfigMap holding the CA bundle, which the controller trusts for that call (`NODE_EXTRA_CA_CERTS`). |
 | `dns.externalDns.image` | external-dns v0.23.0 by digest | The only image the controller runs for a provider config (also `mail:dns:publish:external_dns_image`). |
 | `dns.externalDns.resources`, `dns.externalDns.serviceAccount.annotations` | none | The external-dns containers' resources; annotations of the ServiceAccount they run as (`eks.amazonaws.com/role-arn` for a Route 53 config without access keys). |
 | `dns.publicAddresses` | none | The IPv4/IPv6 addresses the mail host's A/AAAA records point at (`mail:dns:publish:addresses`). Global unicast only; empty publishes nothing for the hosts. |
@@ -1109,7 +1201,8 @@ API tokens and go with their Deployment) and the `DNSEndpoint`s. Remove the publ
 in the admin console, and the controller deletes the records it published and, two minutes later, the instances and the Secrets; then set `dns.publishing.enabled: false`.
 What is left after the controller is gone is removed by label, in the release's namespace:
 `kubectl delete dnsendpoints,deployments,jobs,secrets -l app.kubernetes.io/managed-by=rapidmx-dns-controller,app.kubernetes.io/instance=<release>` (the records already in DNS stay
-until you delete them at the provider; kept apex TXT values are restored by the installer's `--uninstall` and the console only).
+until you delete them at the provider). A domain that manages its root TXT set (the SPF opt-in) must opt out in the admin console first (opting out, or deleting the domain, is what puts its SPF and kept values
+back): the installer's `--uninstall` refuses while one does, and does the rest of this itself (see [Publishing DNS records with the installer](#publishing-dns-records-with-the-installer)).
 
 ## Administrators and Other Users' Mail
 
