@@ -18,7 +18,6 @@ import {
     LocalX509CertificateAuthority,
     ManualSigningCertificateEnrollment,
     NodeDnsResolver,
-    NullSecretStore,
     PostfixSendmailTransport,
 } from "@rapidmx/restapi";
 import { MongoTextSearchProvider } from "@rapidmx/restapi/search";
@@ -50,8 +49,6 @@ describe("PluginRoute over HTTP (MongoDB)", () => {
     objectFactory.register(PostfixSendmailTransport, "MailTransport");
     objectFactory.register(NodeDnsResolver, "DnsResolver");
     objectFactory.register(FsDkimKeyProvider, "DkimKeyProvider");
-    // As registerCoreProviders() does until the OpenBao and Kubernetes-Secret backends exist.
-    objectFactory.register(NullSecretStore, "SecretStore");
     objectFactory.register(LocalX509CertificateAuthority, "EncryptionCertificateAuthority");
     objectFactory.register(ManualSigningCertificateEnrollment, "SigningCertificateEnrollment");
     objectFactory.register(TieredRateLimiter, "RateLimiter");

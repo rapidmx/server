@@ -180,6 +180,13 @@ describe("ensurePushDatastore", () => {
                 expect(conf.get("datastores:notifications")).toEqual({ type: "redis", url: "redis://push-host:6390/4" });
                 expect(conf.get("datastores:events:url")).toBe("redis://push-host:6390/4");
             });
+
+            it(`${file} has no settings for a secret store's OpenBao, only the PKI client's`, async () => {
+                vi.resetModules();
+                const { default: conf } = await import(file);
+                expect(conf.get("mail:secrets")).toBeUndefined();
+                expect(conf.get("mail:pki:openbao:auth:token_file")).toBe("/var/run/secrets/openbao/token");
+            });
         }
     });
 });
@@ -203,11 +210,16 @@ describe("isProtectedPluginSettingKey", () => {
         }
     });
 
-    it("protects where the server's OpenBao clients connect and log in, and the Integrations settings", () => {
-        // A plugin pointing one at a host of its own would be sent the server's ServiceAccount token on login.
-        for (const key of ["mail:secrets:openbao:address", "mail__secrets__openbao__auth__role", "mail:pki:openbao:ca_file", "integrations:stun:urls"]) {
+    it("protects where the server's OpenBao client connects and logs in, and the Integrations settings", () => {
+        // A plugin pointing it at a host of its own would be sent the server's ServiceAccount token on login.
+        for (const key of ["mail:pki:openbao:address", "mail__pki__openbao__auth__role", "mail:pki:openbao:ca_file", "integrations:stun:urls"]) {
             expect(isProtectedPluginSettingKey(key), key).toBe(true);
         }
+    });
+
+    it("no longer reserves mail:secrets, which nothing reads since the secret store was dropped", () => {
+        expect(isProtectedPluginSettingKey("mail:secrets:openbao:address")).toBe(false);
+        expect(isProtectedPluginSettingKey("mail__secrets__openbao__token")).toBe(false);
     });
 
     it("still protects the server's own jobs, but not a job a plugin adds", () => {

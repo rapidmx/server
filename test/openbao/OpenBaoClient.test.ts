@@ -63,13 +63,13 @@ describe("OpenBaoClient", () => {
         it("refuses an address that isn't a URL, without repeating it", () => {
             let error: OpenBaoError | undefined;
             try {
-                new OpenBaoClient({ name: "mail:secrets:openbao", address: "not a url", auth: { method: "token", token: "t" } });
+                new OpenBaoClient({ name: "mail:pki:openbao", address: "not a url", auth: { method: "token", token: "t" } });
             } catch (err: any) {
                 error = err;
             }
             expect(error).toBeInstanceOf(OpenBaoError);
             expect(error?.kind).toBe("config");
-            expect(error?.message).toContain("mail:secrets:openbao:address");
+            expect(error?.message).toContain("mail:pki:openbao:address");
         });
 
         it("accepts https anywhere and plain HTTP on loopback", () => {
@@ -298,15 +298,15 @@ describe("OpenBaoClient", () => {
             const bao = fakeOpenBao((request) => (request.url.pathname.endsWith("/login") ? login("s.t") : json(403, { errors: ["permission denied"] })));
             const client = kubernetesClient({ transport: bao.transport, now: () => now });
             for (let i = 0; i < 3; i++) {
-                await expect(client.request("GET", "secret/data/integrations/dns/x")).rejects.toMatchObject({ kind: "rejected", status: 403 });
+                await expect(client.request("GET", "secret/data/other/x")).rejects.toMatchObject({ kind: "rejected", status: 403 });
                 now += 10 * 1000;
             }
             // One login for all three: each further denial costs OpenBao no new token or lease.
             expect(bao.requests.map((r) => r.url.pathname)).toEqual([
                 "/v1/auth/kubernetes/login",
-                "/v1/secret/data/integrations/dns/x",
-                "/v1/secret/data/integrations/dns/x",
-                "/v1/secret/data/integrations/dns/x",
+                "/v1/secret/data/other/x",
+                "/v1/secret/data/other/x",
+                "/v1/secret/data/other/x",
             ]);
         });
 
@@ -378,13 +378,13 @@ describe("OpenBaoClient", () => {
 
         it("reads Kubernetes auth with its defaults", () => {
             expect(
-                openBaoClientOptions("mail:secrets:openbao", {
+                openBaoClientOptions("mail:pki:openbao", {
                     address: "https://bao:8200",
                     ca_file: "/etc/rapidmx/openbao-ca/ca.crt",
                     auth: { method: "kubernetes", role: "rapidmx-server" },
                 })
             ).toEqual({
-                name: "mail:secrets:openbao",
+                name: "mail:pki:openbao",
                 address: "https://bao:8200",
                 caFile: "/etc/rapidmx/openbao-ca/ca.crt",
                 timeoutMs: undefined,
@@ -409,26 +409,26 @@ describe("OpenBaoClient", () => {
     describe("openBaoClientFromConfig()", () => {
         it("builds a client from the keys under a prefix", async () => {
             const values: Record<string, unknown> = {
-                "mail:secrets:openbao:address": "https://openbao.openbao.svc:8200",
-                "mail:secrets:openbao:ca_file": "/ca.pem",
-                "mail:secrets:openbao:auth:method": "kubernetes",
-                "mail:secrets:openbao:auth:role": "rapidmx-server",
-                "mail:secrets:openbao:auth:mount_path": "kubernetes",
-                "mail:secrets:openbao:auth:token_file": "/jwt",
+                "mail:pki:openbao:address": "https://openbao.openbao.svc:8200",
+                "mail:pki:openbao:ca_file": "/ca.pem",
+                "mail:pki:openbao:auth:method": "kubernetes",
+                "mail:pki:openbao:auth:role": "rapidmx-server",
+                "mail:pki:openbao:auth:mount_path": "kubernetes",
+                "mail:pki:openbao:auth:token_file": "/jwt",
             };
             const bao = fakeOpenBao((request) => (request.url.pathname.endsWith("/login") ? login("s.t") : json(200, { data: {} })));
-            const client = openBaoClientFromConfig({ get: (key: string) => values[key] }, "mail:secrets:openbao", {
+            const client = openBaoClientFromConfig({ get: (key: string) => values[key] }, "mail:pki:openbao", {
                 transport: bao.transport,
                 readFile: files({ "/ca.pem": CA, "/jwt": JWT }),
             });
-            await client.request("GET", "secret/data/rapidmx-server/integrations/server/giphy-0");
+            await client.request("GET", "secret/data/rapidmx-server/other");
             expect(bao.requests[0].url.toString()).toBe("https://openbao.openbao.svc:8200/v1/auth/kubernetes/login");
             expect(JSON.parse(bao.requests[0].body!)).toEqual({ role: "rapidmx-server", jwt: JWT });
             expect(bao.requests[1].ca).toBe(CA);
         });
 
         it("refuses a prefix without an address", () => {
-            expect(() => openBaoClientFromConfig({ get: () => undefined }, "mail:secrets:openbao")).toThrow(/mail:secrets:openbao:address/);
+            expect(() => openBaoClientFromConfig({ get: () => undefined }, "mail:pki:openbao")).toThrow(/mail:pki:openbao:address/);
         });
     });
 });

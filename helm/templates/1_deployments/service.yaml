@@ -164,14 +164,12 @@ spec:
               value: /etc/rapidmx/tls/tls.crt
             {{- end }}
             {{- with $openbaoTokenSecret }}
-            # The static token of the server's OpenBao clients (openbao.auth.method "token"), from its Secret, never the ConfigMap.
-            {{- range $client := list "pki" "secrets" }}
-            - name: mail__{{ $client }}__openbao__token
+            # The static token of the server's PKI client (openbao.auth.method "token"), from its Secret, never the ConfigMap.
+            - name: mail__pki__openbao__token
               valueFrom:
                 secretKeyRef:
                   name: {{ $openbaoTokenSecret | quote }}
                   key: token
-            {{- end }}
             {{- end }}
           ports:
             - containerPort: 3000

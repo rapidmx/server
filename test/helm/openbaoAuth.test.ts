@@ -89,7 +89,6 @@ describe.skipIf(!helmAvailable || !depsAvailable)("chart: OpenBao authentication
         const pod = serverPod(all);
         expect(JSON.stringify(pod.volumes)).not.toContain("serviceAccountToken");
         expect(serverConfig(all).mail__pki__openbao__auth__method).toBeUndefined();
-        expect(serverConfig(all).mail__secrets__openbao__auth__method).toBeUndefined();
     });
 
     it("logs External Secrets in with Kubernetes auth as its own ServiceAccount, for the audience the role checks, over TLS with the copied CA", () => {
@@ -108,7 +107,7 @@ describe.skipIf(!helmAvailable || !depsAvailable)("chart: OpenBao authentication
         const account = find(all, "ServiceAccount", "rapidmx-server-openbao-eso");
         expect(account).toBeDefined();
         expect(account!.automountServiceAccountToken).toBe(false);
-        // Not the server's own ServiceAccount, whose OpenBao role may write credentials External Secrets reads.
+        // Not the server's own ServiceAccount: the two OpenBao roles grant different access.
         expect(serverPod(all).serviceAccountName).toBe("rapidmx-server");
     });
 
@@ -125,7 +124,7 @@ describe.skipIf(!helmAvailable || !depsAvailable)("chart: OpenBao authentication
         expect(find(existing, "ServiceAccount", "rapidmx-server-openbao-eso")).toBeUndefined();
     });
 
-    it("gives the server a projected ServiceAccount token for OpenBao and the CA, and tells both of its clients how to log in", () => {
+    it("gives the server a projected ServiceAccount token for OpenBao and the CA, and tells its PKI client how to log in", () => {
         const all = render(...INSTALLER);
         const pod = serverPod(all);
         const tokenVolume = pod.volumes.find((v: any) => v.name === "openbao-token");
@@ -139,14 +138,14 @@ describe.skipIf(!helmAvailable || !depsAvailable)("chart: OpenBao authentication
         expect(mounts).toContainEqual({ name: "openbao-ca", mountPath: "/etc/rapidmx/openbao-ca", readOnly: true });
 
         const config = serverConfig(all);
-        for (const client of ["pki", "secrets"]) {
-            expect(config[`mail__${client}__openbao__address`], client).toBe("https://openbao.openbao.svc:8200");
-            expect(config[`mail__${client}__openbao__ca_file`], client).toBe("/etc/rapidmx/openbao-ca/ca.crt");
-            expect(config[`mail__${client}__openbao__auth__method`], client).toBe("kubernetes");
-            expect(config[`mail__${client}__openbao__auth__role`], client).toBe("rapidmx-server-server");
-            expect(config[`mail__${client}__openbao__auth__mount_path`], client).toBe("kubernetes");
-            expect(config[`mail__${client}__openbao__auth__token_file`], client).toBe("/var/run/secrets/openbao/token");
-        }
+        expect(config.mail__pki__openbao__address).toBe("https://openbao.openbao.svc:8200");
+        expect(config.mail__pki__openbao__ca_file).toBe("/etc/rapidmx/openbao-ca/ca.crt");
+        expect(config.mail__pki__openbao__auth__method).toBe("kubernetes");
+        expect(config.mail__pki__openbao__auth__role).toBe("rapidmx-server-server");
+        expect(config.mail__pki__openbao__auth__mount_path).toBe("kubernetes");
+        expect(config.mail__pki__openbao__auth__token_file).toBe("/var/run/secrets/openbao/token");
+        // The secret store's OpenBao client is gone: nothing sets its keys.
+        expect(Object.keys(config).filter((key) => key.startsWith("mail__secrets__"))).toEqual([]);
         // The PKI mount and role the installer creates; the encryption CA stays "local" unless mail__pki__backend says otherwise.
         expect(config.mail__pki__openbao__mount).toBe("pki");
         expect(config.mail__pki__openbao__role).toBe("rapidmx-encryption");
@@ -156,7 +155,7 @@ describe.skipIf(!helmAvailable || !depsAvailable)("chart: OpenBao authentication
     it("takes the server's role and audience from values", () => {
         const all = render(...INSTALLER, "openbao.auth.role=mail-server", "openbao.auth.audience=vault-prod", "openbao.auth.mountPath=k3s");
         expect(serverConfig(all).mail__pki__openbao__auth__role).toBe("mail-server");
-        expect(serverConfig(all).mail__secrets__openbao__auth__mount_path).toBe("k3s");
+        expect(serverConfig(all).mail__pki__openbao__auth__mount_path).toBe("k3s");
         expect(serverPod(all).volumes.find((v: any) => v.name === "openbao-token").projected.sources[0].serviceAccountToken.audience).toBe("vault-prod");
     });
 
@@ -170,23 +169,20 @@ describe.skipIf(!helmAvailable || !depsAvailable)("chart: OpenBao authentication
         expect(serverPod(render(...INSTALLER, "global.serviceAccount.create=false", "global.serviceAccount.name=rapidmx-mail")).serviceAccountName).toBe("rapidmx-mail");
     });
 
-    it("gives the server's clients a static token from a Secret, for a vault prepared by hand, and never from the ConfigMap", () => {
+    it("gives the server's PKI client a static token from a Secret, for a vault prepared by hand, and never from the ConfigMap", () => {
         const all = render("openbao.auth.method=token", "openbao.auth.tokenSecret=rapidmx-openbao-token");
         const env = serverPod(all).containers[0].env.filter((e: any) => /openbao__token$/.test(e.name));
-        expect(env).toEqual(
-            ["pki", "secrets"].map((client) => ({
-                name: `mail__${client}__openbao__token`,
-                valueFrom: { secretKeyRef: { name: "rapidmx-openbao-token", key: "token" } },
-            }))
-        );
+        expect(env).toEqual([{ name: "mail__pki__openbao__token", valueFrom: { secretKeyRef: { name: "rapidmx-openbao-token", key: "token" } } }]);
         expect(Object.keys(serverConfig(all)).filter((key) => key.endsWith("__token"))).toEqual([]);
         // No identity at all (the default) sends no token.
         expect(JSON.stringify(serverPod(render()).containers[0].env)).not.toContain("openbao__token");
 
         expect(() => render("openbao.auth.method=token")).toThrow(/openbao\.auth\.tokenSecret is empty/);
-        for (const key of ["mail__pki__openbao__token", "mail__secrets__openbao__token"]) {
-            expect(() => render(`service.config.${key}=s.static`)).toThrow(new RegExp(`service\\.config\\.${key} would put an OpenBao token in the server's ConfigMap`));
-        }
+        expect(() => render("service.config.mail__pki__openbao__token=s.static")).toThrow(
+            /service\.config\.mail__pki__openbao__token would put an OpenBao token in the server's ConfigMap/
+        );
+        // The removed secret store's key is no longer special: nothing reads it, so the chart has no reason to refuse it.
+        expect(() => render("service.config.mail__secrets__openbao__token=s.static")).not.toThrow();
     });
 
     it("refuses External Secrets logging in as the server's own ServiceAccount", () => {

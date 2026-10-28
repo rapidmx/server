@@ -226,12 +226,16 @@ describe("describeEnvironment", () => {
         expect(isHiddenSetting(`x${name}`)).toBe(false);
     });
 
-    it("hides the static OpenBao token of either client, and shows how they connect and log in", () => {
+    it("hides the PKI client's static OpenBao token, and shows how it connects and logs in", () => {
         expect(isHiddenSetting("mail:pki:openbao:token")).toBe(true);
-        expect(isHiddenSetting("mail__secrets__openbao__token")).toBe(true);
-        for (const name of ["mail:secrets:openbao:address", "mail:pki:openbao:ca_file", "mail:pki:openbao:auth:role", "mail:secrets:openbao:auth:token_file"]) {
+        expect(isHiddenSetting("mail__pki__openbao__token")).toBe(true);
+        for (const name of ["mail:pki:openbao:address", "mail:pki:openbao:ca_file", "mail:pki:openbao:auth:role", "mail:pki:openbao:auth:token_file"]) {
             expect(isHiddenSetting(name), name).toBe(false);
         }
+    });
+
+    it("no longer lists mail:secrets:openbao:token, whose settings were removed with the secret store", () => {
+        expect(CORE_HIDDEN_SETTINGS).not.toContain("mail:secrets:openbao:token");
     });
 
     it("shows the harmless variables of a cluster: service discovery, addresses, switches, limits and the auth settings that are not secrets", () => {

@@ -14,7 +14,6 @@ import {
     LocalX509CertificateAuthority,
     ManualSigningCertificateEnrollment,
     NodeDnsResolver,
-    NullSecretStore,
     Rfc8823AcmeSigningCertificateEnrollment,
     S3BlobStore,
 } from "@rapidmx/restapi";
@@ -61,7 +60,6 @@ describe("registerCoreProviders", () => {
                 "DkimKeyProvider",
                 "EncryptionCertificateAuthority",
                 "SigningCertificateEnrollment",
-                "SecretStore",
             ].sort(),
         );
     });
@@ -71,8 +69,8 @@ describe("registerCoreProviders", () => {
         expect(registered.RateLimiter).toBe(TieredRateLimiter);
         expect(registered.SearchProvider).toBe(FakeSearchProvider);
         expect(registered.DkimKeyProvider).toBe(FsDkimKeyProvider);
-        // Until its OpenBao and Kubernetes backends exist: credentials are refused, plugin secret settings stay on their rows.
-        expect(registered.SecretStore).toBe(NullSecretStore);
+        // restapi no longer has a secret store (configuration secrets are encrypted in their rows).
+        expect(registered.SecretStore).toBeUndefined();
     });
 
     it("resolves every config-driven backend to its documented default when unset", () => {

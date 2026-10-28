@@ -249,9 +249,6 @@ export const PROTECTED_PLUGIN_SETTING_KEYS: readonly string[] = [
     "mail:scan",
     "mail:dns",
     "mail:dkim",
-    // Where the server keeps the credentials an administrator saves, and how it logs in there: an address of a plugin's choosing
-    // would receive the server's ServiceAccount token on login.
-    "mail:secrets",
     "mail:domains",
     "mail:auto_provision",
     "mail:default_quota_bytes",

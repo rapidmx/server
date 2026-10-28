@@ -8,7 +8,6 @@ import {
     LocalX509CertificateAuthority,
     ManualSigningCertificateEnrollment,
     NodeDnsResolver,
-    NullSecretStore,
     Rfc8823AcmeSigningCertificateEnrollment,
     S3BlobStore,
 } from "@rapidmx/restapi";
@@ -127,8 +126,4 @@ export function registerCoreProviders(objectFactory: ClassRegistry, config: Core
             ),
         "SigningCertificateEnrollment",
     );
-    // Where the credentials an administrator saves in the console live (DNS providers, Integrations, plugin secret settings). The
-    // null store until the OpenBao and Kubernetes-Secret backends exist: it refuses credentials, and plugin secret settings stay on
-    // their rows as before (restapi's routes resolve "SecretStore" and fail to construct without it).
-    objectFactory.register(NullSecretStore, "SecretStore");
 }

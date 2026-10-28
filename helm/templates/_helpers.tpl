@@ -313,7 +313,7 @@ namespace's "default", and openbao.externalSecrets.createServiceAccount.
 {{-   if and (eq (include "rrst.vaultManagedSecrets" .) "true") (eq $auth.method "kubernetes") -}}
 {{-     $name := include "rrst.render" (dict "value" $auth.kubernetes.serviceAccount "context" .) -}}
 {{-     if and $name (eq $name (include "rrst.serviceAccountName" .)) -}}
-{{-       fail (printf "global.openbao.auth.kubernetes.serviceAccount is the server's own ServiceAccount (%s): External Secrets needs one of its own, since its OpenBao role may read what the server's may only write (the DNS providers' credentials)." $name) -}}
+{{-       fail (printf "global.openbao.auth.kubernetes.serviceAccount is the server's own ServiceAccount (%s): External Secrets needs one of its own, since its OpenBao role grants different access than the server's." $name) -}}
 {{-     end -}}
 {{-     if and $name (ne $name "default") (dig "externalSecrets" "createServiceAccount" true (.Values.openbao | default dict)) -}}
 {{-       $name -}}
@@ -337,16 +337,14 @@ true
 {{- end -}}
 
 {{/*
-The Secret in this namespace whose key `token` holds the static OpenBao token of the server's clients (openbao.auth.method
+The Secret in this namespace whose key `token` holds the static OpenBao token of the server's PKI client (openbao.auth.method
 "token", for a vault prepared by hand), empty for any other method. The token reaches the pod from that Secret, never from the
 ConfigMap, which anyone who can read ConfigMaps can read: so the render refuses the token keys in service.config, and method
 "token" without openbao.auth.tokenSecret.
 */}}
 {{- define "rapidmx.openbaoTokenSecret" -}}
-{{-   range $key := list "mail__pki__openbao__token" "mail__secrets__openbao__token" -}}
-{{-     if get ($.Values.service.config | default dict) $key -}}
-{{-       fail (printf "service.config.%s would put an OpenBao token in the server's ConfigMap, readable by anyone who can read ConfigMaps in the namespace: put it under the key token of a Secret named in openbao.auth.tokenSecret, with openbao.auth.method \"token\"." $key) -}}
-{{-     end -}}
+{{-   if get ($.Values.service.config | default dict) "mail__pki__openbao__token" -}}
+{{-     fail "service.config.mail__pki__openbao__token would put an OpenBao token in the server's ConfigMap, readable by anyone who can read ConfigMaps in the namespace: put it under the key token of a Secret named in openbao.auth.tokenSecret, with openbao.auth.method \"token\"." -}}
 {{-   end -}}
 {{-   $auth := dig "auth" dict (.Values.openbao | default dict) -}}
 {{-   if eq (toString ($auth.method | default "")) "token" -}}

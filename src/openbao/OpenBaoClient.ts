@@ -57,7 +57,7 @@ export type OpenBaoAuth =
       };
 
 export interface OpenBaoClientOptions {
-    /** The configuration prefix the settings came from (`mail:pki:openbao`, `mail:secrets:openbao`), named in messages. */
+    /** The configuration prefix the settings came from (`mail:pki:openbao`), named in messages. */
     name: string;
     address: string;
     /** A PEM bundle to verify OpenBao's listener with (the installer's copy of the CA that signed it), read on every request. */
@@ -139,7 +139,7 @@ function errorsOf(body: string): string {
 }
 
 /**
- * A small OpenBao HTTP client for the server: its encryption CA's PKI mount and, with the integrations, its secret store. It verifies the
+ * A small OpenBao HTTP client for the server: its encryption CA's PKI mount. It verifies the
  * listener against a configured CA bundle (the installer's in-cluster OpenBao has a certificate from a CA of its own, which neither
  * the system's trust store nor the global `fetch` can be given per request), and logs in with OpenBao's `kubernetes` auth method using
  * the pod's projected ServiceAccount token, logging in again before its short-lived OpenBao token expires, or once when OpenBao no
@@ -303,7 +303,7 @@ export class OpenBaoClient {
     }
 }
 
-/** The settings under a configuration prefix such as `mail:pki:openbao` or `mail:secrets:openbao`, as nconf gives them. */
+/** The settings under a configuration prefix such as `mail:pki:openbao`, as nconf gives them. */
 export interface OpenBaoSettings {
     address?: string;
     ca_file?: string;

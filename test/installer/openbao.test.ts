@@ -99,8 +99,6 @@ function run(installer: string, body: string, vars: Record<string, string> = {},
         OPENBAO_ESO_SERVICE_ACCOUNT: "rapidmx-server-openbao-eso",
         OPENBAO_SERVER_ROLE: "rapidmx-server-server",
         OPENBAO_ESO_ROLE: "rapidmx-server-eso",
-        OPENBAO_DNS_CONTROLLER_ROLE: "rapidmx-server-dns-controller",
-        OPENBAO_INTEGRATIONS_PATH: "rapidmx-server/integrations",
         OPENBAO_INSTALL: "true",
         AUTH_SECRET: "auth-secret",
         COOKIE_SECRET: "cookie-secret",
@@ -181,7 +179,23 @@ describe.skipIf(!bashAvailable)("installers: OpenBao with Kubernetes auth and TL
                     };
                     expectRole("rapidmx-server-server", "rapidmx-server", "rapidmx-server-server");
                     expectRole("rapidmx-server-eso", "rapidmx-server-openbao-eso", "rapidmx-server-eso");
-                    expectRole("rapidmx-server-dns-controller", "rapidmx-server-dns-controller", "rapidmx-server-dns-controller");
+                    // Two roles only: the DNS controller no longer touches OpenBao.
+                    expect(bao.split("\n").filter((line) => line.startsWith("bao write auth/kubernetes/role/"))).toHaveLength(2);
+                    expect(role("rapidmx-server-dns-controller")).toBe("");
+                    expect(bao).not.toMatch(/bao policy write rapidmx-server-dns-controller /);
+                });
+
+                it("deletes the DNS controller's role and policy an earlier run created, and leaves a vault without them alone", () => {
+                    const r = run(installer, "prepareOpenbao");
+                    const { status, bao } = runInPod(r, "pod-script-0.sh", { BAO_SECRETS: '{"secret/":{},"pki/":{}}', BAO_AUTHS: '{"kubernetes/":{}}' });
+                    // The delete is idempotent in OpenBao (204 for a role or policy that isn't there), so it runs on every preparation.
+                    expect(status).toBe(0);
+                    expect(bao).toContain("bao delete auth/kubernetes/role/rapidmx-server-dns-controller");
+                    expect(bao).toContain("bao policy delete rapidmx-server-dns-controller");
+                    // Deleted only after the roles that stay are written, so a failure part way never leaves the vault with fewer than it had.
+                    expect(bao.indexOf("bao delete auth/kubernetes/role/rapidmx-server-dns-controller")).toBeGreaterThan(
+                        bao.indexOf("bao write auth/kubernetes/role/rapidmx-server-eso ")
+                    );
                 });
 
                 it("creates no long-lived token any more", () => {
@@ -194,33 +208,24 @@ describe.skipIf(!bashAvailable)("installers: OpenBao with Kubernetes auth and TL
                     expect(r.read("kubectl.log")).not.toMatch(/create secret generic rapidmx-server-openbao-(eso|pki)/);
                 });
 
-                it("lets the server write DNS credentials but never read them, and read its own and the plugins' secrets", () => {
+                it("lets the server sign and revoke on the PKI role and nothing else, and External Secrets read the release's secrets only", () => {
                     const r = run(installer, "prepareOpenbao");
                     const { bao } = runInPod(r, "pod-script-0.sh", { BAO_SECRETS: '{"secret/":{},"pki/":{}}', BAO_AUTHS: '{"kubernetes/":{}}' });
                     const server = policy(bao, "rapidmx-server-server");
-                    const base = "secret/data/rapidmx-server/integrations";
-                    expect(capabilities(server, `${base}/dns/*`).sort()).toEqual(["create", "delete", "patch", "update"]);
-                    expect(capabilities(server, "secret/metadata/rapidmx-server/integrations/dns/*").sort()).toEqual(["delete", "read"]);
-                    for (const consumer of ["server", "plugins"]) {
-                        expect(capabilities(server, `${base}/${consumer}/*`).sort(), consumer).toEqual(["create", "delete", "patch", "read", "update"]);
-                        expect(capabilities(server, `secret/metadata/rapidmx-server/integrations/${consumer}/*`).sort(), consumer).toEqual(["delete", "read"]);
-                    }
                     expect(capabilities(server, "pki/sign/rapidmx-encryption")).toEqual(["update"]);
                     expect(capabilities(server, "pki/revoke")).toEqual(["update"]);
-                    // Nothing else: not the release's own secrets, which only External Secrets reads.
-                    expect(server).not.toContain("rapidmx-server/secrets");
+                    // Nothing else: no KV path at all, and not the release's own secrets, which only External Secrets reads. No
+                    // configuration secret is kept in OpenBao.
+                    expect(server.match(/path "/g)).toHaveLength(2);
+                    expect(server).not.toContain("secret/");
+                    expect(server).not.toContain("integrations");
 
                     const eso = policy(bao, "rapidmx-server-eso");
                     expect(capabilities(eso, "secret/data/rapidmx-server/secrets")).toEqual(["read"]);
                     expect(capabilities(eso, "secret/metadata/rapidmx-server/secrets")).toEqual(["read"]);
-                    expect(capabilities(eso, `${base}/dns/*`)).toEqual(["read"]);
-                    expect(eso).not.toContain("integrations/server");
+                    expect(eso.match(/path "/g)).toHaveLength(2);
+                    expect(eso).not.toContain("integrations");
                     expect(eso).not.toContain("pki/");
-
-                    const controller = policy(bao, "rapidmx-server-dns-controller");
-                    expect(capabilities(controller, "secret/metadata/rapidmx-server/integrations/dns/*")).toEqual(["read"]);
-                    expect(controller).not.toContain("secret/data/");
-                    expect(controller.match(/path "/g)).toHaveLength(1);
 
                     // Already enabled: not enabled again.
                     expect(bao).not.toContain("bao auth enable kubernetes");

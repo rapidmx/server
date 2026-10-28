@@ -575,14 +575,12 @@ function installOpenbao() {
 # Kubernetes API vouches for (OpenBao asks it with its own ServiceAccount, which the openbao chart lets review tokens); the
 # OpenBao token it gets lasts an hour. No long-lived token is made. It all runs inside the vault's own pod, over stdin, so no
 # token or secret reaches either host's process list; re-running it changes nothing that already exists.
-#  - $OPENBAO_SERVER_ROLE (the server): the PKI role's sign and revoke, its own and the plugins' secrets under
-#    $OPENBAO_INTEGRATIONS_PATH, and the DNS providers' credentials, which it may write but never read back.
-#  - $OPENBAO_ESO_ROLE (External Secrets): reads the release's secrets and the DNS providers' credentials (for external-dns).
-#  - $OPENBAO_DNS_CONTROLLER_ROLE (the DNS controller): reads only the versions of the DNS providers' credentials, to roll an
-#    external-dns pod when they change.
+#  - $OPENBAO_SERVER_ROLE (the server): the PKI role's sign and revoke, nothing else.
+#  - $OPENBAO_ESO_ROLE (External Secrets): reads the release's secrets.
+# No configuration secret is kept in the vault, and the DNS controller has no role: the role and policy an earlier version of
+# this script made for it are deleted (OpenBao answers success for one that isn't there).
 function prepareOpenbao() {
   local kv=$OPENBAO_KV_MOUNT
-  local integrations=$OPENBAO_INTEGRATIONS_PATH
   local out
   out=`mktemp /tmp/openbao-prepare.XXXXXX`
   chmod 600 "$out"
@@ -628,24 +626,6 @@ case "\$host" in *:*) host="[\$host]";; esac
 bao write auth/kubernetes/config kubernetes_host="https://\$host:\$KUBERNETES_SERVICE_PORT" > /dev/null
 
 bao policy write $OPENBAO_SERVER_ROLE - > /dev/null << 'POLICY'
-path "$kv/data/$integrations/dns/*" {
-  capabilities = ["create", "update", "patch", "delete"]
-}
-path "$kv/metadata/$integrations/dns/*" {
-  capabilities = ["read", "delete"]
-}
-path "$kv/data/$integrations/server/*" {
-  capabilities = ["create", "read", "update", "patch", "delete"]
-}
-path "$kv/metadata/$integrations/server/*" {
-  capabilities = ["read", "delete"]
-}
-path "$kv/data/$integrations/plugins/*" {
-  capabilities = ["create", "read", "update", "patch", "delete"]
-}
-path "$kv/metadata/$integrations/plugins/*" {
-  capabilities = ["read", "delete"]
-}
 path "$OPENBAO_PKI_MOUNT/sign/$OPENBAO_PKI_ROLE" {
   capabilities = ["update"]
 }
@@ -660,14 +640,6 @@ path "$kv/data/$OPENBAO_SECRETS_PATH" {
 path "$kv/metadata/$OPENBAO_SECRETS_PATH" {
   capabilities = ["read"]
 }
-path "$kv/data/$integrations/dns/*" {
-  capabilities = ["read"]
-}
-POLICY
-bao policy write $OPENBAO_DNS_CONTROLLER_ROLE - > /dev/null << 'POLICY'
-path "$kv/metadata/$integrations/dns/*" {
-  capabilities = ["read"]
-}
 POLICY
 
 role() {
@@ -676,7 +648,10 @@ role() {
 }
 role $OPENBAO_SERVER_ROLE $FULLNAME
 role $OPENBAO_ESO_ROLE $OPENBAO_ESO_SERVICE_ACCOUNT
-role $OPENBAO_DNS_CONTROLLER_ROLE $FULLNAME-dns-controller
+
+# The DNS controller's role and policy, made by an earlier version of this script.
+bao delete auth/kubernetes/role/$FULLNAME-dns-controller > /dev/null
+bao policy delete $FULLNAME-dns-controller > /dev/null
 
 # What the vault ended up holding, which is what the summary has to report: a value already there wins over the one
 # generated for this run, and ses-bridge must be given the real ingest secret.
@@ -844,9 +819,6 @@ if [[ "$NAMESPACE" != *server* ]]; then
   FULLNAME="$NAMESPACE-server"
 fi
 OPENBAO_SECRETS_PATH="$FULLNAME/secrets"
-# Where the credentials an administrator saves in the console go (DNS providers under dns/, the server's own under server/,
-# plugins' under plugins/).
-OPENBAO_INTEGRATIONS_PATH="$FULLNAME/integrations"
 # The Secrets holding the tokens earlier versions of this script made: a vault this script installs has its clients log in
 # with Kubernetes auth instead, and migrateOpenbaoTokens revokes them. A vault of your own still gives External Secrets its
 # token in the first.
@@ -855,11 +827,9 @@ OPENBAO_PKI_SECRET="$FULLNAME-openbao-pki"
 # The copy of the CA OpenBao's listener certificate comes from, in the release's namespace (the chart's global.openbao.caConfigMap).
 OPENBAO_CA_CONFIGMAP="$FULLNAME-openbao-ca"
 # OpenBao's kubernetes auth roles, one per client, each bound to one ServiceAccount of this namespace: the server (the
-# chart's ServiceAccount, named like the release), External Secrets (a ServiceAccount the chart creates for it alone) and
-# the DNS controller.
+# chart's ServiceAccount, named like the release) and External Secrets (a ServiceAccount the chart creates for it alone).
 OPENBAO_SERVER_ROLE="$FULLNAME-server"
 OPENBAO_ESO_ROLE="$FULLNAME-eso"
-OPENBAO_DNS_CONTROLLER_ROLE="$FULLNAME-dns-controller"
 OPENBAO_ESO_SERVICE_ACCOUNT="$FULLNAME-openbao-eso"
 ACME_EMAIL=${RAPIDMX_ACME_EMAIL:-admin@$DOMAIN}
 SMTP_USERNAME=${RAPIDMX_SES_SMTP_USERNAME:-}

@@ -599,9 +599,11 @@ alone, and gets an OpenBao token that lasts an hour:
 
 | Role | ServiceAccount | May |
 | --- | --- | --- |
-| `<fullname>-eso` | `<fullname>-openbao-eso` (the chart creates it; External Secrets requests its tokens) | read the release's secrets and the DNS providers' credentials (for external-dns) |
-| `<fullname>-server` | the server's own (`global.serviceAccount`) | sign and revoke on the PKI role; write, but never read, the DNS providers' credentials; read and write its own and the plugins' secrets under `<fullname>/integrations` |
-| `<fullname>-dns-controller` | `<fullname>-dns-controller` | read the versions (never the values) of the DNS providers' credentials |
+| `<fullname>-eso` | `<fullname>-openbao-eso` (the chart creates it; External Secrets requests its tokens) | read the release's secrets |
+| `<fullname>-server` | the server's own (`global.serviceAccount`) | sign and revoke on the PKI role |
+
+The vault holds the release's secrets and the PKI CA and nothing an administrator saves in the console. An earlier build of
+the installers also made a `<fullname>-dns-controller` role and policy; re-running the installer deletes them.
 
 An install from before this keeps working while it is upgraded: the installer re-runs move the vault to TLS, create the
 roles, switch the chart over, check that External Secrets' and the server's ServiceAccounts log in, and only then revoke
@@ -611,13 +613,12 @@ auth-server's SecretStore has to verify the vault's CA too, which needs an auth-
 `global.openbao.caConfigMap`.
 
 The server's own identity is `openbao.auth`: with `method: kubernetes` its pod mounts a projected token of its
-ServiceAccount for `openbao.auth.audience` at `/var/run/secrets/openbao/token`, and its OpenBao clients (the encryption
-CA's PKI mount when `mail__pki__backend` is `openbao`, and the integrations' secret store) log in as `openbao.auth.role`
-(`<fullname>-server` by default), verifying the vault with the copied CA (`mail:pki:openbao:ca_file`,
-`mail:secrets:openbao:ca_file`). The chart refuses it for a pod running as the namespace's `default` ServiceAccount, which
-every other pod shares. For a vault prepared by hand, `method: token` gives the clients the token under the key `token` of
-the Secret `openbao.auth.tokenSecret` instead; the chart refuses an OpenBao token in `service.config`, whose ConfigMap is
-plaintext.
+ServiceAccount for `openbao.auth.audience` at `/var/run/secrets/openbao/token`, and its OpenBao client (the encryption
+CA's PKI mount, when `mail__pki__backend` is `openbao`) logs in as `openbao.auth.role` (`<fullname>-server` by default),
+verifying the vault with the copied CA (`mail:pki:openbao:ca_file`). The chart refuses it for a pod running as the
+namespace's `default` ServiceAccount, which every other pod shares. For a vault prepared by hand, `method: token` gives the
+client the token under the key `token` of the Secret `openbao.auth.tokenSecret` instead; the chart refuses an OpenBao token
+in `service.config`, whose ConfigMap is plaintext.
 
 Point `global.openbao.address` at an OpenBao you already run to use that one instead; the installers take it as
 `OPENBAO_ADDRESS`/`RAPIDMX_OPENBAO_ADDRESS`, which must be https (plain http only to the host itself), with

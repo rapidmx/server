@@ -515,25 +515,6 @@ conf.defaults({
                 max_pending_hours: 168,
             },
         },
-        // The OpenBao the secret store keeps the credentials an administrator saves in the console in (DNS providers, Integrations,
-        // plugin secret settings; the installer's policies cover <kv mount>/<fullname>/integrations). Empty address: no OpenBao
-        // store. The same connection and login settings as pki.openbao above, set by the chart (openbao.auth) to log in as the
-        // installer's <fullname>-server role, which may write DNS credentials but never read them back.
-        secrets: {
-            openbao: {
-                address: "",
-                ca_file: "",
-                // Never commit a real token here - set via the mail__secrets__openbao__token env var.
-                token: "",
-                timeout_ms: 5_000,
-                auth: {
-                    method: "token",
-                    role: "",
-                    mount_path: "kubernetes",
-                    token_file: "/var/run/secrets/openbao/token",
-                },
-            },
-        },
         // AcmeEnrollmentDriverJobSQL's own schedule/config - registered unconditionally regardless of
         // `mail:pki:signing_enrollment:backend` (see server.sql.ts's own comment on why), so this is
         // harmless to leave at its default even when RFC 8823 automation isn't enabled.

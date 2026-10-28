@@ -19,7 +19,6 @@ import {
     LocalX509CertificateAuthority,
     ManualSigningCertificateEnrollment,
     NodeDnsResolver,
-    NullSecretStore,
     PostfixSendmailTransport,
 } from "@rapidmx/restapi";
 import { MongoTextSearchProvider } from "@rapidmx/restapi/search";
@@ -57,8 +56,6 @@ describe("Server Tests", () => {
     // suite exercises depends on DNSSEC validation actually happening.
     objectFactory.register(NodeDnsResolver, "DnsResolver");
     objectFactory.register(FsDkimKeyProvider, "DkimKeyProvider");
-    // As registerCoreProviders() does until the OpenBao and Kubernetes-Secret backends exist.
-    objectFactory.register(NullSecretStore, "SecretStore");
     // Mirrors worker.mongo.ts's config-driven CA backend selection (mail:pki:backend) - not currently
     // exercised by any mounted route/test, but kept in sync so registering a KeyVault-style route later
     // doesn't hit a "no class found with name: EncryptionCertificateAuthority" surprise here.

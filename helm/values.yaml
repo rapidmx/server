@@ -298,13 +298,13 @@ service:
     periodSeconds: 30
     timeoutSeconds: 5
     failureThreshold: 22
-# The server's own OpenBao identity, with global.openbao.enabled: what its OpenBao clients (the encryption CA's PKI mount when
-# service.config sets mail__pki__backend to "openbao", and the secret store of the admin console's integrations) log in with.
+# The server's own OpenBao identity, with global.openbao.enabled: what its OpenBao client (the encryption CA's PKI mount, when
+# service.config sets mail__pki__backend to "openbao") logs in with.
 openbao:
   # auth.method "kubernetes": the pod mounts a projected token of its ServiceAccount (global.serviceAccount) for auth.audience,
-  # and the clients log in with it to OpenBao's kubernetes auth method (at auth.mountPath) as auth.role, <fullname>-server when
-  # empty - the role the installers create, which may write the DNS providers' credentials but never read them back. Empty: the
-  # server holds no OpenBao identity. auth.method "token", for a vault prepared by hand: the clients use the token under the key
+  # and the client logs in with it to OpenBao's kubernetes auth method (at auth.mountPath) as auth.role, <fullname>-server when
+  # empty - the role the installers create, which may sign and revoke on the PKI role. Empty: the server holds no OpenBao
+  # identity. auth.method "token", for a vault prepared by hand: the client uses the token under the key
   # `token` of the Secret auth.tokenSecret in this namespace (never service.config, whose ConfigMap is plaintext: the chart
   # refuses a token there).
   auth:
