@@ -2101,14 +2101,14 @@ function printDnsSummary() {
   echo "DNS records are published through $label for the zone $DNS_ZONE by the DNS controller ($FULLNAME-dns-controller), which reads the"
   echo "records the server wants and has external-dns apply them; they appear within a few minutes."
   if [[ ${#PUBLIC_ADDRESSES[@]} -eq 0 ]]; then
-    echo "No public address is known, so $SERVER_HOST's A/AAAA records are not published: re-run with --public-address <ip> (repeatable), or add them yourself."
+    echo "No public address is known, so the A/AAAA records of $SERVER_HOST and $AUTH_HOST are not published: re-run with --public-address <ip> (repeatable), or add them yourself."
   else
     echo -e "\t $SERVER_HOST\t\tA/AAAA ${PUBLIC_ADDRESSES[*]}"
+    echo -e "\t $AUTH_HOST\t\tA/AAAA ${PUBLIC_ADDRESSES[*]}"
   fi
   if [[ ${#UNPUBLISHED_IPV6[@]} -gt 0 ]]; then
     echo "  Not published: the IPv6 address(es) ${UNPUBLISHED_IPV6[*]} (the mail ports are reachable over IPv4 only here). Re-run with --public-address <ip> to publish one."
   fi
-  echo -e "\t $AUTH_HOST\t\tCNAME $SERVER_HOST"
   echo -e "\t $AUTODISCOVER_HOST\tCNAME $SERVER_HOST"
   if [[ "$OPENPGPKEY_ON" == "true" ]]; then
     echo -e "\t $OPENPGPKEY_HOSTNAME\tCNAME $SERVER_HOST (OpenPGP Web Key Directory)"

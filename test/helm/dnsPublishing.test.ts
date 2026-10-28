@@ -326,17 +326,17 @@ describe.skipIf(!helmAvailable || !depsAvailable)("chart: DNS publishing", () =>
             expect(json(config.mail__dns__publish__addresses)).toEqual(["203.0.113.7", "2001:db8::7"]);
         });
 
-        it("renders the hosts it serves: the mail host's addresses and CNAMEs to it, and none for a host it doesn't serve", () => {
+        it("renders the hosts it serves: the addresses of the mail host and the auth host, CNAMEs to the mail host for the others, and none for a host it doesn't serve", () => {
             const hosts = (...sets: string[]) => json(serverConfig(render([ON, ...sets])).mail__dns__publish__hosts);
             // The chart answers autodiscover.<domain> on its Gateway and Certificate whether or not the plugin is installed.
             expect(hosts()).toEqual([
                 { name: "mail.example.com", type: "address" },
-                { name: "auth.example.com", type: "cname" },
+                { name: "auth.example.com", type: "address" },
                 { name: "autodiscover.example.com", type: "cname" },
             ]);
             expect(hosts("mail.wkd.openpgpkeyHost.enabled=true")).toEqual([
                 { name: "mail.example.com", type: "address" },
-                { name: "auth.example.com", type: "cname" },
+                { name: "auth.example.com", type: "address" },
                 { name: "autodiscover.example.com", type: "cname" },
                 { name: "openpgpkey.example.com", type: "cname" },
             ]);
@@ -344,7 +344,8 @@ describe.skipIf(!helmAvailable || !depsAvailable)("chart: DNS publishing", () =>
             expect(hosts("authserver.create=false").map((h: any) => h.name)).toEqual(["mail.example.com", "autodiscover.example.com"]);
             // The mail host is the one mail:dns:mx_hostname names.
             expect(hosts("mail.mxHostname=mx.example.com")[0]).toEqual({ name: "mx.example.com", type: "address" });
-            expect(hosts("authserver.host=login.example.com")[1]).toEqual({ name: "login.example.com", type: "cname" });
+            // The auth host has A/AAAA records on every existing install and a CNAME cannot sit next to them, so it is published as the mail host is.
+            expect(hosts("authserver.host=login.example.com")[1]).toEqual({ name: "login.example.com", type: "address" });
         });
 
         it("renders the host the chart is reached at, which it certifies and routes, when it is not the mail host", () => {
@@ -352,7 +353,7 @@ describe.skipIf(!helmAvailable || !depsAvailable)("chart: DNS publishing", () =>
             expect(hosts("host=webmail.example.com")).toEqual([
                 { name: "mail.example.com", type: "address" },
                 { name: "webmail.example.com", type: "cname" },
-                { name: "auth.example.com", type: "cname" },
+                { name: "auth.example.com", type: "address" },
                 { name: "autodiscover.example.com", type: "cname" },
             ]);
             // The same name in other letters, or the mail host itself (mail.mxHostname), is the mail host's address record and nothing more.

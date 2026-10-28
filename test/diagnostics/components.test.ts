@@ -17,6 +17,14 @@ describe("classifyContainer", () => {
         expect(classifyContainer(name, image)).toBe(expected);
     });
 
+    it.each([
+        ["dns-controller", "docker.io/rapidmx/dns-controller:0.1.0", "dns-controller"],
+        ["external-dns", "registry.k8s.io/external-dns/external-dns:v0.23.0@sha256:abc", "external-dns"],
+    ])("%s is %s by its name, and by its image", (name, image, expected) => {
+        expect(classifyContainer(name, image)).toBe(expected);
+        expect(classifyContainer("main", image)).toBe(expected);
+    });
+
     it("falls back to the image name", () => {
         expect(classifyContainer("db", "registry.local:5000/bitnami/mongodb:8@sha256:abc")).toBe("mongodb");
     });

@@ -142,9 +142,12 @@ export class KubeClient {
         return this.ca || undefined;
     }
 
-    /** GETs `path` (e.g. `/version`) from the API server. */
-    async get<T>(path: string): Promise<T> {
-        return this.send<T>("GET", path);
+    /**
+     * GETs `path` (e.g. `/version`) from the API server. `accept` replaces `application/json` for a path served as another JSON type, such as
+     * `/openid/v1/jwks` (`application/jwk-set+json` only, 406 for anything else).
+     */
+    async get<T>(path: string, options: { accept?: string } = {}): Promise<T> {
+        return this.send<T>("GET", path, undefined, options.accept);
     }
 
     /**
@@ -155,12 +158,12 @@ export class KubeClient {
         return this.send<T>("PUT", path, JSON.stringify(body));
     }
 
-    private async send<T>(method: "GET" | "PUT", path: string, body?: string): Promise<T> {
+    private async send<T>(method: "GET" | "PUT", path: string, body?: string, accept?: string): Promise<T> {
         const host = this.options.host.includes(":") ? `[${this.options.host}]` : this.options.host;
-        return this.getJson<T>(new URL(`https://${host}:${this.options.port}${path}`), method, body);
+        return this.getJson<T>(new URL(`https://${host}:${this.options.port}${path}`), method, body, accept);
     }
 
-    private async getJson<T>(url: URL, method: "GET" | "PUT", body?: string): Promise<T> {
+    private async getJson<T>(url: URL, method: "GET" | "PUT", body?: string, accept: string = "application/json"): Promise<T> {
         const token = await this.token();
         let response: KubeResponse;
         try {
@@ -168,7 +171,7 @@ export class KubeClient {
                 method,
                 url,
                 headers: {
-                    Accept: "application/json",
+                    Accept: accept,
                     Authorization: `Bearer ${token}`,
                     ...(body !== undefined ? { "Content-Type": "application/json", "Content-Length": String(Buffer.byteLength(body)) } : {}),
                 },

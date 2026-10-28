@@ -941,6 +941,12 @@ describe.skipIf(!bashAvailable)("single_node_install.sh: DNS publishing", () => 
             expect(out).toMatch(/DMARC/);
         });
 
+        it("publishes the auth host as A/AAAA at the public addresses, not as a CNAME", () => {
+            const out = summary();
+            expect(out).toMatch(/auth\.example\.com\s+A\/AAAA 203\.0\.113\.9/);
+            expect(out).not.toMatch(/auth\.example\.com\s+CNAME/);
+        });
+
         it("says which records stay manual and why: SPF until the domain opts in, hosts and domains outside the zone", () => {
             const out = summary({}, "AUTH_HOST=auth.example.org; MAIL_DOMAINS='example.com,example.org'");
             expect(out).toMatch(/SPF[^\n]*(manual|by hand|yourself)/i);

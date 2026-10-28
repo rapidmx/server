@@ -231,3 +231,36 @@ export function describeConfiguration(tree: unknown, env: NodeJS.ProcessEnv, dec
     }
     return out.sort(byName);
 }
+
+/**
+ * The row field of a secret of the integrations settings (`IntegrationsLayer.unreadable`) as the configuration key its value is read from, or the field itself
+ * for one this does not know.
+ */
+function integrationKey(field: string): string {
+    if (field === "giphy.apiKey") {
+        return "giphy:api_key";
+    }
+    if (field === "pluginRegistry.token") {
+        return "system:plugins:registry_token";
+    }
+    const namespace = /^pluginRegistry\.namespaces\.(.+)\.token$/.exec(field);
+    return namespace ? `system:plugins:namespaces:${namespace[1]}:token` : field;
+}
+
+/**
+ * What the integrations config layer holds, flattened and sorted like `describeConfiguration()` (the same hidden list and scrubbing), with a secret this process
+ * could not decrypt, which the layer therefore leaves out, listed as `{ redacted: true, unreadable: true }` by its configuration key, never a value.
+ */
+export function describeIntegrations(layer: { tree: unknown; unreadable: readonly string[] }): DiagnosticsSetting[] {
+    const settings: DiagnosticsSetting[] = describeConfiguration(layer.tree, {});
+    for (const field of layer.unreadable) {
+        const name = integrationKey(field);
+        const listed = settings.find((setting) => setting.name === name);
+        if (listed) {
+            listed.unreadable = true;
+        } else {
+            settings.push({ name, redacted: true, unreadable: true });
+        }
+    }
+    return settings.sort(byName);
+}

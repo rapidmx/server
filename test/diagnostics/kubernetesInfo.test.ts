@@ -113,6 +113,55 @@ describe("buildComponents", () => {
     });
 });
 
+describe("the DNS publishing components", () => {
+    const dnsController = (): KubePod => pod("ctl-1", "dns-controller", "docker.io/rapidmx/dns-controller:0.2.0");
+    const externalDns = (name: string, extra: Record<string, string> = {}): KubePod => {
+        const p = pod(name, "external-dns", "registry.k8s.io/external-dns/external-dns:v0.23.0@sha256:abc");
+        p.metadata!.labels = { "app.kubernetes.io/name": "external-dns", ...extra };
+        return p;
+    };
+
+    it("lists neither on a server that does not publish", () => {
+        expect(buildComponents(undefined).map((c) => c.component)).not.toContain("dns-controller");
+        expect(buildComponents([classifyPod(dnsController())]).map((c) => c.component)).not.toContain("dns-controller");
+    });
+
+    it("lists the controller (one pod) and external-dns (a pod per provider config) after the eight others", () => {
+        const components = buildComponents(
+            [classifyPod(dnsController()), classifyPod(externalDns("ed-a")), classifyPod(externalDns("ed-b", {}), ), classifyPod(pod("redis-0", "redis", "bitnami/redis:8"))],
+            { dns: true },
+        );
+        expect(components.map((c) => c.component)).toEqual([
+            "postfix", "postfix-bridge", "mongodb", "postgresql", "redis", "coturn", "rspamd", "clamav", "dns-controller", "external-dns",
+        ]);
+        expect(components[8]).toMatchObject({ component: "dns-controller", status: "running", version: "0.2.0" });
+        expect(components[8].pods).toHaveLength(1);
+        expect(components[9]).toMatchObject({ component: "external-dns", status: "running", version: "v0.23.0" });
+        expect(components[9].pods.map((p) => p.name)).toEqual(["ed-a", "ed-b"]);
+    });
+
+    it("is missing when no pod runs, not-ready when it is not, and unknown when Kubernetes could not be asked", () => {
+        const none = buildComponents([], { dns: true });
+        expect(none[8]).toMatchObject({ status: "missing", pods: [] });
+        const down = buildComponents([classifyPod(pod("ctl-1", "dns-controller", "rapidmx/dns-controller:0.2.0", { ready: false }))], { dns: true });
+        expect(down[8]).toMatchObject({ status: "not-ready" });
+        const unknown = buildComponents(undefined, { dns: true });
+        expect(unknown.slice(8)).toEqual([
+            { component: "dns-controller", status: "unknown", pods: [] },
+            { component: "external-dns", status: "unknown", pods: [] },
+        ]);
+    });
+
+    it("does not count the pod of an operation's Job, which runs external-dns once and ends", () => {
+        const job = externalDns("takeover-x", { "batch.kubernetes.io/job-name": "takeover-x" });
+        const legacy = externalDns("takeover-y", { "job-name": "takeover-y" });
+        expect(classifyPod(job).component).toBeUndefined();
+        expect(classifyPod(legacy).component).toBeUndefined();
+        const components = buildComponents([classifyPod(job), classifyPod(legacy), classifyPod(externalDns("ed-a"))], { dns: true });
+        expect(components[9].pods.map((p) => p.name)).toEqual(["ed-a"]);
+    });
+});
+
 describe("distributionOf", () => {
     it.each([
         ["v1.31.4+k3s1", "k3s"],

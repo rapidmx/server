@@ -4,12 +4,13 @@
 import os from "node:os";
 import path from "node:path";
 import nconf from "nconf";
-import { PLUGIN_SETTINGS_STORE } from "../config.defaults.js";
+import { INTEGRATIONS_STORE, PLUGIN_SETTINGS_STORE } from "../config.defaults.js";
+import { IntegrationsLayer } from "../integrations/IntegrationsLayer.js";
 import { DirectorySizer, type SizeDirectory } from "./directorySize.js";
 import { KubeClient, type KubeTransport } from "./KubeClient.js";
 import { buildComponents, collectRuntime, errorMessage, listPods, type ClassifiedPod } from "./kubernetesInfo.js";
 import { collectKubernetesMetrics, ProcessSampler, serverMounts } from "./metrics.js";
-import { describeConfiguration, describeEnvironment } from "./redaction.js";
+import { describeConfiguration, describeEnvironment, describeIntegrations } from "./redaction.js";
 import { collectPackages, collectServerInfo, readPackageJson, type PackageJson } from "./serverInfo.js";
 import type { DiagnosticsInformation, DiagnosticsMetrics, DiagnosticsPackage, DiagnosticsRuntime, DiagnosticsVersions } from "./types.js";
 
@@ -29,6 +30,25 @@ function nconfSource(): ConfigurationSource {
     return { tree: nconf.get(), declared: [...Object.keys(stores?.defaults?.store ?? {}), ...Object.keys(stores?.[PLUGIN_SETTINGS_STORE]?.store ?? {})] };
 }
 
+/** The integrations config layer as `information()` reads it: its settings, and the row fields whose secret could not be decrypted. */
+export interface IntegrationsSource {
+    tree: unknown;
+    unreadable: readonly string[];
+}
+
+/** The integrations layer of the shared `nconf` instance, and what the live layer says it could not read; `undefined` on a configuration without the layer. */
+function nconfIntegrations(): IntegrationsSource | undefined {
+    const stores = (nconf as unknown as { stores?: Record<string, { store?: object } | undefined> }).stores;
+    const layer = stores?.[INTEGRATIONS_STORE];
+    return layer ? { tree: layer.store ?? {}, unreadable: IntegrationsLayer.active?.unreadable ?? [] } : undefined;
+}
+
+/** Whether the configuration says the server publishes DNS records: the chart sets the controller's subject (`mail:dns:controller:subject`) exactly then. */
+function publishesDns(tree: unknown): boolean {
+    const subject: unknown = (tree as any)?.mail?.dns?.controller?.subject;
+    return typeof subject === "string" && subject !== "";
+}
+
 export interface DiagnosticsCollectorOptions {
     /** The directory holding the deployed `package.json` and `node_modules`. */
     root?: string;
@@ -38,6 +58,10 @@ export interface DiagnosticsCollectorOptions {
     env?: NodeJS.ProcessEnv;
     /** Reads the effective configuration. Defaults to the server's `nconf`. */
     configuration?: () => ConfigurationSource;
+    /** Reads the integrations layer; `undefined` for a server without one. Defaults to the server's `nconf` layer. */
+    integrations?: () => IntegrationsSource | undefined;
+    /** Whether the server publishes DNS records, so that the DNS controller and external-dns are components. Defaults to the controller's subject being configured. */
+    dnsPublishing?: () => boolean;
     serviceAccountDir?: string;
     transport?: KubeTransport;
     hostname?: () => string;
@@ -99,14 +123,15 @@ export class DiagnosticsCollector {
         const pkg = await readPackageJson(path.join(this.root, "package.json"));
         const [packages, kube] = await Promise.all([this.installedPackages(pkg), this.detect()]);
         const server = collectServerInfo(pkg, this.now());
+        const dns = (this.options.dnsPublishing ?? (() => publishesDns((this.options.configuration ?? nconfSource)().tree)))();
         if (!kube.client) {
-            return { server, packages, components: buildComponents(undefined), kubernetes: { available: false, reason: kube.reason } };
+            return { server, packages, components: buildComponents(undefined, { dns }), kubernetes: { available: false, reason: kube.reason } };
         }
         try {
             const pods = await listPods(kube.client, await this.namespace(kube.client));
-            return { server, packages, components: buildComponents(pods), kubernetes: { available: true } };
+            return { server, packages, components: buildComponents(pods, { dns }), kubernetes: { available: true } };
         } catch (err) {
-            return { server, packages, components: buildComponents(undefined), kubernetes: { available: false, reason: errorMessage(err) } };
+            return { server, packages, components: buildComponents(undefined, { dns }), kubernetes: { available: false, reason: errorMessage(err) } };
         }
     }
 
@@ -117,7 +142,12 @@ export class DiagnosticsCollector {
     information(): DiagnosticsInformation {
         const env = this.options.env ?? process.env;
         const { tree, declared } = (this.options.configuration ?? nconfSource)();
-        return { environment: describeEnvironment(env), configuration: describeConfiguration(tree, env, declared) };
+        const information: DiagnosticsInformation = { environment: describeEnvironment(env), configuration: describeConfiguration(tree, env, declared) };
+        const layer = (this.options.integrations ?? nconfIntegrations)();
+        if (layer) {
+            information.integrations = describeIntegrations(layer);
+        }
+        return information;
     }
 
     async runtime(): Promise<DiagnosticsRuntime> {

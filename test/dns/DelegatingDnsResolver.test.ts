@@ -41,6 +41,7 @@ describe("DelegatingDnsResolver", () => {
         vi.spyOn(node, "resolveMx").mockResolvedValue([{ priority: 10, exchange: "mx.node.example" }]);
         vi.spyOn(node, "resolveCname").mockResolvedValue(["node.example"]);
         vi.spyOn(node, "resolveSrv").mockResolvedValue([{ priority: 1, weight: 1, port: 443, target: "srv.node.example" }]);
+        vi.spyOn(node, "resolveAddresses").mockResolvedValue(["192.0.2.1"]);
         uninstall = HostConfig.install(conf);
     });
 
@@ -55,6 +56,17 @@ describe("DelegatingDnsResolver", () => {
         expect(await resolver.resolveMx("example.com")).toEqual([{ priority: 10, exchange: "mx.node.example" }]);
         expect(await resolver.resolveCname("example.com")).toEqual(["node.example"]);
         expect(await resolver.resolveSrv("example.com")).toEqual([{ priority: 1, weight: 1, port: 443, target: "srv.node.example" }]);
+    });
+
+    it("answers the address lookup, which DNS publishing's checks need, with the resolver in force", async () => {
+        const fetchMock = vi.fn().mockImplementation(async (url: string) =>
+            ({ ok: true, status: 200, json: async () => ({ Status: 0, AD: true, Answer: [{ name: "x.", type: url.includes("type=28") ? 28 : 1, TTL: 60, data: url.includes("type=28") ? "2001:db8::1" : "192.0.2.9" }] }) }) as Response,
+        );
+        vi.stubGlobal("fetch", fetchMock);
+        const resolver = build();
+        expect(await resolver.resolveAddresses("auth.example.com")).toEqual(["192.0.2.1"]);
+        layer.apply(settingsRow(cipher, { version: 1, dnsResolver: { mode: "doh-dnssec" } }));
+        expect(await resolver.resolveAddresses("auth.example.com")).toEqual(["192.0.2.9", "2001:db8::1"]);
     });
 
     it("switches to the DoH resolver when the administrator changes the mode, and back when it is reset, without a restart", async () => {

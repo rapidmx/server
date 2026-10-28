@@ -206,7 +206,7 @@ export class KubeDnsControllerTokenVerifier implements DnsControllerTokenVerifie
         const kube: Pick<KubeClient, "get"> = await this.client();
         const [discovery, set] = await Promise.all([
             kube.get<{ issuer?: unknown } | null>("/.well-known/openid-configuration"),
-            kube.get<{ keys?: unknown } | null>("/openid/v1/jwks"),
+            kube.get<{ keys?: unknown } | null>("/openid/v1/jwks", { accept: "application/jwk-set+json" }),
         ]);
         if (typeof discovery?.issuer !== "string" || discovery.issuer === "") {
             throw new Error("the discovery document names no issuer");

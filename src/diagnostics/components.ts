@@ -16,6 +16,8 @@ const NAMES: Record<string, DiagnosticsComponentName> = {
     coturn: "coturn",
     rspamd: "rspamd",
     clamav: "clamav",
+    "dns-controller": "dns-controller",
+    "external-dns": "external-dns",
 };
 
 /** Sidecars that share a component's name in their own (`redis-exporter`, a `metrics` container) are not the component. */

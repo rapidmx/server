@@ -75,6 +75,12 @@ describe("KubeClient", () => {
         expect(request.url.href).toBe("https://10.43.0.1/api/v1/pods");
     });
 
+    it("sends the Accept a GET asks for", async () => {
+        const transport = vi.fn().mockResolvedValue({ status: 200, body: '{"keys":[]}' });
+        expect(await client(transport).get("/openid/v1/jwks", { accept: "application/jwk-set+json" })).toEqual({ keys: [] });
+        expect((transport.mock.calls[0][0] as KubeRequest).headers.Accept).toBe("application/jwk-set+json");
+    });
+
     it("brackets an IPv6 host and re-reads the rotated token every time", async () => {
         const transport = vi.fn().mockResolvedValue({ status: 200, body: "{}" });
         const c = client(transport, "fd00::1");

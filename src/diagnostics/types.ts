@@ -19,7 +19,10 @@ export const DIAGNOSTICS_COMPONENTS = [
     "clamav",
 ] as const;
 
-export type DiagnosticsComponentName = (typeof DIAGNOSTICS_COMPONENTS)[number];
+/** The components of DNS publishing, listed after the others and only on a server that publishes (`mail:dns:controller:subject` is set). */
+export const DIAGNOSTICS_DNS_COMPONENTS = ["dns-controller", "external-dns"] as const;
+
+export type DiagnosticsComponentName = (typeof DIAGNOSTICS_COMPONENTS)[number] | (typeof DIAGNOSTICS_DNS_COMPONENTS)[number];
 
 export interface DiagnosticsContainer {
     name: string;
@@ -91,12 +94,19 @@ export interface DiagnosticsSetting {
     name: string;
     value?: string;
     redacted: boolean;
+    /** A secret of the integrations layer that is set but that this process could not decrypt, so the layer leaves it out (never a value). */
+    unreadable?: boolean;
 }
 
 /** The environment and effective configuration of the server, secrets withheld, each sorted by name. */
 export interface DiagnosticsInformation {
     environment: DiagnosticsSetting[];
     configuration: DiagnosticsSetting[];
+    /**
+     * What the integrations config layer holds (the admin console's Integrations), sorted by name, redacted like `configuration`, which still includes it.
+     * Absent on a server without the layer.
+     */
+    integrations?: DiagnosticsSetting[];
 }
 
 export type KubernetesDistribution = "k3s" | "rke2" | "eks" | "gke" | "aks" | "kubernetes";

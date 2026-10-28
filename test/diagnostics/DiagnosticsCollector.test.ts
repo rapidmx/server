@@ -168,4 +168,98 @@ describe("DiagnosticsCollector", () => {
             expect(await noVersion.runtime()).toMatchObject({ available: false, namespace: "mail" });
         });
     });
+    describe("DNS publishing", () => {
+        const controllerPod = {
+            metadata: { name: "rel-dns-controller-1", labels: { app: "dns-controller" } },
+            spec: { nodeName: "n1", containers: [{ name: "dns-controller", image: "rapidmx/dns-controller:0.3.0" }] },
+            status: { phase: "Running", containerStatuses: [{ name: "dns-controller", ready: true, restartCount: 0 }] },
+        };
+        const externalPod = (name: string) => ({
+            metadata: { name, labels: { "app.kubernetes.io/name": "external-dns" } },
+            spec: { nodeName: "n1", containers: [{ name: "external-dns", image: "registry.k8s.io/external-dns/external-dns:v0.23.0@sha256:abc" }] },
+            status: { phase: "Running", containerStatuses: [{ name: "external-dns", ready: true, restartCount: 0 }] },
+        });
+        const routes = { "/api/v1/namespaces/mail/pods": { items: [controllerPod, externalPod("ed-a"), externalPod("ed-b"), redisPod] } };
+
+        it("adds the controller and external-dns to the components when the server publishes", async () => {
+            const c = collector(inCluster, transportFor(routes), { dnsPublishing: () => true });
+            const components = (await c.versions()).components;
+            expect(components).toHaveLength(10);
+            expect(components[8]).toMatchObject({ component: "dns-controller", status: "running", version: "0.3.0" });
+            expect(components[9]).toMatchObject({ component: "external-dns", status: "running", version: "v0.23.0" });
+            expect(components[9].pods.map((p) => p.name)).toEqual(["ed-a", "ed-b"]);
+        });
+
+        it("adds neither when it does not, and tells by the controller's subject in the configuration by default", async () => {
+            const c = collector(inCluster, transportFor(routes));
+            expect((await c.versions()).components).toHaveLength(8);
+            const withSubject = collector(inCluster, transportFor(routes), {
+                configuration: () => ({ tree: { mail: { dns: { controller: { subject: "system:serviceaccount:mail:rel-dns-controller" } } } }, declared: [] }),
+            });
+            expect((await withSubject.versions()).components).toHaveLength(10);
+        });
+
+        it("lists them as unknown outside Kubernetes", async () => {
+            const components = (await collector({}, undefined, { dnsPublishing: () => true }).versions()).components;
+            expect(components.slice(8).map((x) => [x.component, x.status])).toEqual([["dns-controller", "unknown"], ["external-dns", "unknown"]]);
+        });
+    });
+
+    describe("the integrations layer in information()", () => {
+        const source = (tree: unknown, unreadable: string[] = []) => ({ integrations: () => ({ tree, unreadable }) });
+
+        it("leaves the field out when the server has no integrations layer", () => {
+            expect(collector({}, undefined, { integrations: () => undefined }).information()).not.toHaveProperty("integrations");
+        });
+
+        it("lists the layer's settings sorted by name, with secrets withheld", () => {
+            const info = collector({}, undefined, source({ giphy: { enabled: true, api_key: "SECRET-KEY" }, integrations: { stun: { urls: ["stun:a:3478"] } }, system: { plugins: { registry_token: "tok" } } })).information();
+            expect(info.integrations).toEqual([
+                { name: "giphy:api_key", redacted: true },
+                { name: "giphy:enabled", value: "true", redacted: false },
+                { name: "integrations:stun:urls:0", value: "stun:a:3478", redacted: false },
+                { name: "system:plugins:registry_token", redacted: true },
+            ]);
+            expect(JSON.stringify(info.integrations)).not.toMatch(/SECRET-KEY|tok"/);
+        });
+
+        it("says an empty layer is empty", () => {
+            expect(collector({}, undefined, source({})).information().integrations).toEqual([]);
+        });
+
+        it("lists a secret the process could not decrypt, which the layer left out, as unreadable by its config key", () => {
+            const info = collector({}, undefined, source({ giphy: { enabled: true } }, ["giphy.apiKey", "pluginRegistry.token", "pluginRegistry.namespaces.@acme.token", "unknown.field"])).information();
+            expect(info.integrations).toEqual([
+                { name: "giphy:api_key", redacted: true, unreadable: true },
+                { name: "giphy:enabled", value: "true", redacted: false },
+                { name: "system:plugins:namespaces:@acme:token", redacted: true, unreadable: true },
+                { name: "system:plugins:registry_token", redacted: true, unreadable: true },
+                { name: "unknown.field", redacted: true, unreadable: true },
+            ]);
+        });
+
+        it("marks a secret that is in the layer and unreadable once, not twice", () => {
+            const info = collector({}, undefined, source({ giphy: { api_key: "x" } }, ["giphy.apiKey"])).information();
+            expect(info.integrations).toEqual([{ name: "giphy:api_key", redacted: true, unreadable: true }]);
+        });
+
+        it("reads the nconf layer and the live layer's unreadable fields by default", async () => {
+            const nconf = (await import("nconf")).default;
+            const { INTEGRATIONS_STORE } = await import("../../src/config.defaults.js");
+            const { IntegrationsLayer } = await import("../../src/integrations/IntegrationsLayer.js");
+            nconf.use(INTEGRATIONS_STORE, { type: "literal", store: { giphy: { enabled: false } } });
+            const previous = IntegrationsLayer.active;
+            try {
+                IntegrationsLayer.active = { unreadable: ["giphy.apiKey"] } as any;
+                const info = collector({}).information();
+                expect(info.integrations).toEqual([
+                    { name: "giphy:api_key", redacted: true, unreadable: true },
+                    { name: "giphy:enabled", value: "false", redacted: false },
+                ]);
+            } finally {
+                IntegrationsLayer.active = previous;
+                (nconf as any).remove(INTEGRATIONS_STORE);
+            }
+        });
+    });
 });

@@ -486,6 +486,11 @@ conf.defaults({
             controller: {
                 subject: "",
             },
+            // Automatic takeover (restapi spec 9.3): a provider config with allowTakeover has the records in conflict taken over by the server after the
+            // controller's status report, at most one pass per this many seconds.
+            takeover: {
+                min_interval_seconds: 60,
+            },
             // The DNS provider config the installer asked for (--dns-provider), created once at start-up and before the server reports ready, with origin
             // "installer" (restapi spec 12.1): JSON (the chart renders it into the service ConfigMap) of { name, type, zones, options } and allowTakeover for
             // --dns-takeover, checked as the admin console checks a new one. Empty, an installation without a DNS provider. It is made only while no config of

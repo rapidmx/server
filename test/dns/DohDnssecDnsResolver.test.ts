@@ -19,6 +19,37 @@ describe("DohDnssecDnsResolver Tests", () => {
         vi.unstubAllGlobals();
     });
 
+    describe("resolveAddresses()", () => {
+        const answers = (byType: Record<number, string[] | number>) =>
+            vi.fn().mockImplementation(async (url: string) => {
+                const type = Number(/type=(\d+)/.exec(url)![1]);
+                const value = byType[type];
+                if (typeof value === "number") {
+                    return fakeFetchResponse({ Status: value });
+                }
+                return fakeFetchResponse({ Status: 0, AD: true, Answer: (value ?? []).map((data) => ({ name: "h.example.com.", type, TTL: 60, data })) });
+            });
+
+        it("returns the A records and then the AAAA records, following a CNAME's own answer entries out", async () => {
+            const fetchMock = answers({ 1: ["192.0.2.1", "192.0.2.2"], 28: ["2001:db8::1"] });
+            vi.stubGlobal("fetch", fetchMock);
+            expect(await new DohDnssecDnsResolver().resolveAddresses("h.example.com")).toEqual(["192.0.2.1", "192.0.2.2", "2001:db8::1"]);
+            expect(fetchMock.mock.calls.map(([url]) => /type=(\d+)/.exec(url)![1]).sort()).toEqual(["1", "28"]);
+        });
+
+        it("returns what one family has when the other has none", async () => {
+            vi.stubGlobal("fetch", answers({ 1: ["192.0.2.1"], 28: [] }));
+            expect(await new DohDnssecDnsResolver().resolveAddresses("h.example.com")).toEqual(["192.0.2.1"]);
+        });
+
+        it("rejects when there are no addresses at all, and says a failed family rather than 'no records' when one could not be asked", async () => {
+            vi.stubGlobal("fetch", answers({ 1: [], 28: [] }));
+            await expect(new DohDnssecDnsResolver().resolveAddresses("h.example.com")).rejects.toThrow(/no records/);
+            vi.stubGlobal("fetch", answers({ 1: [], 28: 2 }));
+            await expect(new DohDnssecDnsResolver().resolveAddresses("h.example.com")).rejects.toThrow(/status 2/);
+        });
+    });
+
     describe("resolveTxt()", () => {
         it("returns a single-chunk TXT record's value unwrapped from its quotes.", async () => {
             const fetchMock = vi.fn().mockResolvedValue(

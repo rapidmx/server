@@ -44,6 +44,11 @@ export class DelegatingDnsResolver implements DnsResolver {
         return this.current().resolveCname(hostname);
     }
 
+    /** The A and AAAA records of a name, which DNS publishing's checks of address records and of a CNAME next to them need (restapi's optional `resolveAddresses()`). */
+    public resolveAddresses(hostname: string): Promise<string[]> {
+        return this.current().resolveAddresses!(hostname);
+    }
+
     public resolveSrv(hostname: string): Promise<DnsSrvRecord[]> {
         return this.current().resolveSrv(hostname);
     }

@@ -11,6 +11,8 @@ const TXT_TYPE = 16;
 const MX_TYPE = 15;
 const CNAME_TYPE = 5;
 const SRV_TYPE = 33;
+const A_TYPE = 1;
+const AAAA_TYPE = 28;
 
 interface DohAnswer {
     name: string;
@@ -132,6 +134,20 @@ export class DohDnssecDnsResolver implements DnsResolver {
     public async resolveCname(hostname: string): Promise<string[]> {
         const answers = await this.query(hostname, CNAME_TYPE);
         return answers.map((answer) => answer.data.replace(/\.$/, ""));
+    }
+
+    /**
+     * The A records of a name and then its AAAA records, as `NodeDnsResolver` returns them (a CNAME on the way is followed by the upstream resolver). Rejects when
+     * there are none; when a family could not be asked at all (not just empty) that failure is the one reported, since nothing is known then.
+     */
+    public async resolveAddresses(hostname: string): Promise<string[]> {
+        const [v4, v6] = await Promise.allSettled([this.query(hostname, A_TYPE), this.query(hostname, AAAA_TYPE)]);
+        const addresses: string[] = [v4, v6].flatMap((result) => (result.status === "fulfilled" ? result.value.map((answer) => answer.data) : []));
+        if (addresses.length > 0) {
+            return addresses;
+        }
+        const failures: unknown[] = [v4, v6].flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
+        throw failures.find((err) => !/returned no records/.test(String((err as Error)?.message))) ?? failures[0];
     }
 
     public async resolveSrv(hostname: string): Promise<DnsSrvRecord[]> {

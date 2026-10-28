@@ -1130,10 +1130,17 @@ The records are exactly the ones the domain's DNS checklist (`GET /mail/domains/
 | Autodiscover | `autodiscover.<domain>` CNAME and `_autodiscover._tcp.<domain>` SRV | While the Autodiscover plugin is active |
 | SPF | `<domain>`, TXT `v=spf1 mx ~all` | **Only after the domain opts in** (see below); otherwise manual |
 
-The deployment's own hosts are published through the provider config whose zones cover them: the mail host (`mail.<global.domain>`) as `A`/`AAAA` records at
-`dns.publicAddresses`, and `auth.`, `autodiscover.` and `openpgpkey.<global.domain>` as CNAMEs to it. What cannot be published is shown **manual** with its reason,
+The deployment's own hosts are published through the provider config whose zones cover them: the mail host (`mail.<global.domain>`) and `auth.<global.domain>` as
+`A`/`AAAA` records at `dns.publicAddresses` (not a CNAME for `auth.`: every existing install has address records there, and a DNS host refuses a CNAME next to other
+records), and `autodiscover.` and `openpgpkey.<global.domain>` as CNAMEs to the mail host. What cannot be published is shown **manual** with its reason,
 never guessed: no provider, a name outside every provider's zones, a record kind or value the provider cannot hold, or an SPF record not yet opted in. The domain's DNS
 checklist shows each record as automatic (published, pending or conflict) or manual, beside the live check, which stays the source of truth for whether it works.
+
+A record of another type at a name RapidMX publishes (say, a CNAME where it publishes addresses, or addresses where a CNAME stands) cannot sit next to the one it
+wants, and a takeover only writes, never deletes. Such a name is shown as **conflict, type mismatch**, with the existing records (type and value) to delete at your DNS
+host; RapidMX never deletes them and never queues a takeover for it. With the provider config's takeover switch on (`--dns-takeover`), the server itself takes over a
+conflict where the name holds a record RapidMX does not own, for the domains' records and the deployment's own hosts, once for each name, type and value (the apex TXT
+set only through its own opt-in).
 
 | Provider | Notes |
 | --- | --- |
@@ -1191,9 +1198,9 @@ non-root with a read-only root filesystem and mounts nothing else (no keyring, d
 may read `DNSEndpoint`s and write their status and nothing else. The server's own Roles gain nothing. The `DNSEndpoint` CRD is cluster-scoped and not shipped by the
 chart: the installer applies it, and without it the controller reports publishing unavailable.
 
-The chart renders `mail:dns:publish:hosts` from what it serves: the mail host (`mail:dns:mx_hostname`) gets A/AAAA records for `dns.publicAddresses`, and
-`host` (when it is not the mail host), `auth.<global.domain>` (with the bundled auth-server), `autodiscover.<global.domain>` (the Gateway and the Certificate answer it
-whether or not the plugin is installed) and, with the host on, `openpgpkey.<global.domain>` get CNAMEs to it. A host outside every provider config's zones stays manual.
+The chart renders `mail:dns:publish:hosts` from what it serves: the mail host (`mail:dns:mx_hostname`) and `auth.<global.domain>` (with the bundled auth-server) get A/AAAA
+records for `dns.publicAddresses`, and `host` (when it is not the mail host), `autodiscover.<global.domain>` (the Gateway and the Certificate answer it
+whether or not the plugin is installed) and, with the host on, `openpgpkey.<global.domain>` get CNAMEs to the mail host. A host outside every provider config's zones stays manual.
 
 **Turning publishing off.** Helm removes the controller and its rights with `dns.publishing.enabled: false` or `helm uninstall`, but not what the controller made, which Helm
 does not own: the external-dns Deployments (`<fullname>-external-dns-<provider uid>`), their credentials Secrets (`<fullname>-dns-<provider uid>`, which hold the providers'

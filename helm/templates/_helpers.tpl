@@ -479,8 +479,9 @@ mail.<global.domain>. It is the target of the A/AAAA records of dns.publicAddres
 
 {{/*
 The hosts this release serves, which DNS publishing keeps records for (mail:dns:publish:hosts, a JSON list of { name, type }): the mail
-host gets A/AAAA records for dns.publicAddresses and every other host a CNAME to it. A host is in the list exactly when the chart serves
-it: the host the chart is reached at (`host`) when it is not the mail host, the auth-server's with the bundled one, autodiscover.<global.domain>
+host and the auth-server's host get A/AAAA records for dns.publicAddresses and every other host a CNAME to the mail host. The auth host is an
+address host, not a CNAME, because every existing install has A/AAAA records at auth.<domain> and a CNAME cannot sit next to other records
+(Cloudflare refuses it), and a takeover never deletes. A host is in the list exactly when the chart serves it: the host the chart is reached at (`host`) when it is not the mail host, the auth-server's with the bundled one, autodiscover.<global.domain>
 always (the Gateway and the Certificate answer it whether or not the plugin is installed), openpgpkey.<global.domain> with the host on
 (rapidmx.openpgpkeyHostEnabled).
 */}}
@@ -492,7 +493,7 @@ always (the Gateway and the Certificate answer it whether or not the plugin is i
 {{-     $hosts = append $hosts (dict "name" $host "type" "cname") -}}
 {{-   end -}}
 {{-   if .Values.authserver.create -}}
-{{-     $hosts = append $hosts (dict "name" (include "rapidmx.authServerHost" .) "type" "cname") -}}
+{{-     $hosts = append $hosts (dict "name" (include "rapidmx.authServerHost" .) "type" "address") -}}
 {{-   end -}}
 {{-   $hosts = append $hosts (dict "name" (include "rapidmx.autodiscoverHost" .) "type" "cname") -}}
 {{-   if eq (include "rapidmx.openpgpkeyHostEnabled" .) "true" -}}

@@ -5,6 +5,7 @@ import { classifyContainer, imageDigest, imageTag } from "./components.js";
 import type { KubeClient } from "./KubeClient.js";
 import {
     DIAGNOSTICS_COMPONENTS,
+    DIAGNOSTICS_DNS_COMPONENTS,
     type DiagnosticsComponent,
     type DiagnosticsComponentName,
     type DiagnosticsNode,
@@ -64,6 +65,11 @@ export function classifyPod(kubePod: KubePod): ClassifiedPod {
         };
     });
     const main = containers.find((c) => classifyContainer(c.name, c.image));
+    const labels = kubePod.metadata?.labels ?? {};
+    // The pod of an operation's Job (a takeover) runs external-dns once and ends; it is not the instance of a provider config.
+    const ofJob = labels["job-name"] !== undefined || labels["batch.kubernetes.io/job-name"] !== undefined;
+    const component = main ? classifyContainer(main.name, main.image) : undefined;
+    const counted = ofJob && component !== undefined && (DIAGNOSTICS_DNS_COMPONENTS as readonly string[]).includes(component) ? undefined : component;
     return {
         pod: {
             name: kubePod.metadata?.name ?? "",
@@ -74,9 +80,9 @@ export function classifyPod(kubePod: KubePod): ClassifiedPod {
             startedAt: kubePod.status?.startTime,
             containers,
         },
-        component: main ? classifyContainer(main.name, main.image) : undefined,
-        version: main?.tag,
-        labels: kubePod.metadata?.labels ?? {},
+        component: counted,
+        version: counted ? main?.tag : undefined,
+        labels,
         hostIP: kubePod.status?.hostIP,
         claims: podClaims(kubePod),
     };
@@ -96,9 +102,14 @@ function podClaims(kubePod: KubePod): { claimName: string; mountPath: string }[]
     return claims;
 }
 
-/** Every component, in display order, with the pods that run it. `pods` is undefined when Kubernetes could not be asked. */
-export function buildComponents(pods: ClassifiedPod[] | undefined): DiagnosticsComponent[] {
-    return DIAGNOSTICS_COMPONENTS.map((component) => {
+/**
+ * Every component, in display order, with the pods that run it. `pods` is undefined when Kubernetes could not be asked.
+ *
+ * @param options.dns Whether this server publishes DNS records: then the controller and external-dns follow the others.
+ */
+export function buildComponents(pods: ClassifiedPod[] | undefined, options: { dns?: boolean } = {}): DiagnosticsComponent[] {
+    const names: readonly DiagnosticsComponentName[] = options.dns ? [...DIAGNOSTICS_COMPONENTS, ...DIAGNOSTICS_DNS_COMPONENTS] : DIAGNOSTICS_COMPONENTS;
+    return names.map((component) => {
         if (!pods) {
             return { component, status: "unknown", pods: [] };
         }

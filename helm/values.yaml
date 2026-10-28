@@ -453,17 +453,20 @@ authserver:
 postfixBridge:
   create: true
   nameOverride: postfix-bridge
-  # The postfix-bridge chart defaults a memory limit on both its containers; null removes it, leaving only the requests.
+  # The postfix-bridge chart defaults a memory limit on both its containers; null removes it, leaving only the requests. The null is on the memory key and
+  # not on `limits` itself, since Helm warns (coalesce.go, "cannot overwrite table with non table") about a null over a table and merges a null key silently.
   service:
     resources:
-      limits: null
+      limits:
+        memory: null
   postfix:
     # The MTA, pinned to the release `latest` was when this was written (the same image): a node that pulls it again must not
     # get a different Postfix by surprise.
     image:
       tag: 5.1.0
     resources:
-      limits: null
+      limits:
+        memory: null
   ingestSecret: '{{ .Values.global.mailIngestSecret }}'
   ingestSecretRef:
     name: >-

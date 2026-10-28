@@ -68,6 +68,10 @@ export class FakeKubernetes {
             return { status: 200, body: JSON.stringify({ issuer: this.issuer, jwks_uri: "https://203.0.113.10:6443/openid/v1/jwks" }) };
         }
         if (method === "GET" && request.url.pathname === "/openid/v1/jwks") {
+            // Like the real API server: the key set is served as application/jwk-set+json only, and an Accept without it gets 406.
+            if (!/application\/jwk-set\+json/.test(request.headers.Accept ?? "")) {
+                return { status: 406, body: "{}" };
+            }
             return { status: 200, body: JSON.stringify({ keys: this.jwks }) };
         }
         const secretMatch = request.url.pathname.match(new RegExp(`^/api/v1/namespaces/${this.namespace}/secrets/([^/]+)$`));
