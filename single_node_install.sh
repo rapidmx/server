@@ -7,11 +7,16 @@ IS_WSL=false
 DOMAIN="cluster.local"
 MAIL_HOST=${MAIL_HOST:-mail}
 AUTH_HOST=${AUTH_HOST:-auth}
-# Whether the release also certifies and routes openpgpkey.<domain> (--openpgpkey-host), the OpenPGP Web Key Directory host
-# Proton Mail, GnuPG and Thunderbird look keys up on first (the chart's mail.wkd.openpgpkeyHost.enabled). Off by default: the
-# name needs a DNS record before Let's Encrypt can issue for it, and without one $SERVER_HOST's certificate (which covers it)
-# is never issued. The server answers the Web Key Directory on $SERVER_HOST either way.
-OPENPGPKEY_HOST=${OPENPGPKEY_HOST:-false}
+# Whether the release also certifies and routes openpgpkey.<domain> (--openpgpkey-host true|false|auto), the OpenPGP Web Key
+# Directory host Proton Mail, GnuPG and Thunderbird look keys up on first (the chart's mail.wkd.openpgpkeyHost.enabled). The name
+# needs a DNS record before Let's Encrypt can issue for it, and without one $SERVER_HOST's certificate (which covers it) is never
+# issued. auto (the default) serves it when the record already resolves to this server; with --dns-provider the provider publishes
+# the record, so the release is installed without the host first and upgraded with it once the record resolves (decideOpenpgpkeyHost).
+# true serves it whatever the record says. The server answers the Web Key Directory on $SERVER_HOST either way.
+OPENPGPKEY_HOST=${OPENPGPKEY_HOST:-auto}
+# What the release is installed with at this point (the chart's value), and whether the host waits for its record to be published.
+OPENPGPKEY_ON=false
+OPENPGPKEY_PENDING=false
 TLS=true
 VERSION="1.0.0-beta.46"
 NAMESPACE="rapidmx"
@@ -78,6 +83,39 @@ OPENBAO_PKI_ROLE=${OPENBAO_PKI_ROLE:-rapidmx-encryption}
 # Comma-separated domains Postfix knows when it starts (postfixBridge.domains). Defaults to --domain. Every other domain added in the
 # admin console works without a restart or a re-run.
 MAIL_DOMAINS=""
+# DNS publishing (restapi's specs/dns_publishing_and_integrations.md, 12): --dns-provider turns it on, creates the first provider config
+# (the zone of --domain, or --dns-zone) from credentials in the environment or in --dns-credentials-file, installs the DNSEndpoint CRD and
+# detects the public addresses of the mail host (--public-address overrides them). --dns-takeover lets the provider replace records that
+# are already there. --keep-dns (with --uninstall) leaves every published record in DNS.
+DNS_PROVIDER=${DNS_PROVIDER:-}
+DNS_ZONE=""
+DNS_CREDENTIALS_FILE=""
+DNS_TAKEOVER=false
+KEEP_DNS=false
+PUBLIC_ADDRESSES=()
+# Global IPv6 addresses the node has that detectPublicAddresses found and did not publish (the mail ports reach Postfix over IPv4 only).
+UNPUBLISHED_IPV6=()
+# Whether the domains this run seeds are on the installer's DNS provider, which is what makes their records published (checkDnsDomainsAssigned), and
+# whether the provider config existed before this run (finishDnsBootstrap), which is when --dns-takeover isn't applied.
+DNS_DOMAINS_ASSIGNED=true
+DNS_CONFIG_EXISTED=false
+# When the credentials Secret was made, so finishDnsBootstrap reads only what the server said after that.
+DNS_SECRET_APPLIED_AT=""
+# How many times a lookup that decides whether openpgpkey.<domain> is served is tried before it is taken to say no.
+OPENPGPKEY_LOOKUP_TRIES=${OPENPGPKEY_LOOKUP_TRIES:-3}
+# The dns-controller release the chart pins (dns.controller.image). Empty keeps the chart's own pin, which is empty until the controller's
+# first release is published: the chart then refuses to render with publishing on. DNS_CONTROLLER_DIGEST (sha256:...) is used instead of the tag.
+DNS_CONTROLLER_TAG=${DNS_CONTROLLER_TAG:-}
+DNS_CONTROLLER_DIGEST=${DNS_CONTROLLER_DIGEST:-}
+# The services that tell an address from outside, for a node that has only private ones (NAT, cloud).
+PUBLIC_IPV4_URL=${PUBLIC_IPV4_URL:-https://api.ipify.org}
+# How long to wait (seconds) for the server's rollout, for openpgpkey.<domain> to resolve once the provider has published it, and for
+# the records to leave DNS after an uninstall removed them.
+DNS_ROLLOUT_TIMEOUT=${DNS_ROLLOUT_TIMEOUT:-15m}
+OPENPGPKEY_WAIT_SECONDS=${OPENPGPKEY_WAIT_SECONDS:-600}
+DNS_CLEANUP_WAIT_SECONDS=${DNS_CLEANUP_WAIT_SECONDS:-600}
+# The CRD external-dns reads (cluster-scoped, so the installer applies it like cert-manager's, and the chart does not).
+DNS_CRD_NAME=dnsendpoints.externaldns.k8s.io
 UNINSTALL=false
 # --yes: confirms --uninstall, which deletes the cluster (or the release) with its mail, DKIM keys and encryption CA.
 CONFIRM_UNINSTALL=false
@@ -1163,12 +1201,1134 @@ function reportConfigKeyring() {
   fi
 }
 
+# ---------------------------------------------------------------------------------------------------------------------------------------
+# DNS publishing (restapi's specs/dns_publishing_and_integrations.md, 6.4, 8, 9.5 and 12)
+# ---------------------------------------------------------------------------------------------------------------------------------------
+
+# Succeeds when $1 is an IPv4 or IPv6 literal of a global unicast address, by the rule the server applies to dns.publicAddresses
+# (restapi's isGlobalUnicastAddress): never "this network", private, shared (CGNAT), loopback, link-local, benchmarking, protocol
+# assignment, multicast or reserved IPv4; never the IPv6 unspecified, loopback, IPv4-mapped, local-use NAT64, unique local, link-local or
+# multicast ranges.
+function isGlobalUnicast() {
+  local ip=${1,,} octet='(0|[1-9][0-9]{0,2})'
+  if [[ "$ip" =~ ^$octet\.$octet\.$octet\.$octet$ ]]; then
+    local a=${BASH_REMATCH[1]} b=${BASH_REMATCH[2]} c=${BASH_REMATCH[3]} d=${BASH_REMATCH[4]}
+    (( a > 255 || b > 255 || c > 255 || d > 255 )) && return 1
+    (( a == 0 || a == 10 || a == 127 || a >= 224 )) && return 1
+    (( a == 100 && b >= 64 && b <= 127 )) && return 1
+    (( a == 169 && b == 254 )) && return 1
+    (( a == 172 && b >= 16 && b <= 31 )) && return 1
+    (( a == 192 && b == 0 && c == 0 )) && return 1
+    (( a == 192 && b == 168 )) && return 1
+    (( a == 198 && (b == 18 || b == 19) )) && return 1
+    return 0
+  fi
+  [[ "$ip" == *:* && "$ip" =~ ^[0-9a-f:.]+$ ]] || return 1
+  # An IPv4 address in the last 32 bits becomes two groups.
+  if [[ "$ip" =~ ^(.*:)$octet\.$octet\.$octet\.$octet$ ]]; then
+    (( BASH_REMATCH[2] > 255 || BASH_REMATCH[3] > 255 || BASH_REMATCH[4] > 255 || BASH_REMATCH[5] > 255 )) && return 1
+    ip=`printf '%s%x:%x' "${BASH_REMATCH[1]}" $(( BASH_REMATCH[2] * 256 + BASH_REMATCH[3] )) $(( BASH_REMATCH[4] * 256 + BASH_REMATCH[5] ))`
+  fi
+  [[ "$ip" != *.* && "$ip" != *::*::* && "$ip" != *:::* ]] || return 1
+  local left=$ip right="" head tail groups=() g
+  if [[ "$ip" == *::* ]]; then
+    left=${ip%%::*}
+    right=${ip#*::}
+  fi
+  IFS=: read -r -a head <<< "$left"
+  IFS=: read -r -a tail <<< "$right"
+  if [[ "$ip" == *::* ]]; then
+    local fill=$(( 8 - ${#head[@]} - ${#tail[@]} ))
+    (( fill >= 1 )) || return 1
+    groups=("${head[@]}")
+    while (( fill > 0 )); do groups+=(0); fill=$(( fill - 1 )); done
+    groups+=("${tail[@]}")
+  else
+    groups=("${head[@]}")
+  fi
+  (( ${#groups[@]} == 8 )) || return 1
+  for g in "${!groups[@]}"; do
+    [[ "${groups[g]}" =~ ^[0-9a-f]{1,4}$ ]] || return 1
+    groups[g]=$(( 16#${groups[g]} ))
+  done
+  # ::/96 (unspecified, loopback, IPv4-compatible) and ::ffff:0:0/96 (IPv4-mapped)
+  if (( groups[0] == 0 && groups[1] == 0 && groups[2] == 0 && groups[3] == 0 && groups[4] == 0 && (groups[5] == 0 || groups[5] == 65535) )); then
+    return 1
+  fi
+  (( groups[0] == 100 && groups[1] == 65435 && groups[2] == 1 )) && return 1
+  (( (groups[0] & 65024) == 64512 )) && return 1
+  (( (groups[0] & 65472) == 65152 )) && return 1
+  (( (groups[0] & 65280) == 65280 )) && return 1
+  return 0
+}
+
+# --public-address: adds $1 to the addresses the mail host is published at, each once. The server refuses any that is not global unicast,
+# so this does first, before anything is installed.
+function addPublicAddress() {
+  local address=$1 existing
+  if ! isGlobalUnicast "$address"; then
+    echo "--public-address $address isn't a public (global unicast) address: private, loopback, link-local and shared (CGNAT) addresses can't be published."
+    exit 1
+  fi
+  for existing in "${PUBLIC_ADDRESSES[@]}"; do
+    if [[ "${existing,,}" == "${address,,}" ]]; then
+      return 0
+    fi
+  done
+  PUBLIC_ADDRESSES+=("$address")
+}
+
+# The addresses the mail host's A/AAAA records point at (restapi 6.4): those given with --public-address, else the node's global unicast IPv4
+# addresses (not the temporary or deprecated ones, which are for outgoing connections), and, when it has no public IPv4 address (NAT, a cloud's
+# private network), the one the outside world sees it as. A global IPv6 address is not published unless it is given: this script installs k3s
+# single-stack, whose service load balancer takes the mail ports over IPv4 only, so a AAAA record for the mail host (which is also the MX target)
+# would make IPv6 mail servers and clients try an address nothing listens on before falling back. It says what it found. None is not fatal: the
+# hosts are then published by hand.
+function detectPublicAddresses() {
+  if [[ ${#PUBLIC_ADDRESSES[@]} -gt 0 ]]; then
+    echo "Publishing the mail host at the public addresses you gave: ${PUBLIC_ADDRESSES[*]}"
+    return 0
+  fi
+  local line fields i address has4=false
+  UNPUBLISHED_IPV6=()
+  if command -v ip >/dev/null 2>&1; then
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      case "$line" in
+        *temporary*|*deprecated*|*tentative*) continue;;
+      esac
+      read -r -a fields <<< "$line"
+      for (( i = 0; i < ${#fields[@]} - 1; i++ )); do
+        case "${fields[i]}" in
+          inet|inet6)
+            address=${fields[i+1]%%/*}
+            if isGlobalUnicast "$address"; then
+              if [[ "${fields[i]}" == inet ]]; then
+                has4=true
+                addPublicAddress "$address"
+              else
+                UNPUBLISHED_IPV6+=("$address")
+              fi
+            fi
+            ;;
+        esac
+      done
+    done < <(ip -o addr show scope global 2>/dev/null)
+  fi
+  if [[ "$has4" != "true" ]]; then
+    address=`curl -4 -fsS --max-time 10 "$PUBLIC_IPV4_URL" 2>/dev/null | tr -d '[:space:]'`
+    if [[ "$address" != *:* ]] && isGlobalUnicast "$address"; then
+      addPublicAddress "$address"
+    fi
+  fi
+  if [[ ${#UNPUBLISHED_IPV6[@]} -gt 0 ]]; then
+    echo "This machine has the IPv6 address(es) ${UNPUBLISHED_IPV6[*]}. They are not published: the mail ports are reachable over IPv4 only here."
+    echo "Pass one with --public-address <ip> if your cluster listens on IPv6 as well."
+  fi
+  if [[ ${#PUBLIC_ADDRESSES[@]} -eq 0 ]]; then
+    echo "No public IPv4 address was found on this machine or from outside, so the A/AAAA records of $SERVER_HOST can't be published. Pass the address"
+    echo "with --public-address <ip> (repeatable), or add the records yourself."
+    return 0
+  fi
+  echo "Detected the public address(es) of this machine: ${PUBLIC_ADDRESSES[*]}. These are what $SERVER_HOST is published at;"
+  echo "pass --public-address <ip> (repeatable) to publish others."
+}
+
+# $1 as a JSON string: quoted, with quotes, backslashes and control characters escaped.
+function jsonString() {
+  local value=$1 out="" i c code hex
+  for (( i = 0; i < ${#value}; i++ )); do
+    c=${value:i:1}
+    case "$c" in
+      '"') out+='\"';;
+      '\') out+='\\';;
+      $'\n') out+='\n';;
+      $'\r') out+='\r';;
+      $'\t') out+='\t';;
+      *)
+        printf -v code '%d' "'$c"
+        if (( code < 32 )); then
+          printf -v hex '\\u%04x' "$code"
+          out+=$hex
+        else
+          out+=$c
+        fi
+        ;;
+    esac
+  done
+  printf '"%s"' "$out"
+}
+
+# A comma-separated list ($1) as a JSON array of strings.
+function jsonList() {
+  local items=() item out="" first=true
+  IFS=, read -r -a items <<< "$1"
+  for item in "${items[@]}"; do
+    item=${item#"${item%%[![:space:]]*}"}
+    item=${item%"${item##*[![:space:]]}"}
+    if [[ -z "$item" ]]; then
+      continue
+    fi
+    if [[ "$first" != "true" ]]; then
+      out+=","
+    fi
+    out+=`jsonString "$item"`
+    first=false
+  done
+  printf '[%s]' "$out"
+}
+
+# What each provider type reads, as <variable> <secret|option> <the server's key> <str|list|int|bool|file> <required yes|no> per line. A secret
+# becomes a file of the Secret $FULLNAME-dns-bootstrap (and so a credential on the provider config); an option goes into the config the chart is given.
+# The variables are the provider's own (Cloudflare's CF_API_TOKEN, AWS's keys, Azure's service principal) or external-dns's (EXTERNAL_DNS_<flag>).
+function dnsProviderVariables() {
+  case "$1" in
+    cloudflare)
+      echo "CF_API_TOKEN secret apiToken str yes";;
+    route53)
+      echo "AWS_ACCESS_KEY_ID secret accessKeyId str no"
+      echo "AWS_SECRET_ACCESS_KEY secret secretAccessKey str no"
+      echo "AWS_REGION option region str yes"
+      echo "EXTERNAL_DNS_AWS_ZONE_TYPE option zoneType str no"
+      echo "EXTERNAL_DNS_AWS_ASSUME_ROLE option assumeRoleArn str no";;
+    rfc2136)
+      echo "EXTERNAL_DNS_RFC2136_TSIG_SECRET secret tsigSecret str no"
+      echo "EXTERNAL_DNS_RFC2136_HOST option hosts list yes"
+      echo "EXTERNAL_DNS_RFC2136_PORT option port int no"
+      echo "EXTERNAL_DNS_RFC2136_ZONE option zone str no"
+      echo "EXTERNAL_DNS_RFC2136_TSIG_KEYNAME option tsigKeyName str no"
+      echo "EXTERNAL_DNS_RFC2136_TSIG_SECRET_ALG option tsigAlgorithm str no"
+      echo "EXTERNAL_DNS_RFC2136_INSECURE option insecure bool no";;
+    google)
+      echo "GOOGLE_APPLICATION_CREDENTIALS secret serviceAccountJson file yes"
+      echo "EXTERNAL_DNS_GOOGLE_PROJECT option project str yes";;
+    azure)
+      echo "AZURE_CLIENT_ID secret clientId str yes"
+      echo "AZURE_CLIENT_SECRET secret clientSecret str yes"
+      echo "AZURE_TENANT_ID option tenantId str yes"
+      echo "AZURE_SUBSCRIPTION_ID option subscriptionId str yes"
+      echo "AZURE_RESOURCE_GROUP option resourceGroup str yes";;
+  esac
+}
+
+# The name the provider config is shown under in the admin console.
+function dnsProviderLabel() {
+  case "$1" in
+    cloudflare) echo "Cloudflare";;
+    route53) echo "Route 53";;
+    rfc2136) echo "RFC 2136";;
+    google) echo "Google Cloud DNS";;
+    azure) echo "Azure DNS";;
+  esac
+}
+
+# Reads the provider's credentials and options (dnsProviderVariables) into DNS_SECRETS and DNS_OPTIONS (by the server's keys): from the
+# KEY=value lines of --dns-credentials-file, which is read as text and never run, and from the environment for what the file doesn't set.
+# Nothing is taken from a command line, where any local user could read it. It stops the install, naming the variable and never its value,
+# when something is missing or has the wrong form; the server checks the rest with the console's rules when it creates the config.
+function loadDnsCredentials() {
+  declare -gA DNS_SECRETS=()
+  declare -gA DNS_OPTIONS=()
+  declare -gA DNS_OPTION_KINDS=()
+  declare -ga DNS_OPTION_ORDER=()
+  local -A fromFile=()
+  local known=" " variable role key kind required value line number=0 name
+  if [[ "$DNS_PROVIDER" == "cloudflare" ]]; then
+    # Not a setting: the zone's id, which prepareDns asks Cloudflare for with the token (a token scoped to one zone can't list the others).
+    DNS_OPTION_KINDS[zoneIds]=list
+    DNS_OPTION_ORDER+=(zoneIds)
+  fi
+  while read -r variable role key kind required; do
+    known+="$variable "
+    if [[ "$role" == "option" ]]; then
+      DNS_OPTION_KINDS[$key]=$kind
+      DNS_OPTION_ORDER+=("$key")
+    fi
+  done < <(dnsProviderVariables "$DNS_PROVIDER")
+  if [[ -n "$DNS_CREDENTIALS_FILE" ]]; then
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      number=$(( number + 1 ))
+      line=${line%$'\r'}
+      line=${line#"${line%%[![:space:]]*}"}
+      if [[ -z "$line" || "$line" == \#* ]]; then
+        continue
+      fi
+      if [[ ! "$line" =~ ^(export[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*=(.*)$ ]]; then
+        echo "$DNS_CREDENTIALS_FILE, line $number: expected NAME=value, a comment or an empty line."
+        exit 1
+      fi
+      name=${BASH_REMATCH[2]}
+      value=${BASH_REMATCH[3]}
+      value=${value%"${value##*[![:space:]]}"}
+      if [[ ${#value} -ge 2 && ( "${value:0:1}" == '"' || "${value:0:1}" == "'" ) && "${value: -1}" == "${value:0:1}" ]]; then
+        value=${value:1:${#value}-2}
+      fi
+      if [[ "$known" != *" $name "* ]]; then
+        echo "$DNS_CREDENTIALS_FILE, line $number: $name isn't a setting of a $DNS_PROVIDER provider (it reads:${known% })."
+        exit 1
+      fi
+      fromFile[$name]=$value
+    done < "$DNS_CREDENTIALS_FILE"
+  fi
+  while read -r variable role key kind required; do
+    if [[ -n "${fromFile[$variable]+set}" ]]; then
+      value=${fromFile[$variable]}
+    else
+      value=${!variable}
+    fi
+    if [[ -z "$value" ]]; then
+      if [[ "$required" == "yes" ]]; then
+        echo "A $DNS_PROVIDER provider needs $variable: set it in the environment, or as $variable=<value> in the file --dns-credentials-file names (never on the command line)."
+        exit 1
+      fi
+      continue
+    fi
+    case "$kind" in
+      file)
+        if [[ ! -f "$value" || ! -r "$value" ]]; then
+          echo "$variable names a file that can't be read."
+          exit 1
+        fi
+        value=`cat "$value"`
+        ;;
+      int)
+        if [[ ! "$value" =~ ^[0-9]{1,5}$ ]]; then
+          echo "$variable must be a number."
+          exit 1
+        fi
+        value=$(( 10#$value ))
+        ;;
+      bool)
+        value=${value,,}
+        if [[ "$value" != "true" && "$value" != "false" ]]; then
+          echo "$variable must be true or false."
+          exit 1
+        fi
+        ;;
+    esac
+    if [[ "$kind" != "file" && "$value" =~ [[:cntrl:]] ]]; then
+      echo "$variable has a control character (a line break, most likely)."
+      exit 1
+    fi
+    if [[ "$role" == "secret" ]]; then
+      DNS_SECRETS[$key]=$value
+    else
+      DNS_OPTIONS[$key]=$value
+    fi
+  done < <(dnsProviderVariables "$DNS_PROVIDER")
+  if [[ "$DNS_PROVIDER" == "cloudflare" && ! "${DNS_SECRETS[apiToken]}" =~ ^[A-Za-z0-9._~+/=-]+$ ]]; then
+    # It goes into a request header.
+    echo "CF_API_TOKEN isn't made of the characters a Cloudflare API token has (letters, digits and - _ . ~ + / =)."
+    exit 1
+  fi
+  if [[ "$DNS_PROVIDER" == "route53" && -n "${DNS_SECRETS[accessKeyId]}${DNS_SECRETS[secretAccessKey]}" && ( -z "${DNS_SECRETS[accessKeyId]}" || -z "${DNS_SECRETS[secretAccessKey]}" ) ]]; then
+    echo "AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY must be set together, or neither (external-dns then uses the role of its service account)."
+    exit 1
+  fi
+  if [[ "$DNS_PROVIDER" == "rfc2136" ]]; then
+    if [[ -z "${DNS_OPTIONS[zone]}" ]]; then
+      DNS_OPTIONS[zone]=$DNS_ZONE
+    fi
+    if [[ "${DNS_OPTIONS[insecure]}" != "true" && ( -z "${DNS_OPTIONS[tsigKeyName]}" || -z "${DNS_SECRETS[tsigSecret]}" ) ]]; then
+      echo "A rfc2136 provider needs EXTERNAL_DNS_RFC2136_TSIG_KEYNAME and EXTERNAL_DNS_RFC2136_TSIG_SECRET, or EXTERNAL_DNS_RFC2136_INSECURE=true for unsigned updates."
+      exit 1
+    fi
+  fi
+}
+
+# Succeeds when host name $2 is zone $1 or inside it.
+function dnsZoneCovers() {
+  [[ "${2,,}" == "${1,,}" || "${2,,}" == *".${1,,}" ]]
+}
+
+# Prints the id of Cloudflare's zone $1, asked with the token (in a request configuration on stdin, not an argument, which any local user could
+# read in the process list). Returns 3 for no such zone (with $2 = quiet, without saying so) and 1 when Cloudflare can't be asked or refuses.
+function cloudflareZoneId() {
+  local zone=$1 response message id
+  response=$(printf 'header = "Authorization: Bearer %s"\n' "${DNS_SECRETS[apiToken]}" | curl -sS --max-time 30 -K - "https://api.cloudflare.com/client/v4/zones?name=$zone" 2>/dev/null)
+  if [[ -z "$response" ]]; then
+    echo "Cloudflare could not be asked for the zone $zone (no answer, or it refused the request). Check the network and the token." >&2
+    return 1
+  fi
+  if ! grep -Eq '"success": *true' <<< "$response"; then
+    message=`sed -n 's/.*"errors": *\[ *{[^}]*"message": *"\([^"]*\)".*/\1/p' <<< "$response"`
+    echo "Cloudflare refused the lookup of the zone $zone${message:+: $message}. The token needs Zone:Zone:Read and Zone:DNS:Edit on the zone." >&2
+    return 1
+  fi
+  id=`sed -n 's/.*"result": *\[ *{ *"id": *"\([0-9a-f]\{32\}\)".*/\1/p' <<< "$response"`
+  if [[ -z "$id" ]]; then
+    if [[ "$2" != "quiet" ]]; then
+      echo "Cloudflare has no zone $zone for this token." >&2
+    fi
+    return 3
+  fi
+  echo "$id"
+}
+
+# The distinct domains the server seeds (the chart's mail.domains default): --domain and each of --mail-domains, lowercase, one per line.
+function seedDomains() {
+  local domains=() domain seen=" "
+  IFS=, read -r -a domains <<< "$DOMAIN,$MAIL_DOMAINS"
+  for domain in "${domains[@]}"; do
+    domain=${domain,,}
+    domain=${domain//[[:space:]]/}
+    if [[ -n "$domain" && "$seen" != *" $domain "* ]]; then
+      seen+="$domain "
+      echo "$domain"
+    fi
+  done
+}
+
+# Everything --dns-provider needs before anything is installed: the zone (--dns-zone, else --domain's, which for Cloudflare is the one its API
+# has, looking from --domain upwards), the credentials, Cloudflare's zone id and the public addresses. It stops the install on what can't work,
+# and says which domains the zone doesn't contain: their records stay with the administrator, as the server leaves a domain outside the
+# provider's zones manual.
+function prepareDns() {
+  if [[ -z "$DNS_PROVIDER" ]]; then
+    return 0
+  fi
+  local label domain candidate id status
+  label=`dnsProviderLabel "$DNS_PROVIDER"`
+  if [[ "$DOMAIN" == "cluster.local" || "$DOMAIN" == "localhost" || "$DOMAIN" =~ \.(local|localhost)$ ]]; then
+    echo "--dns-provider needs --domain: a public domain the DNS zone contains."
+    exit 1
+  fi
+  if [[ -n "$DNS_ZONE" ]]; then
+    DNS_ZONE=${DNS_ZONE,,}
+    DNS_ZONE=${DNS_ZONE%.}
+    if [[ ! "$DNS_ZONE" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$ ]]; then
+      echo "--dns-zone must be a domain name of at least two labels, such as example.com."
+      exit 1
+    fi
+    if ! dnsZoneCovers "$DNS_ZONE" "$DOMAIN"; then
+      echo "--dns-zone $DNS_ZONE doesn't contain --domain $DOMAIN: the zone is the domain itself or a parent of it."
+      exit 1
+    fi
+  elif [[ "$DNS_PROVIDER" != "cloudflare" ]]; then
+    DNS_ZONE=${DOMAIN,,}
+    DNS_ZONE=${DNS_ZONE%.}
+  fi
+  loadDnsCredentials
+  if [[ "$DNS_PROVIDER" == "cloudflare" ]]; then
+    if [[ -n "$DNS_ZONE" ]]; then
+      id=`cloudflareZoneId "$DNS_ZONE"` || exit 1
+    else
+      # The zone is the most specific name from --domain upwards that Cloudflare has for this token, down to two labels.
+      candidate=${DOMAIN,,}
+      candidate=${candidate%.}
+      while true; do
+        id=`cloudflareZoneId "$candidate" quiet`
+        status=$?
+        if [[ $status -eq 0 ]]; then
+          DNS_ZONE=$candidate
+          break
+        elif [[ $status -ne 3 ]]; then
+          exit 1
+        fi
+        candidate=${candidate#*.}
+        if [[ "$candidate" != *.* ]]; then
+          echo "Cloudflare has no zone for $DOMAIN or any name above it that this token can see. Check the token, or name the zone with --dns-zone."
+          exit 1
+        fi
+      done
+    fi
+    DNS_OPTIONS[zoneIds]=$id
+  fi
+  echo "Publishing DNS records through $label for the zone $DNS_ZONE."
+  if [[ "$DNS_TAKEOVER" == "true" ]]; then
+    echo "--dns-takeover: records that already exist at the names RapidMX publishes are replaced."
+  fi
+  for domain in `seedDomains`; do
+    if ! dnsZoneCovers "$DNS_ZONE" "$domain"; then
+      echo "$domain is outside the zone $DNS_ZONE, so its records are published by hand (the admin console lists them)."
+    fi
+  done
+  detectPublicAddresses
+}
+
+# The provider config the server creates when it first starts (mail:dns:bootstrap_provider), as JSON: { name, type, zones, options, allowTakeover }.
+function dnsBootstrapProviderJson() {
+  local key value item out first=true takeover=false
+  if [[ "$DNS_TAKEOVER" == "true" ]]; then
+    takeover=true
+  fi
+  out="{\"name\":`jsonString "\`dnsProviderLabel "$DNS_PROVIDER"\` (installer)"`,\"type\":`jsonString "$DNS_PROVIDER"`,\"zones\":[`jsonString "$DNS_ZONE"`],\"options\":{"
+  for key in "${DNS_OPTION_ORDER[@]}"; do
+    if [[ -z "${DNS_OPTIONS[$key]+set}" ]]; then
+      continue
+    fi
+    value=${DNS_OPTIONS[$key]}
+    case "${DNS_OPTION_KINDS[$key]}" in
+      list) item=`jsonList "$value"`;;
+      int|bool) item=$value;;
+      *) item=`jsonString "$value"`;;
+    esac
+    if [[ "$first" != "true" ]]; then
+      out+=","
+    fi
+    out+="`jsonString "$key"`:$item"
+    first=false
+  done
+  out+="},\"allowTakeover\":$takeover}"
+  printf '%s\n' "$out"
+}
+
+# The Secret the server pod reads the credentials from, once, when it creates the provider config (mount optional, server pods only; the chart's
+# dns.bootstrapProvider): one key per credential. Nothing when the provider needs none (Route 53 through the role of external-dns's service account).
+function dnsBootstrapSecretManifest() {
+  local key encoded
+  if [[ ${#DNS_SECRETS[@]} -eq 0 ]]; then
+    return 0
+  fi
+  printf 'apiVersion: v1\nkind: Secret\nmetadata:\n  name: %s\n  namespace: %s\ntype: Opaque\ndata:\n' "$FULLNAME-dns-bootstrap" "$NAMESPACE"
+  while read -r key; do
+    encoded=`printf '%s' "${DNS_SECRETS[$key]}" | base64 | tr -d '\n'`
+    printf "  %s: '%s'\n" "$key" "$encoded"
+  done < <(printf '%s\n' "${!DNS_SECRETS[@]}" | sort)
+}
+
+# Creates that Secret before the release, in a namespace made first, through stdin: the credentials are never an argument.
+function createDnsBootstrapSecret() {
+  local manifest
+  manifest=`dnsBootstrapSecretManifest`
+  if [[ -z "$manifest" ]]; then
+    return 0
+  fi
+  kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+  # What the server says from now on is what it said about this Secret (finishDnsBootstrap).
+  DNS_SECRET_APPLIED_AT=`date -u +%Y-%m-%dT%H:%M:%SZ`
+  if ! printf '%s\n' "$manifest" | kubectl apply -f - >/dev/null; then
+    echo "There was a problem saving the DNS credentials for the server."
+    exit 1
+  fi
+  echo "The DNS credentials are in the Secret $FULLNAME-dns-bootstrap, which is deleted once the server has stored them."
+}
+
+# The values the chart is given for DNS (the part of the values file, YAML): publishing on, the addresses, the provider config for the server
+# to create, and the controller's release when it is named. Nothing secret: the credentials are in the Secret.
+function dnsHelmValues() {
+  local addresses="" address
+  if [[ -z "$DNS_PROVIDER" ]]; then
+    return 0
+  fi
+  for address in "${PUBLIC_ADDRESSES[@]}"; do
+    addresses+="${addresses:+, }`jsonString "$address"`"
+  done
+  printf 'dns:\n  publishing:\n    enabled: true\n  publicAddresses: [%s]\n  bootstrapProvider: %s\n' "$addresses" "`dnsBootstrapProviderJson`"
+  if [[ -n "$DNS_CONTROLLER_TAG" || -n "$DNS_CONTROLLER_DIGEST" ]]; then
+    printf '  controller:\n    image:\n'
+    if [[ -n "$DNS_CONTROLLER_TAG" ]]; then
+      printf '      tag: %s\n' "`yamlQuote "$DNS_CONTROLLER_TAG"`"
+    fi
+    if [[ -n "$DNS_CONTROLLER_DIGEST" ]]; then
+      printf '      digest: %s\n' "`yamlQuote "$DNS_CONTROLLER_DIGEST"`"
+    fi
+  fi
+}
+
+# What the server last said about the provider config since the Secret was made ($DNS_SECRET_APPLIED_AT: its log from before is about an earlier
+# Secret), one line, from the log of all its pods.
+function dnsBootstrapOutcome() {
+  kubectl -n "$NAMESPACE" logs -l "app.kubernetes.io/instance=$FULLNAME-services" --all-containers=true --tail=-1 ${DNS_SECRET_APPLIED_AT:+--since-time="$DNS_SECRET_APPLIED_AT"} 2>/dev/null \
+    | grep -E 'Created the DNS provider|installer configured already exists|installer configured was created on an earlier start|installer configured was not created|installer configured could not be created' | tail -n 1
+}
+
+# After the release is installed: waits for the server to be ready (it creates the provider config before it reports ready) and deletes the
+# Secret with the credentials once the server's log says the config exists, so the database is the only place they stay. A Secret the server
+# could not read, or whose outcome can't be found in the log, is kept, with the command that deletes it. The server reads the Secret only when it
+# starts, and a run that changes nothing in the release (the same flags again, a new token) leaves its pods running, with a log from before this
+# Secret: when the log has nothing since the Secret was made, the server is restarted so that it reads this one.
+function finishDnsBootstrap() {
+  local secret="$FULLNAME-dns-bootstrap" line
+  if ! kubectl -n "$NAMESPACE" get secret "$secret" >/dev/null 2>&1; then
+    return 0
+  fi
+  echo "Waiting for the server to start, which stores the DNS credentials of the Secret $secret..."
+  if ! kubectl -n "$NAMESPACE" rollout status "deployment/$FULLNAME-services" --timeout="$DNS_ROLLOUT_TIMEOUT"; then
+    echo "The server isn't ready yet, so it isn't known whether it stored the DNS credentials. The Secret $secret was kept. Once the server is ready and"
+    echo "its log says it created the DNS provider, delete it:"
+    echo "  kubectl -n $NAMESPACE delete secret $secret"
+    return 0
+  fi
+  line=`dnsBootstrapOutcome`
+  if [[ -z "$line" ]]; then
+    echo "The server hasn't said anything about the Secret $secret: its pods started before it was made. Restarting them to have them read it..."
+    kubectl -n "$NAMESPACE" rollout restart "deployment/$FULLNAME-services" >/dev/null
+    if kubectl -n "$NAMESPACE" rollout status "deployment/$FULLNAME-services" --timeout="$DNS_ROLLOUT_TIMEOUT"; then
+      line=`dnsBootstrapOutcome`
+    fi
+  fi
+  case "$line" in
+    *"Created the DNS provider"*)
+      kubectl -n "$NAMESPACE" delete secret "$secret" >/dev/null
+      echo "The server stored the DNS credentials, encrypted, in its database; the Secret $secret was deleted."
+      ;;
+    *"already exists"*|*"on an earlier start"*)
+      DNS_CONFIG_EXISTED=true
+      kubectl -n "$NAMESPACE" delete secret "$secret" >/dev/null
+      echo "The DNS provider already exists (an earlier install created it), so these credentials and the provider options (--dns-zone, --dns-takeover) were"
+      echo "not applied to it: they are changed in the admin console. The Secret $secret was deleted."
+      ;;
+    *"not created"*|*"could not be created"*)
+      echo "The server could not create the DNS provider, so no records are published until it has:"
+      echo "  $line"
+      echo "The Secret $secret was kept for its next start. Once the provider exists, or to give up on it, delete the Secret:"
+      echo "  kubectl -n $NAMESPACE delete secret $secret"
+      ;;
+    *)
+      echo "Whether the server stored the DNS credentials could not be confirmed from its log, so the Secret $secret was kept. Once the admin console"
+      echo "lists the DNS provider (Integrations), delete it:"
+      echo "  kubectl -n $NAMESPACE delete secret $secret"
+      ;;
+  esac
+}
+
+# Waits for the DNS controller; a controller that isn't ready is said, not fatal: the release is installed, and it publishes when it is.
+function waitForDnsController() {
+  if ! kubectl -n "$NAMESPACE" rollout status "deployment/$FULLNAME-dns-controller" --timeout="$DNS_ROLLOUT_TIMEOUT"; then
+    echo "The DNS controller ($FULLNAME-dns-controller) isn't ready yet. Look at it with:"
+    echo "  kubectl -n $NAMESPACE get pods -l app=dns-controller"
+    echo "  kubectl -n $NAMESPACE logs deployment/$FULLNAME-dns-controller"
+  fi
+}
+
+# The DNSEndpoint CRD of external-dns v0.23.0 (config/crd/standard/dnsendpoints.externaldns.k8s.io.yaml), the same as
+# deploy/crds/dnsendpoints.externaldns.k8s.io.yaml (a test keeps them equal). It is here as well because this script is downloaded on its own.
+function dnsEndpointCrd() {
+  cat << 'EOF'
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    api-approved.kubernetes.io: https://github.com/kubernetes-sigs/external-dns/pull/2007
+    controller-gen.kubebuilder.io/version: v0.21.0
+  name: dnsendpoints.externaldns.k8s.io
+spec:
+  group: externaldns.k8s.io
+  names:
+    kind: DNSEndpoint
+    listKind: DNSEndpointList
+    plural: dnsendpoints
+    singular: dnsendpoint
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      schema:
+        openAPIV3Schema:
+          description: |-
+            DNSEndpoint is a contract that a user-specified CRD must implement to be used as a source for external-dns.
+            The user-specified CRD should also have the status sub-resource.
+          properties:
+            apiVersion:
+              description: |-
+                APIVersion defines the versioned schema of this representation of an object.
+                Servers should convert recognized schemas to the latest internal value, and
+                may reject unrecognized values.
+                More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+              type: string
+            kind:
+              description: |-
+                Kind is a string value representing the REST resource this object represents.
+                Servers may infer this from the endpoint the client submits requests to.
+                Cannot be updated.
+                In CamelCase.
+                More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+              type: string
+            metadata:
+              type: object
+            spec:
+              description: DNSEndpointSpec defines the desired state of DNSEndpoint
+              properties:
+                endpoints:
+                  items:
+                    description: Endpoint is a high-level way of a connection between a service and an IP
+                    properties:
+                      dnsName:
+                        description: The hostname of the DNS record
+                        type: string
+                      labels:
+                        additionalProperties:
+                          type: string
+                        description: Labels stores labels defined for the Endpoint
+                        type: object
+                      providerSpecific:
+                        description: ProviderSpecific stores provider specific config
+                        items:
+                          description: ProviderSpecificProperty holds the name and value of a configuration which is specific to individual DNS providers
+                          properties:
+                            name:
+                              type: string
+                            value:
+                              type: string
+                          type: object
+                        type: array
+                      recordTTL:
+                        description: TTL for the record
+                        format: int64
+                        type: integer
+                      recordType:
+                        description: RecordType type of record, e.g. CNAME, A, AAAA, SRV, TXT etc
+                        type: string
+                      setIdentifier:
+                        description: Identifier to distinguish multiple records with the same name and type (e.g. Route53 records with routing policies other than 'simple')
+                        type: string
+                      targets:
+                        description: The targets the DNS record points to
+                        items:
+                          type: string
+                        type: array
+                    type: object
+                  type: array
+              type: object
+            status:
+              description: DNSEndpointStatus defines the observed state of DNSEndpoint
+              properties:
+                observedGeneration:
+                  description: The generation observed by the external-dns controller.
+                  format: int64
+                  type: integer
+              type: object
+          type: object
+      served: true
+      storage: true
+      subresources:
+        status: {}
+EOF
+}
+
+# Installs that CRD, which is cluster-scoped and so not the chart's (like cert-manager's): when the cluster has none, or when this script
+# installed it, so a newer copy is picked up. A CRD another installation made is left as it is. Recorded, so --uninstall removes only that.
+function installDnsCrd() {
+  local isNew=false
+  if kubectl get crd "$DNS_CRD_NAME" >/dev/null 2>&1; then
+    if [[ "`installedBy dns_crd`" != "true" ]]; then
+      echo "The DNSEndpoint CRD is already installed; leaving it as it is."
+      return 0
+    fi
+  else
+    isNew=true
+  fi
+  if ! dnsEndpointCrd | kubectl apply --server-side=true -f - >/dev/null; then
+    echo "There was a problem installing the DNSEndpoint CRD (external-dns's)."
+    exit 1
+  fi
+  if ! kubectl wait --for=condition=Established "crd/$DNS_CRD_NAME" --timeout=2m >/dev/null; then
+    echo "The DNSEndpoint CRD was applied but did not become established."
+    exit 1
+  fi
+  if [[ "$isNew" == "true" ]]; then
+    recordInstalled dns_crd
+  fi
+}
+
+# The addresses of DNS name $1 for record type $2 (A, AAAA, CNAME, MX, SRV), asked of the zone's own name server when there is a way to find it,
+# so a recursive resolver's cache neither hides a record that was just published nor keeps one that was just removed.
+function dnsLookup() {
+  local server=""
+  if command -v dig >/dev/null 2>&1; then
+    if [[ -n "$DNS_ZONE" ]]; then
+      server=`dig +short +time=3 +tries=1 NS "$DNS_ZONE" 2>/dev/null | head -n 1`
+    fi
+    dig +short +time=3 +tries=1 ${server:+"@$server"} "$1" "$2" 2>/dev/null
+  elif command -v getent >/dev/null 2>&1; then
+    case "$2" in
+      A) getent ahostsv4 "$1" | awk '{ print $1 }' | sort -u;;
+      AAAA) getent ahostsv6 "$1" | awk '{ print $1 }' | sort -u;;
+    esac
+  fi
+}
+
+# Succeeds when DNS name $1 leads to this server: an address of it is one of the public addresses, or one of $SERVER_HOST's, or it is a CNAME for
+# $SERVER_HOST.
+function resolvesToServer() {
+  local mine=("${PUBLIC_ADDRESSES[@]}") type answer own
+  for type in A AAAA; do
+    for own in `dnsLookup "$SERVER_HOST" "$type"`; do
+      mine+=("$own")
+    done
+  done
+  for type in A AAAA; do
+    for answer in `dnsLookup "$1" "$type"`; do
+      answer=${answer%.}
+      if [[ "${answer,,}" == "${SERVER_HOST,,}" ]]; then
+        return 0
+      fi
+      for own in "${mine[@]}"; do
+        if [[ "${answer,,}" == "${own,,}" ]]; then
+          return 0
+        fi
+      done
+    done
+  done
+  return 1
+}
+
+# Runs helm or kubectl ($1, with the arguments after it) against this installation's cluster for the checks that come before the cluster is set up,
+# as decideOpenpgpkeyHost and checkDnsDomainsAssigned do: with the kubeconfig the later steps will use, and failing, not stopping the install, when
+# there is no such tool or cluster yet (a first install).
+function clusterTool() {
+  local tool=$1
+  shift
+  if ! command -v "$tool" >/dev/null 2>&1; then
+    return 1
+  fi
+  if [[ -z "$KUBECONFIG" && -f "$USER_KUBECONFIG" ]]; then
+    KUBECONFIG="$USER_KUBECONFIG" "$tool" "$@"
+  else
+    "$tool" "$@"
+  fi
+}
+
+# Whether the domains this run seeds end up on the installer's DNS provider, which is what makes the controller publish their records. The server
+# creates a domain only when it is absent and never changes one that exists (restapi 13.3), so adding --dns-provider to a release that wasn't
+# publishing leaves the domains it already has manual: they are assigned to the provider in the admin console, on the domain's DNS panel. A new
+# release, and one that was publishing already, have them assigned. Sets DNS_DOMAINS_ASSIGNED.
+function checkDnsDomainsAssigned() {
+  DNS_DOMAINS_ASSIGNED=true
+  if [[ -z "$DNS_PROVIDER" ]]; then
+    return 0
+  fi
+  if clusterTool helm status "$NAMESPACE" -n "$NAMESPACE" >/dev/null 2>&1 && ! clusterTool kubectl -n "$NAMESPACE" get deployment "$FULLNAME-dns-controller" >/dev/null 2>&1; then
+    DNS_DOMAINS_ASSIGNED=false
+  fi
+}
+
+# Whether the release this run upgrades serves openpgpkey.<domain> now (the mail.wkd.openpgpkeyHost.enabled it was given).
+function openpgpkeyHostServed() {
+  clusterTool helm get values "$NAMESPACE" -n "$NAMESPACE" -o json 2>/dev/null | grep -Eq '"openpgpkeyHost": *\{[^}]*"enabled": *true'
+}
+
+# Succeeds when DNS name $1 leads to this server, asked up to OPENPGPKEY_LOOKUP_TRIES times: one lost packet isn't an answer.
+function resolvesToServerSure() {
+  local attempt
+  for (( attempt = 1; attempt <= OPENPGPKEY_LOOKUP_TRIES; attempt++ )); do
+    if resolvesToServer "$1"; then
+      return 0
+    fi
+    if (( attempt < OPENPGPKEY_LOOKUP_TRIES )); then
+      sleep 2
+    fi
+  done
+  return 1
+}
+
+# Decides how openpgpkey.<domain> is installed (restapi 12.5): OPENPGPKEY_ON is whether this install serves it, OPENPGPKEY_PENDING that a provider
+# will publish its record and it is served by a second step (enableOpenpgpkeyHost), since the Certificate covering it is never issued, and Helm's
+# --wait would block, while the name doesn't resolve. true serves it whatever the record says, unless a provider will publish the record. A release
+# that serves it already keeps serving it when the lookup says it doesn't resolve (a failed lookup would otherwise drop the host's listeners and the
+# name from the server's certificate, to be issued again by the next run); false turns it off. Nothing is pending when the domains aren't on the
+# provider (checkDnsDomainsAssigned): nothing would publish the record.
+function decideOpenpgpkeyHost() {
+  OPENPGPKEY_ON=false
+  OPENPGPKEY_PENDING=false
+  checkDnsDomainsAssigned
+  if [[ "$OPENPGPKEY_HOST" == "false" ]]; then
+    return 0
+  fi
+  if resolvesToServerSure "$OPENPGPKEY_HOSTNAME"; then
+    OPENPGPKEY_ON=true
+  elif openpgpkeyHostServed; then
+    OPENPGPKEY_ON=true
+    echo "$OPENPGPKEY_HOSTNAME didn't resolve to this server just now, so it stays served as the release has it (--openpgpkey-host false turns it off)."
+  elif [[ -n "$DNS_PROVIDER" && "$DNS_DOMAINS_ASSIGNED" == "true" ]] && dnsZoneCovers "$DNS_ZONE" "$OPENPGPKEY_HOSTNAME"; then
+    OPENPGPKEY_PENDING=true
+  elif [[ "$OPENPGPKEY_HOST" == "true" ]]; then
+    OPENPGPKEY_ON=true
+  fi
+}
+
+# The second step of that install: once openpgpkey.<domain> resolves to this server (the provider publishes it, which takes a sync interval or
+# two), serves it: the Gateway's listeners, then the release with the host on. Waits up to OPENPGPKEY_WAIT_SECONDS; a record that doesn't come is
+# said, not fatal, and the next run of this script finishes it.
+function enableOpenpgpkeyHost() {
+  if [[ "$OPENPGPKEY_PENDING" != "true" ]]; then
+    return 0
+  fi
+  echo "Waiting for $OPENPGPKEY_HOSTNAME to resolve to this server (the DNS controller publishes it) before serving it..."
+  local deadline=$(( SECONDS + OPENPGPKEY_WAIT_SECONDS ))
+  until resolvesToServer "$OPENPGPKEY_HOSTNAME"; do
+    if (( SECONDS >= deadline )); then
+      echo "$OPENPGPKEY_HOSTNAME doesn't resolve to this server yet, so it isn't served (its certificate could not be issued before the record exists)."
+      echo "Once the record is published, re-run this script with the same options to serve it."
+      return 0
+    fi
+    sleep 10
+  done
+  OPENPGPKEY_ON=true
+  OPENPGPKEY_PENDING=false
+  if [[ "$GATEWAY_TLS" == "true" ]]; then
+    OPENPGPKEY_HTTPS_LISTENER="https-openpgpkey"
+  fi
+  if [[ "$GATEWAY_MODE" == "shared" ]]; then
+    applySharedGateway
+  fi
+  installRelease
+}
+
+# The records for the hosts and domains of an install without a DNS provider, for the administrator to publish.
+function printManualDnsRecords() {
+  local domain
+  if [[ $SERVER_HOST =~ \.local(host)?$ || $SERVER_HOST = "localhost" ]]; then
+    echo "Please update the hosts file to resolve the following:"
+    echo -e "\t $SERVER_HOST"
+    echo -e "\t $AUTH_HOST"
+    return 0
+  fi
+  # Every name the release answers on has to reach this machine (nginx forwards ports 80 and 443 to the Gateway), and Let's
+  # Encrypt checks each name a certificate covers over HTTP before issuing it.
+  echo "DNS records these hosts need (A/AAAA records point at this machine's public address):"
+  echo -e "\t $SERVER_HOST\t\tA/AAAA to this machine"
+  echo -e "\t $AUTH_HOST\t\tA/AAAA to this machine, or CNAME $SERVER_HOST"
+  echo -e "\t $AUTODISCOVER_HOST\tA/AAAA to this machine, or CNAME $SERVER_HOST (mail clients' Autodiscover)"
+  if [[ "$OPENPGPKEY_ON" = "true" ]]; then
+    echo -e "\t $OPENPGPKEY_HOSTNAME\tA/AAAA to this machine, or CNAME $SERVER_HOST (OpenPGP Web Key Directory)"
+    echo "$OPENPGPKEY_HOSTNAME is on $SERVER_HOST's certificate: until its record resolves here, that certificate isn't issued."
+  else
+    echo "$OPENPGPKEY_HOSTNAME (the OpenPGP Web Key Directory host) isn't served. To serve it, add its record (A/AAAA to"
+    echo "this machine, or CNAME $SERVER_HOST) first, then re-run with --openpgpkey-host true (or auto, which serves it once"
+    echo "the record resolves here): before the record exists the certificate covering it is never issued."
+  fi
+  echo "DNS records each domain needs (its ownership, DKIM and DMARC values are in the admin console, on the domain's DNS panel):"
+  for domain in `seedDomains`; do
+    echo -e "\t $domain\t\tMX 10 $SERVER_HOST, and TXT v=spf1 mx ~all"
+  done
+}
+
+# The final message of an install with a DNS provider (restapi 12.3): what is being published, what stays manual and why, and where to watch it.
+function printDnsSummary() {
+  local label host domain outside=false existing
+  existing=`seedDomains | paste -sd, -`
+  label=`dnsProviderLabel "$DNS_PROVIDER"`
+  echo "DNS records are published through $label for the zone $DNS_ZONE by the DNS controller ($FULLNAME-dns-controller), which reads the"
+  echo "records the server wants and has external-dns apply them; they appear within a few minutes."
+  if [[ ${#PUBLIC_ADDRESSES[@]} -eq 0 ]]; then
+    echo "No public address is known, so $SERVER_HOST's A/AAAA records are not published: re-run with --public-address <ip> (repeatable), or add them yourself."
+  else
+    echo -e "\t $SERVER_HOST\t\tA/AAAA ${PUBLIC_ADDRESSES[*]}"
+  fi
+  if [[ ${#UNPUBLISHED_IPV6[@]} -gt 0 ]]; then
+    echo "  Not published: the IPv6 address(es) ${UNPUBLISHED_IPV6[*]} (the mail ports are reachable over IPv4 only here). Re-run with --public-address <ip> to publish one."
+  fi
+  echo -e "\t $AUTH_HOST\t\tCNAME $SERVER_HOST"
+  echo -e "\t $AUTODISCOVER_HOST\tCNAME $SERVER_HOST"
+  if [[ "$OPENPGPKEY_ON" == "true" ]]; then
+    echo -e "\t $OPENPGPKEY_HOSTNAME\tCNAME $SERVER_HOST (OpenPGP Web Key Directory)"
+  elif [[ "$OPENPGPKEY_PENDING" == "true" ]]; then
+    echo "$OPENPGPKEY_HOSTNAME (the OpenPGP Web Key Directory host) is published but not served yet: re-run this script with the same options once it resolves."
+  fi
+  if [[ "$DNS_DOMAINS_ASSIGNED" == "true" ]]; then
+    echo "For each domain in the zone: its MX record (to $SERVER_HOST), DKIM key, DMARC policy, ownership TXT, openpgpkey and autodiscover records."
+  else
+    echo "The domains that existed before this run ($existing) are not on this provider yet, so none of their records is published: the server never changes"
+    echo "a domain that exists. Assign each to the provider on the domain's DNS panel in the admin console; its MX, DKIM, DMARC, ownership, openpgpkey and"
+    echo "autodiscover records are published then. $OPENPGPKEY_HOSTNAME is served when you re-run this script after that, once its record resolves."
+  fi
+  echo "Left to you:"
+  for host in "$SERVER_HOST" "$AUTH_HOST" "$AUTODISCOVER_HOST"; do
+    if ! dnsZoneCovers "$DNS_ZONE" "$host"; then
+      echo "  $host is outside the zone $DNS_ZONE: publish it yourself."
+      outside=true
+    fi
+  done
+  for domain in `seedDomains`; do
+    if ! dnsZoneCovers "$DNS_ZONE" "$domain"; then
+      echo "  $domain is outside the zone $DNS_ZONE: publish its records yourself (the admin console lists them)."
+      outside=true
+    fi
+  done
+  echo "  SPF (v=spf1 mx ~all) at each domain's root: publish it yourself until you let RapidMX manage the domain's root TXT records in the admin console,"
+  echo "  which replaces the TXT values there with the ones you choose to keep."
+  if [[ "$DNS_PROVIDER" == "rfc2136" ]]; then
+    echo "  RFC 2136 can't manage MX and SRV records: publish them yourself."
+  fi
+  if [[ "$DNS_TAKEOVER" == "true" && "$DNS_CONFIG_EXISTED" == "true" ]]; then
+    echo "--dns-takeover was not applied: it only sets a provider config the server creates, and this one existed. Turn on takeover in the admin console"
+    echo "(the provider's settings) to have RapidMX replace the records that already exist at these names; until then they show as conflicts."
+  elif [[ "$DNS_TAKEOVER" == "true" ]]; then
+    echo "Records that already exist at these names are taken over (--dns-takeover): RapidMX replaces their values."
+  else
+    echo "Records that already exist at these names are left alone and show as conflicts in the admin console, where you can take them over, or"
+    echo "re-run with --dns-takeover."
+  fi
+  if [[ "$DNS_PROVIDER" == "cloudflare" ]]; then
+    echo "If the Cloudflare token is restricted to client IP addresses, it must list every address this cluster goes out from, IPv4 and IPv6."
+  fi
+  echo "Watch it in the admin console (the domain's DNS panel, Integrations), or with:"
+  echo "  kubectl -n $NAMESPACE get dnsendpoints"
+  echo "  kubectl -n $NAMESPACE logs deployment/$FULLNAME-dns-controller"
+  echo "Run this script again with the same --dns-* flags to upgrade: without them publishing is turned off (the controller is removed; what it"
+  echo "published stays). --uninstall removes the records it published unless --keep-dns is given."
+}
+
+# The DNSEndpoints of namespace $1 that selector $2 matches, one line each: <name>|<the domain it is for, if any>|<records>|<TXT names>, where records
+# are <dnsName>=<type>=<target>,<target>,; per record that is not TXT and the TXT names are <dnsName>; (TXT values can hold anything, and nothing
+# here needs them).
+function dnsEndpointRows() {
+  kubectl -n "$1" get dnsendpoints -l "$2" -o jsonpath='{range .items[*]}{.metadata.name}{"|"}{.metadata.labels.rapidmx\.io/domain}{"|"}{range .spec.endpoints[?(@.recordType!="TXT")]}{.dnsName}{"="}{.recordType}{"="}{range .targets[*]}{@}{","}{end}{";"}{end}{"|"}{range .spec.endpoints[?(@.recordType=="TXT")]}{.dnsName}{";"}{end}{"\n"}{end}' 2>/dev/null
+}
+
+# DNS name or answer $1 as compared: lowercase, one space between words, no trailing dot.
+function dnsNormalize() {
+  local value
+  value=`printf '%s' "${1,,}" | tr -s '[:space:]' ' '`
+  value=${value# }
+  value=${value% }
+  printf '%s' "${value%.}"
+}
+
+# Succeeds when DNS name $1 still answers record type $2 with one of the targets in $3 (comma-separated): a record that is there but isn't what the
+# DNSEndpoint published (a record that was there before, left alone because takeover wasn't on) isn't something external-dns removes.
+function dnsServesTarget() {
+  local answer target targets=()
+  IFS=, read -r -a targets <<< "$3"
+  while IFS= read -r answer; do
+    if [[ -z "$answer" ]]; then
+      continue
+    fi
+    answer=`dnsNormalize "$answer"`
+    for target in "${targets[@]}"; do
+      if [[ -n "$target" && "$answer" == "`dnsNormalize "$target"`" ]]; then
+        return 0
+      fi
+    done
+  done < <(dnsLookup "$1" "$2")
+  return 1
+}
+
+# Whether this release publishes DNS records already (its DNS controller is installed), when this run has no --dns-provider: the chart is upgraded with
+# publishing off then, since a run sets every value it needs and none is remembered. reportPublishingTurnedOff says so afterwards.
+function notePublishingBefore() {
+  PUBLISHING_WAS_ON=false
+  if [[ -z "$DNS_PROVIDER" ]] && kubectl -n "$NAMESPACE" get deployment "$FULLNAME-dns-controller" >/dev/null 2>&1; then
+    PUBLISHING_WAS_ON=true
+  fi
+}
+
+function reportPublishingTurnedOff() {
+  if [[ "$PUBLISHING_WAS_ON" != "true" || -n "$DNS_PROVIDER" ]]; then
+    return 0
+  fi
+  echo "This release was publishing DNS records, but this run had no --dns-provider, so publishing is off now: the DNS controller was removed."
+  echo "What it made stays - external-dns's Deployments and Secrets, the DNSEndpoints and the records in DNS (README, 'Turning publishing off')."
+  echo "Run this script again with the same --dns-* flags to turn publishing back on."
+}
+
+# --uninstall, for what the DNS controller published (restapi 9.5, 12.4), before the release goes: stops the controller so it can't put anything
+# back, deletes the release's DNSEndpoints so external-dns removes the records it owns, waits (bounded) until the hosts' and domains' records
+# have left DNS, and removes what the controller made that Helm doesn't own (external-dns's Deployments, their credentials Secrets, Jobs, the
+# controller's Lease) by label. --keep-dns stops external-dns first instead, so no record is deleted at all. The CRD goes only if this script
+# installed it and no DNSEndpoint is left in the cluster. Returns 1, having removed nothing, when a domain's apex TXT set is managed by RapidMX:
+# deleting its DNSEndpoint would delete every value in it, and only the admin console (a domain's opt-out) can put the kept values back, since
+# this script has no credentials for the server's API.
+function uninstallDns() {
+  local release=$1 keep=$2 fullname=$1 selector controller crd=false rows="" name domain records txts rec rest dnsName type apex managed="" mxNames=" " txtNames=()
+  local pairs=() pair remaining deadline
+  if [[ "$release" != *server* ]]; then
+    fullname="$release-server"
+  fi
+  controller="$fullname-dns-controller"
+  selector="app.kubernetes.io/managed-by=rapidmx-dns-controller,app.kubernetes.io/instance=$release"
+  if ! kubectl get nodes >/dev/null 2>&1; then
+    echo "The cluster can't be reached, so what the DNS controller published isn't checked or removed here."
+    return 0
+  fi
+  if kubectl get crd "$DNS_CRD_NAME" >/dev/null 2>&1; then
+    crd=true
+    rows=`dnsEndpointRows "$release" "$selector"`
+  fi
+  # One row per DNSEndpoint (dnsEndpointRows): the records that are not TXT, which are what to wait for, and the names of the TXT ones. A domain's apex
+  # TXT set is a TXT record at the domain's own name: found by the domain label when the set has one, and else as the TXT name that also has an MX
+  # record or a _dmarc. name beside it (the controller leaves the label off a name that isn't a valid label value, longer than 63 characters).
+  while IFS='|' read -r name domain records txts; do
+    mxNames=" "
+    IFS=';' read -r -a txtNames <<< "$txts"
+    while IFS= read -r rec; do
+      if [[ "$rec" != *=*=* ]]; then
+        continue
+      fi
+      dnsName=${rec%%=*}
+      rest=${rec#*=}
+      type=${rest%%=*}
+      pairs+=("$dnsName=$type=${rest#*=}")
+      if [[ "$type" == "MX" ]]; then
+        mxNames+="${dnsName,,} "
+      fi
+    done < <(tr ';' '\n' <<< "$records")
+    for apex in "${txtNames[@]}"; do
+      if [[ -n "$domain" && "${apex,,}" == "${domain,,}" ]] || [[ "$mxNames" == *" ${apex,,} "* ]] || [[ " ${txtNames[*],,} " == *" _dmarc.${apex,,} "* ]]; then
+        managed+=" $apex"
+      fi
+    done
+  done <<< "$rows"
+  if [[ -n "$managed" && "$keep" != "true" ]]; then
+    echo "RapidMX manages the apex TXT set (the SPF value and the values kept beside it) of:$managed"
+    echo "Removing the publishing deletes every value in such a set. Put the values back first: opt each domain out of managing its apex TXT"
+    echo "set in the admin console (the domain's DNS panel), which restores them as they were before RapidMX. Then run --uninstall again."
+    if ! kubectl -n "$release" get deployment "$controller" >/dev/null 2>&1; then
+      echo "The DNS controller ($controller) isn't running, and it is what carries out the restore: turn publishing back on first (run this script"
+      echo "again with the same --dns-* flags), opt the domain out, wait for the restore, and then run --uninstall."
+    fi
+    echo "Or run it with --keep-dns, which leaves every record in DNS as it is."
+    return 1
+  fi
+  if kubectl -n "$release" get deployment "$controller" >/dev/null 2>&1; then
+    kubectl -n "$release" scale deployment "$controller" --replicas=0
+    kubectl -n "$release" wait --for=delete pod -l app=dns-controller --timeout=2m >/dev/null 2>&1
+  fi
+  if [[ "$keep" == "true" ]]; then
+    kubectl -n "$release" scale deployments -l "$selector,app.kubernetes.io/name=external-dns" --replicas=0
+    kubectl -n "$release" wait --for=delete pod -l "$selector,app.kubernetes.io/name=external-dns" --timeout=2m >/dev/null 2>&1
+    if [[ "$crd" == "true" ]]; then
+      kubectl -n "$release" delete dnsendpoints -l "$selector" --ignore-not-found
+    fi
+    echo "The DNS records RapidMX published were left as they are (--keep-dns): remove them at your DNS provider if you don't want them."
+  elif [[ "$crd" == "true" ]]; then
+    kubectl -n "$release" delete dnsendpoints -l "$selector" --ignore-not-found
+    if [[ ${#pairs[@]} -gt 0 ]]; then
+      echo "Waiting for external-dns to remove the records (up to ${DNS_CLEANUP_WAIT_SECONDS}s)..."
+      deadline=$(( SECONDS + DNS_CLEANUP_WAIT_SECONDS ))
+      while true; do
+        remaining=""
+        for pair in `printf '%s\n' "${pairs[@]}" | sort -u`; do
+          # <dnsName>=<type>=<targets>: only an answer that is one of the targets the DNSEndpoint published is waited for.
+          rest=${pair#*=}
+          if dnsServesTarget "${pair%%=*}" "${rest%%=*}" "${rest#*=}"; then
+            remaining+=" ${pair%%=*}"
+          fi
+        done
+        if [[ -z "$remaining" ]]; then
+          echo "The DNS records RapidMX published have been removed."
+          break
+        fi
+        if (( SECONDS >= deadline )); then
+          echo "These names still answer with what RapidMX published:$remaining. external-dns is removed next, so remove them at your DNS provider by hand if they"
+          echo "should go (they may also be cached still)."
+          break
+        fi
+        sleep 15
+      done
+    fi
+  fi
+  kubectl -n "$release" delete deployments,jobs,secrets -l "$selector" --ignore-not-found
+  kubectl -n "$release" delete lease "$controller" --ignore-not-found
+  kubectl -n "$release" delete secret "$fullname-dns-bootstrap" --ignore-not-found
+  if [[ "$crd" == "true" && "`installedBy dns_crd`" == "true" ]]; then
+    if [[ -z "`kubectl get dnsendpoints -A -o name 2>/dev/null`" ]]; then
+      kubectl delete crd "$DNS_CRD_NAME" --ignore-not-found
+      echo "Removed the DNSEndpoint CRD this script installed."
+    else
+      echo "The DNSEndpoint CRD is kept: other DNSEndpoints still use it."
+    fi
+  fi
+  return 0
+}
+
 function uninstall() {
   # This removes the mail itself (blobs), the DKIM private keys and the encryption CA's key, and none of it can be recovered.
   if [[ "$CONFIRM_UNINSTALL" != "true" ]]; then
     echo "--uninstall permanently deletes this installation's data: the mailboxes' messages, the DKIM keys and the encryption CA's key"
     echo "(with k3s, the whole cluster). So does the configuration keyring the credentials saved in the admin console are encrypted with, when it is in the"
-    echo "cluster being removed (k3s) or in an OpenBao this script installed; otherwise it stays. Run it again with --yes to confirm, after backing up what you need."
+    echo "cluster being removed (k3s) or in an OpenBao this script installed; otherwise it stays. The DNS records RapidMX published are removed from DNS too,"
+    echo "unless you add --keep-dns. Run it again with --yes to confirm, after backing up what you need."
     exit 1
   fi
   if [[ -z "$KUBECONFIG" && -f "$USER_KUBECONFIG" ]]; then
@@ -1179,13 +2339,20 @@ function uninstall() {
     echo "did the install). Only this script's nginx configuration is removed; remove k3s, helm and nginx manually if"
     echo "this script installed them."
   fi
+  local release
+  release=`installedBy release`
+  if [[ -n "$release" ]]; then
+    # What the DNS controller published goes first, while the controller and external-dns can still be asked, and before k3s takes them with the cluster:
+    # without --keep-dns the records are removed, and a domain's apex TXT set that RapidMX manages stops the uninstall, with nothing removed.
+    if ! uninstallDns "$release" "$KEEP_DNS"; then
+      exit 1
+    fi
+  fi
   if [[ "`installedBy k3s`" = "true" ]]; then
     # Removes the whole cluster, with everything this script installed into it.
     echo "Removing k3s..."
     sudo /usr/local/bin/k3s-uninstall.sh
   else
-    local release
-    release=`installedBy release`
     if [[ -n "$release" ]]; then
       reportConfigKeyring "$release"
       echo "Removing the RapidMX server release (including its data volumes)..."
@@ -1280,7 +2447,7 @@ function uninstall() {
   echo "Uninstall complete! $USER_KUBECONFIG was left in place; delete it if it only held this cluster."
 }
 
-GETOPT=$(getopt -o h --long domain:,mail-host:,auth-host:,mail-domains:,version:,tls:,gateway:,openbao:,openpgpkey-host:,email:,uninstall,yes,install-cert-manager,skip-k3s,help -- "$@")
+GETOPT=$(getopt -o h --long domain:,mail-host:,auth-host:,mail-domains:,version:,tls:,gateway:,openbao:,openpgpkey-host:,dns-provider:,dns-zone:,dns-credentials-file:,dns-takeover,public-address:,keep-dns,email:,uninstall,yes,install-cert-manager,skip-k3s,help -- "$@")
 if [ $? -ne 0 ]; then
   exit 1
 fi
@@ -1297,6 +2464,12 @@ do
         --gateway) GATEWAY_MODE=$2; shift 2;;
         --openbao) OPENBAO=$2; shift 2;;
         --openpgpkey-host) OPENPGPKEY_HOST=$2; shift 2;;
+        --dns-provider) DNS_PROVIDER=$2; shift 2;;
+        --dns-zone) DNS_ZONE=$2; shift 2;;
+        --dns-credentials-file) DNS_CREDENTIALS_FILE=$2; shift 2;;
+        --dns-takeover) DNS_TAKEOVER=true; shift;;
+        --public-address) addPublicAddress "$2"; shift 2;;
+        --keep-dns) KEEP_DNS=true; shift;;
         --email) ACME_EMAIL=$2; shift 2;;
         --skip-k3s) SKIP_K3S=true; shift;;
         --uninstall) UNINSTALL=true; shift;;
@@ -1327,8 +2500,21 @@ do
           echo -e "\t\t\t\tattach to; chart: the chart makes a Gateway for each of its hosts"
           echo -e "\t--openbao <true|false>\t\tInstalls OpenBao and keeps the release's secrets and encryption CA in it"
           echo -e "\t\t\t\t(default true; false keeps them in Kubernetes Secrets)"
-          echo -e "\t--openpgpkey-host <true|false>\tAlso serves openpgpkey.<domain>, the OpenPGP Web Key Directory host"
-          echo -e "\t\t\t\t(default false). Add its DNS record first, or the server's certificate is never issued"
+          echo -e "\t--openpgpkey-host <true|false|auto>\tAlso serves openpgpkey.<domain>, the OpenPGP Web Key Directory host. auto (the"
+          echo -e "\t\t\t\tdefault) serves it once its DNS record resolves to this server (with --dns-provider the provider"
+          echo -e "\t\t\t\tpublishes it and the release is upgraded when it does). Its record must exist before the server's"
+          echo -e "\t\t\t\tcertificate, which covers it, can be issued"
+          echo -e "\t--dns-provider <type>\t\tPublishes the DNS records of this install through external-dns: cloudflare, route53, rfc2136,"
+          echo -e "\t\t\t\tgoogle or azure. Installs the DNSEndpoint CRD and the DNS controller, and has the server create the"
+          echo -e "\t\t\t\tprovider config from the credentials below. Needs --domain inside the DNS zone"
+          echo -e "\t--dns-zone <zone>\t\tThe DNS zone --dns-provider publishes into (default: --domain; for Cloudflare, the zone it has"
+          echo -e "\t\t\t\tfor --domain or a parent of it). Name it when --domain is below the zone's apex"
+          echo -e "\t--dns-credentials-file <path>\tA file of NAME=value lines with the provider's credentials (and options), read once and"
+          echo -e "\t\t\t\tnever run. What it doesn't set is read from the environment. Never a value on the command line"
+          echo -e "\t--dns-takeover\t\t\tLets the provider replace records that already exist at the names RapidMX publishes"
+          echo -e "\t--public-address <ip>\t\tThe public IPv4/IPv6 address of this machine, which the mail host's A/AAAA records point at"
+          echo -e "\t\t\t\t(repeatable). Detected when not given: the node's global addresses, else the one seen from outside"
+          echo -e "\t--keep-dns\t\t\tWith --uninstall: leaves the DNS records RapidMX published in DNS"
           echo -e "\t--email <email>\t\tThe Let's Encrypt account email (default admin@<domain>)"
           echo -e "\t--skip-k3s\t\tSkips installation of k3s"
           echo -e "\t--uninstall\t\tUninstalls what this script installed (recorded in $STATE_FILE), including the mail data"
@@ -1339,7 +2525,17 @@ do
           echo -e "\tOPENBAO_VERSION\t\tThe openbao chart to install (default $OPENBAO_VERSION)"
           echo -e "\tOPENBAO_ADDRESS\t\tAn OpenBao this cluster already runs (https), used instead of installing one"
           echo -e "\tOPENBAO_CA_FILE\t\tThe CA (PEM) of that OpenBao's listener certificate, when the system doesn't trust it"
-          echo -e "\tOPENPGPKEY_HOST\t\tThe default of --openpgpkey-host (default false)"
+          echo -e "\tOPENPGPKEY_HOST\t\tThe default of --openpgpkey-host (default auto)"
+          echo -e "\tDNS_PROVIDER\t\tThe default of --dns-provider"
+          echo -e "\tCF_API_TOKEN\t\tCloudflare: an API token with Zone:Zone:Read and Zone:DNS:Edit on the zone (if it is restricted by"
+          echo -e "\t\t\t\tclient IP address, list every address the cluster goes out from, IPv4 and IPv6)"
+          echo -e "\tAWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION\tRoute 53 (the keys may be left out to use the role of external-dns's"
+          echo -e "\t\t\t\tservice account), EXTERNAL_DNS_AWS_ZONE_TYPE and EXTERNAL_DNS_AWS_ASSUME_ROLE optionally"
+          echo -e "\tEXTERNAL_DNS_RFC2136_HOST, _PORT, _ZONE, _TSIG_KEYNAME, _TSIG_SECRET, _TSIG_SECRET_ALG, _INSECURE\trfc2136"
+          echo -e "\tGOOGLE_APPLICATION_CREDENTIALS, EXTERNAL_DNS_GOOGLE_PROJECT\tGoogle Cloud DNS (the key file's path, the project)"
+          echo -e "\tAZURE_CLIENT_ID, AZURE_CLIENT_SECRET, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID, AZURE_RESOURCE_GROUP\tAzure DNS"
+          echo -e "\t\t\t\t(sudo passes none of these on unless you ask: sudo -E, or put them in --dns-credentials-file)"
+          echo -e "\tDNS_CONTROLLER_TAG\tThe dns-controller release to deploy (dns.controller.image.tag); DNS_CONTROLLER_DIGEST pins by digest instead"
           exit 1
           ;;
         --) shift; break;;
@@ -1354,8 +2550,42 @@ if [[ "$OPENBAO" != "true" && "$OPENBAO" != "false" ]]; then
   echo "--openbao must be true or false."
   exit 1
 fi
-if [[ "$OPENPGPKEY_HOST" != "true" && "$OPENPGPKEY_HOST" != "false" ]]; then
-  echo "--openpgpkey-host must be true or false."
+if [[ "$OPENPGPKEY_HOST" != "true" && "$OPENPGPKEY_HOST" != "false" && "$OPENPGPKEY_HOST" != "auto" ]]; then
+  echo "--openpgpkey-host must be true, false or auto."
+  exit 1
+fi
+if [[ -n "$DNS_PROVIDER" ]]; then
+  case "$DNS_PROVIDER" in
+    cloudflare|route53|rfc2136|google|azure) ;;
+    *)
+      echo "--dns-provider must be one of: cloudflare, route53, rfc2136, google, azure."
+      exit 1
+      ;;
+  esac
+  if [[ -n "$DNS_CREDENTIALS_FILE" && ( ! -f "$DNS_CREDENTIALS_FILE" || ! -r "$DNS_CREDENTIALS_FILE" ) ]]; then
+    echo "--dns-credentials-file ($DNS_CREDENTIALS_FILE) isn't a readable file."
+    exit 1
+  fi
+else
+  if [[ "$DNS_TAKEOVER" = "true" ]]; then
+    echo "--dns-takeover needs --dns-provider."
+    exit 1
+  fi
+  if [[ -n "$DNS_ZONE" ]]; then
+    echo "--dns-zone needs --dns-provider."
+    exit 1
+  fi
+  if [[ -n "$DNS_CREDENTIALS_FILE" ]]; then
+    echo "--dns-credentials-file needs --dns-provider."
+    exit 1
+  fi
+  if [[ ${#PUBLIC_ADDRESSES[@]} -gt 0 ]]; then
+    echo "--public-address needs --dns-provider."
+    exit 1
+  fi
+fi
+if [[ "$KEEP_DNS" = "true" && "$UNINSTALL" != "true" ]]; then
+  echo "--keep-dns only applies to --uninstall."
   exit 1
 fi
 if [[ "$GATEWAY_MODE" != "shared" && "$GATEWAY_MODE" != "chart" ]]; then
@@ -1380,6 +2610,9 @@ ACME_EMAIL=${ACME_EMAIL:-admin@$DOMAIN}
 MAIL_DOMAINS=${MAIL_DOMAINS:-$DOMAIN}
 SERVER_HOST=`hostFor "$DOMAIN" "$MAIL_HOST"`
 AUTH_HOST=`hostFor "$DOMAIN" "$AUTH_HOST"`
+# Mail clients' Autodiscover probe looks for autodiscover.<domain> whatever MAIL_HOST is; openpgpkey.<domain> is the OpenPGP Web Key Directory host.
+AUTODISCOVER_HOST="autodiscover.$DOMAIN"
+OPENPGPKEY_HOSTNAME="openpgpkey.$DOMAIN"
 # The chart's resource prefix (its "rrst.fullname"): the release name, suffixed with the chart name "server" unless the
 # release name already contains it. The vault's paths and token Secrets are named after it.
 FULLNAME=$NAMESPACE
@@ -1421,6 +2654,11 @@ if [[ "$UNINSTALL" = "true" ]]; then
   uninstall
   exit 0
 fi
+
+# Everything --dns-provider needs that can be checked before anything is installed (the zone, the credentials, Cloudflare's zone id, the public
+# addresses), then how openpgpkey.<domain> is installed: now, in a second step once its record is published, or not at all.
+prepareDns
+decideOpenpgpkeyHost
 
 # Catch Ctrl-C, kill, termination, normal exit
 trap cleanup EXIT INT TERM
@@ -1658,9 +2896,7 @@ fi
 # chart then has cert-manager issue "<host>-tls-cert" Secrets in $NAMESPACE for $SERVER_HOST and $AUTH_HOST, and the
 # Gateway terminates TLS with them. The chart's own Certificate for $SERVER_HOST also covers $AUTODISCOVER_HOST (mail
 # clients' Autodiscover probe looks for it regardless of $MAIL_HOST) on the very same Secret, so it needs no Certificate
-# of its own - just another listener pointed at $SERVER_HOST's. With --openpgpkey-host true, so does $OPENPGPKEY_HOSTNAME.
-AUTODISCOVER_HOST="autodiscover.$DOMAIN"
-OPENPGPKEY_HOSTNAME="openpgpkey.$DOMAIN"
+# of its own - just another listener pointed at $SERVER_HOST's. When it is served ($OPENPGPKEY_ON), so does $OPENPGPKEY_HOSTNAME.
 GATEWAY_TLS=false
 HTTPS_LISTENER=""
 AUTH_HTTPS_LISTENER=""
@@ -1670,7 +2906,7 @@ if [[ "$TLS" = "true" && "$SERVER_HOST" != "localhost" && ! "$SERVER_HOST" =~ \.
   GATEWAY_TLS=true
   HTTPS_LISTENER="https"
   AUTODISCOVER_HTTPS_LISTENER="https-autodiscover"
-  if [[ "$OPENPGPKEY_HOST" = "true" ]]; then
+  if [[ "$OPENPGPKEY_ON" = "true" ]]; then
     OPENPGPKEY_HTTPS_LISTENER="https-openpgpkey"
   fi
   # The auth-server subchart only issues a certificate for a host that isn't localhost, *.local or *.localhost.
@@ -1679,7 +2915,9 @@ if [[ "$TLS" = "true" && "$SERVER_HOST" != "localhost" && ! "$SERVER_HOST" =~ \.
   fi
 fi
 
-if [[ "$GATEWAY_MODE" = "shared" ]]; then
+# Creates (or updates) the shared Gateway with a listener per host that is served. Run again, with the openpgpkey host on, by the second
+# step of its install (enableOpenpgpkeyHost).
+function applySharedGateway() {
   # An HTTPS listener can only serve a host with a certificate, so it's added only when there is one: "https" for
   # $SERVER_HOST and "https-auth" for $AUTH_HOST. The Gateway is in another namespace than those Secrets, so the chart
   # renders the ReferenceGrant that lets it read them.
@@ -1705,7 +2943,7 @@ spec:
 EOF
   # The Web Key Directory host gets listeners named as on a Gateway the chart makes itself (http-openpgpkey, https-openpgpkey).
   # Its route attaches here by host name, so the catch-all "http" would serve it too; the named one keeps the two modes alike.
-  if [[ "$OPENPGPKEY_HOST" = "true" ]]; then
+  if [[ "$OPENPGPKEY_ON" = "true" ]]; then
   cat << EOF
   - allowedRoutes:
       namespaces:
@@ -1765,6 +3003,9 @@ EOF
     recordInstalled shared_gateway
   fi
   waitForGatewayService
+}
+if [[ "$GATEWAY_MODE" = "shared" ]]; then
+  applySharedGateway
 fi
 
 # Set up nginx reverse proxy
@@ -1987,94 +3228,111 @@ if [[ "$OPENBAO" = "true" ]]; then
 fi
 
 run_step "Installing RapidMX server"
-# A published chart carries its dependencies; a local checkout may need them fetched (Chart.yaml's "@bitnami" repos).
-CHART_VERSION_ARGS=(--version "$VERSION")
-if [[ -d "$CHART" ]]; then
-  CHART_VERSION_ARGS=()
-  if helm dependency list "$CHART" 2>/dev/null | grep -qw missing; then
-    addHelmRepo bitnami https://charts.bitnami.com/bitnami
-    if ! helm dependency build "$CHART"; then
-      echo "There was a problem fetching the dependencies of $CHART."
-      exit 1
+# Installs or upgrades the release (the first time without openpgpkey.<domain> when its record is yet to be published: see decideOpenpgpkeyHost).
+function installRelease() {
+  # A published chart carries its dependencies; a local checkout may need them fetched (Chart.yaml's "@bitnami" repos).
+  CHART_VERSION_ARGS=(--version "$VERSION")
+  if [[ -d "$CHART" ]]; then
+    CHART_VERSION_ARGS=()
+    if helm dependency list "$CHART" 2>/dev/null | grep -qw missing; then
+      addHelmRepo bitnami https://charts.bitnami.com/bitnami
+      if ! helm dependency build "$CHART"; then
+        echo "There was a problem fetching the dependencies of $CHART."
+        exit 1
+      fi
     fi
   fi
-fi
 
-# Secrets go to helm in a values file only this user can read (deleted on exit), never on the command line, where any
-# local user could read them from the process list.
-VALUES_FILE=`mktemp "${TMPDIR:-/tmp}/mail-server-values.XXXXXX"`
-chmod 600 "$VALUES_FILE"
-{
-  if [[ "$OPENBAO" != "true" ]]; then
-    # With OpenBao these live in the vault, and External Secrets - not this file - puts them in front of the pods.
-    printf 'global:\n  jwt:\n    secret: %s\n' "`yamlQuote "$AUTH_SECRET"`"
-    printf '  mailIngestSecret: %s\n' "`yamlQuote "$MAIL_INGEST_SECRET"`"
-  fi
-  # In the values file rather than --set, which would split the domain list on its commas.
-  printf 'postfixBridge:\n  hostname: %s\n  domains: %s\n' "`yamlQuote "$SERVER_HOST"`" "`yamlQuote "$MAIL_DOMAINS"`"
-  # Without cert-manager (--tls false) Postfix gets a self-signed certificate. With it, Postfix's host name is the
-  # server's, so it presents the certificate the chart already has cert-manager issue for that name rather than getting
-  # a second one (Let's Encrypt limits duplicates).
-  printf '  tls:\n    certManager:\n      enabled: %s\n' "$TLS"
-  if [[ "$GATEWAY_TLS" = "true" ]]; then
-    printf '    existingSecret: %s\n' "`yamlQuote "$SERVER_HOST-tls-cert"`"
-  fi
-} > "$VALUES_FILE"
+  # Secrets go to helm in a values file only this user can read (deleted on exit), never on the command line, where any
+  # local user could read them from the process list.
+  VALUES_FILE=`mktemp "${TMPDIR:-/tmp}/mail-server-values.XXXXXX"`
+  chmod 600 "$VALUES_FILE"
+  {
+    if [[ "$OPENBAO" != "true" ]]; then
+      # With OpenBao these live in the vault, and External Secrets - not this file - puts them in front of the pods.
+      printf 'global:\n  jwt:\n    secret: %s\n' "`yamlQuote "$AUTH_SECRET"`"
+      printf '  mailIngestSecret: %s\n' "`yamlQuote "$MAIL_INGEST_SECRET"`"
+    fi
+    # In the values file rather than --set, which would split the domain list on its commas.
+    printf 'postfixBridge:\n  hostname: %s\n  domains: %s\n' "`yamlQuote "$SERVER_HOST"`" "`yamlQuote "$MAIL_DOMAINS"`"
+    # Without cert-manager (--tls false) Postfix gets a self-signed certificate. With it, Postfix's host name is the
+    # server's, so it presents the certificate the chart already has cert-manager issue for that name rather than getting
+    # a second one (Let's Encrypt limits duplicates).
+    printf '  tls:\n    certManager:\n      enabled: %s\n' "$TLS"
+    if [[ "$GATEWAY_TLS" = "true" ]]; then
+      printf '    existingSecret: %s\n' "`yamlQuote "$SERVER_HOST-tls-cert"`"
+    fi
+    # DNS publishing: the provider config the server creates and the mail host's addresses (nothing secret; the credentials are in a Secret).
+    dnsHelmValues
+  } > "$VALUES_FILE"
 
-if ! helm status "$NAMESPACE" -n "$NAMESPACE" >/dev/null 2>&1; then
-  RELEASE_NEW=true
-fi
-# global.gateway is shared with the auth-server subchart, so both charts attach to the same Gateway ("shared") or each
-# make their own ("chart", where the name and namespace stay at their defaults). Sign-in redirects browsers to
-# authserver.host. global.gateway.hsts stays true (browsers ignore HSTS over plain HTTP anyway): false renders a response
-# header filter chart versions up to 1.0.0-beta.2 wrote for nginx-gateway only.
-GATEWAY_ARGS=(--set global.gateway.className="$GATEWAY_CLASS")
-if [[ "$GATEWAY_MODE" = "shared" ]]; then
-  GATEWAY_ARGS+=(--set global.gateway.name="$GATEWAY_NAME" --set global.gateway.namespace="$GATEWAY_NAMESPACE")
-fi
-# Where the release's secrets come from: the vault, or the Kubernetes Secrets the chart renders itself. The vault this script
-# installs is reached over TLS (its CA copied into $OPENBAO_CA_CONFIGMAP) and logged in to with Kubernetes auth: External
-# Secrets as $OPENBAO_ESO_SERVICE_ACCOUNT, the server as its own ServiceAccount. A vault of your own keeps its token Secret.
-OPENBAO_ARGS=(--set global.openbao.enabled=false)
-if [[ "$OPENBAO" = "true" ]]; then
-  OPENBAO_ARGS=(--set global.openbao.enabled=true
-    --set global.openbao.address="$OPENBAO_ADDRESS"
-    --set global.openbao.kvMount="$OPENBAO_KV_MOUNT"
-    --set global.openbao.secretsPath="$OPENBAO_SECRETS_PATH"
-    --set configEncryption.openbao.path="$OPENBAO_KEYRING_PATH"
-    --set openbao.pki.mount="$OPENBAO_PKI_MOUNT"
-    --set openbao.pki.role="$OPENBAO_PKI_ROLE")
-  if [[ "$OPENBAO_INSTALL" = "true" ]]; then
-    OPENBAO_ARGS+=(--set global.openbao.auth.method=kubernetes
-      --set global.openbao.auth.kubernetes.role="$OPENBAO_ESO_ROLE"
-      --set global.openbao.auth.kubernetes.serviceAccount="$OPENBAO_ESO_SERVICE_ACCOUNT"
-      --set global.openbao.auth.kubernetes.audience="$OPENBAO_AUDIENCE"
-      --set openbao.auth.method=kubernetes
-      --set openbao.auth.role="$OPENBAO_SERVER_ROLE"
-      --set openbao.auth.audience="$OPENBAO_AUDIENCE")
-  else
-    OPENBAO_ARGS+=(--set global.openbao.auth.method=token --set global.openbao.auth.tokenSecret="$OPENBAO_ESO_SECRET")
+  if ! helm status "$NAMESPACE" -n "$NAMESPACE" >/dev/null 2>&1; then
+    RELEASE_NEW=true
   fi
-  if [[ "$OPENBAO_INSTALL" = "true" || -n "$OPENBAO_CA_FILE" ]]; then
-    OPENBAO_ARGS+=(--set global.openbao.caConfigMap="$OPENBAO_CA_CONFIGMAP")
+  # global.gateway is shared with the auth-server subchart, so both charts attach to the same Gateway ("shared") or each
+  # make their own ("chart", where the name and namespace stay at their defaults). Sign-in redirects browsers to
+  # authserver.host. global.gateway.hsts stays true (browsers ignore HSTS over plain HTTP anyway): false renders a response
+  # header filter chart versions up to 1.0.0-beta.2 wrote for nginx-gateway only.
+  GATEWAY_ARGS=(--set global.gateway.className="$GATEWAY_CLASS")
+  if [[ "$GATEWAY_MODE" = "shared" ]]; then
+    GATEWAY_ARGS+=(--set global.gateway.name="$GATEWAY_NAME" --set global.gateway.namespace="$GATEWAY_NAMESPACE")
   fi
+  # Where the release's secrets come from: the vault, or the Kubernetes Secrets the chart renders itself. The vault this script
+  # installs is reached over TLS (its CA copied into $OPENBAO_CA_CONFIGMAP) and logged in to with Kubernetes auth: External
+  # Secrets as $OPENBAO_ESO_SERVICE_ACCOUNT, the server as its own ServiceAccount. A vault of your own keeps its token Secret.
+  OPENBAO_ARGS=(--set global.openbao.enabled=false)
+  if [[ "$OPENBAO" = "true" ]]; then
+    OPENBAO_ARGS=(--set global.openbao.enabled=true
+      --set global.openbao.address="$OPENBAO_ADDRESS"
+      --set global.openbao.kvMount="$OPENBAO_KV_MOUNT"
+      --set global.openbao.secretsPath="$OPENBAO_SECRETS_PATH"
+      --set configEncryption.openbao.path="$OPENBAO_KEYRING_PATH"
+      --set openbao.pki.mount="$OPENBAO_PKI_MOUNT"
+      --set openbao.pki.role="$OPENBAO_PKI_ROLE")
+    if [[ "$OPENBAO_INSTALL" = "true" ]]; then
+      OPENBAO_ARGS+=(--set global.openbao.auth.method=kubernetes
+        --set global.openbao.auth.kubernetes.role="$OPENBAO_ESO_ROLE"
+        --set global.openbao.auth.kubernetes.serviceAccount="$OPENBAO_ESO_SERVICE_ACCOUNT"
+        --set global.openbao.auth.kubernetes.audience="$OPENBAO_AUDIENCE"
+        --set openbao.auth.method=kubernetes
+        --set openbao.auth.role="$OPENBAO_SERVER_ROLE"
+        --set openbao.auth.audience="$OPENBAO_AUDIENCE")
+    else
+      OPENBAO_ARGS+=(--set global.openbao.auth.method=token --set global.openbao.auth.tokenSecret="$OPENBAO_ESO_SECRET")
+    fi
+    if [[ "$OPENBAO_INSTALL" = "true" || -n "$OPENBAO_CA_FILE" ]]; then
+      OPENBAO_ARGS+=(--set global.openbao.caConfigMap="$OPENBAO_CA_CONFIGMAP")
+    fi
+  fi
+  if ! helm upgrade --install --create-namespace --namespace "$NAMESPACE" "$NAMESPACE" "$CHART" "${CHART_VERSION_ARGS[@]}" \
+    --set global.domain="$DOMAIN" --set host="$SERVER_HOST" --set global.serverHost="$SERVER_HOST" \
+    "${OPENBAO_ARGS[@]}" \
+    --set global.gateway.tls="$GATEWAY_TLS" --set global.gateway.hsts=true "${GATEWAY_ARGS[@]}" \
+    --set authserver.host="$AUTH_HOST" \
+    --set mail.wkd.openpgpkeyHost.enabled="$OPENPGPKEY_ON" \
+    --set-json "global.corsHosts=[\"$SERVER_HOST\",\"$AUTH_HOST\"]" \
+    -f "$VALUES_FILE"; then
+    echo "There was a problem installing the RapidMX server."
+    if [[ -n "$DNS_PROVIDER" && -z "$DNS_CONTROLLER_TAG" && -z "$DNS_CONTROLLER_DIGEST" ]]; then
+      echo "With --dns-provider the chart needs the DNS controller's image (dns.controller.image) pinned to a released version: if the message above says"
+      echo "it is empty, set DNS_CONTROLLER_TAG (or DNS_CONTROLLER_DIGEST)."
+    fi
+    exit 1
+  fi
+  if [[ "$RELEASE_NEW" = "true" ]]; then
+    recordInstalled release "$NAMESPACE"
+  fi
+  rm -f "$VALUES_FILE"
+  VALUES_FILE=""
+}
+
+notePublishingBefore
+if [[ -n "$DNS_PROVIDER" ]]; then
+  # Before the release: the CRD external-dns reads, and the credentials the server turns into the provider config when it starts.
+  installDnsCrd
+  createDnsBootstrapSecret
 fi
-if ! helm upgrade --install --create-namespace --namespace "$NAMESPACE" "$NAMESPACE" "$CHART" "${CHART_VERSION_ARGS[@]}" \
-  --set global.domain="$DOMAIN" --set host="$SERVER_HOST" --set global.serverHost="$SERVER_HOST" \
-  "${OPENBAO_ARGS[@]}" \
-  --set global.gateway.tls="$GATEWAY_TLS" --set global.gateway.hsts=true "${GATEWAY_ARGS[@]}" \
-  --set authserver.host="$AUTH_HOST" \
-  --set mail.wkd.openpgpkeyHost.enabled="$OPENPGPKEY_HOST" \
-  --set-json "global.corsHosts=[\"$SERVER_HOST\",\"$AUTH_HOST\"]" \
-  -f "$VALUES_FILE"; then
-  echo "There was a problem installing the RapidMX server."
-  exit 1
-fi
-if [[ "$RELEASE_NEW" = "true" ]]; then
-  recordInstalled release "$NAMESPACE"
-fi
-rm -f "$VALUES_FILE"
-VALUES_FILE=""
+installRelease
 
 if [[ "$OPENBAO_INSTALL" = "true" ]]; then
   # The release logs in with Kubernetes auth now; the tokens an earlier version of this script made are revoked once it does.
@@ -2122,6 +3380,14 @@ else
   kubectl -n "$NAMESPACE" delete clienttrafficpolicy --all --ignore-not-found >/dev/null
 fi
 
+if [[ -n "$DNS_PROVIDER" ]]; then
+  # The server stores the DNS credentials when it starts and the controller publishes what the server asks for. openpgpkey.<domain>, when its
+  # record was yet to be published, is served now that the controller has had the time to publish it.
+  finishDnsBootstrap
+  waitForDnsController
+  enableOpenpgpkeyHost
+fi
+
 # Stop background loop
 running=false
 if [[ -n "$progress_pid" ]]; then
@@ -2129,13 +3395,15 @@ if [[ -n "$progress_pid" ]]; then
 fi
 
 echo "Installation complete."
+DOMAINS_SEEDED=`seedDomains | paste -sd, -`
 SCHEME=http
 if [[ "$GATEWAY_TLS" = "true" ]]; then
   SCHEME=https
 fi
 echo "The server is at $SCHEME://$SERVER_HOST, with sign-in at $SCHEME://$AUTH_HOST."
-echo "Postfix listens on port 25 as $SERVER_HOST and knows $MAIL_DOMAINS. Add each domain in the admin console, publish the DNS"
-echo "records it shows (its MX record points at $SERVER_HOST) and it receives, sends and signs mail: nothing to restart."
+echo "Postfix listens on port 25 as $SERVER_HOST and knows $MAIL_DOMAINS. Your domains ($DOMAINS_SEEDED) are in the admin console already: each one"
+echo "receives, sends and signs mail once its DNS records are published (its MX record points at $SERVER_HOST). Domains you add there later work"
+echo "the same, with nothing to restart. (A deployment that had domains before keeps them as they are: add any that is missing in the console.)"
 if [[ "$OPENBAO" = "true" ]]; then
   echo "The release's secrets live in OpenBao at $OPENBAO_KV_MOUNT/$OPENBAO_SECRETS_PATH, and External Secrets keeps them"
   echo "in the Kubernetes Secrets the pods read, so a helm upgrade doesn't have to pass any of them. Read one with:"
@@ -2165,23 +3433,9 @@ else
   echo "  kubectl -n $NAMESPACE get secret $KEYRING_SECRET -o jsonpath='{.data.keyring\\.json}' | base64 -d"
 fi
 
-if [[ $SERVER_HOST =~ \.local(host)?$ || $SERVER_HOST = "localhost" ]]; then
-  echo "Please update the hosts file to resolve the following:"
-  echo -e "\t $SERVER_HOST"
-  echo -e "\t $AUTH_HOST"
+if [[ -n "$DNS_PROVIDER" ]]; then
+  printDnsSummary
 else
-  # Every name the release answers on has to reach this machine (nginx forwards ports 80 and 443 to the Gateway), and Let's
-  # Encrypt checks each name a certificate covers over HTTP before issuing it.
-  echo "DNS records these hosts need (A/AAAA records point at this machine's public address):"
-  echo -e "\t $SERVER_HOST\t\tA/AAAA to this machine"
-  echo -e "\t $AUTH_HOST\t\tA/AAAA to this machine, or CNAME $SERVER_HOST"
-  echo -e "\t $AUTODISCOVER_HOST\tA/AAAA to this machine, or CNAME $SERVER_HOST (mail clients' Autodiscover)"
-  if [[ "$OPENPGPKEY_HOST" = "true" ]]; then
-    echo -e "\t $OPENPGPKEY_HOSTNAME\tA/AAAA to this machine, or CNAME $SERVER_HOST (OpenPGP Web Key Directory)"
-    echo "$OPENPGPKEY_HOSTNAME is on $SERVER_HOST's certificate: until its record resolves here, that certificate isn't issued."
-  else
-    echo "$OPENPGPKEY_HOSTNAME (the OpenPGP Web Key Directory host) isn't served. To serve it, add its record (A/AAAA to"
-    echo "this machine, or CNAME $SERVER_HOST) first, then re-run with --openpgpkey-host true: before the record exists the"
-    echo "certificate covering it is never issued."
-  fi
+  reportPublishingTurnedOff
+  printManualDnsRecords
 fi

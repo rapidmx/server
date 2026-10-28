@@ -5,125 +5,55 @@ import { parseConfigKeyring } from "@rapidmx/restapi";
 import { spawnSync } from "child_process";
 import fs from "fs";
 import { loadAll } from "js-yaml";
-import os from "os";
 import path from "path";
+import { BASH, bashAvailable, INSTALLERS, runInstaller, type Run } from "../helpers/installerHarness";
 
 // Runs the OpenBao functions of both installers (single_node_install.sh and deploy/aws/bootstrap.sh) under bash, with kubectl,
 // helm, openssl and the `bao` CLI in the vault's pod replaced by stubs that record what they were asked to do: the scripts sent
 // into the pod are captured and then run against a fake `bao`. Both installers must behave the same, so every case runs against
-// each. Skipped where there's no bash (on Windows, Git for Windows' bash is used: the one on PATH may be WSL's).
-const BASH = process.platform === "win32" ? "C:/Program Files/Git/bin/bash.exe" : "bash";
-const bashAvailable = spawnSync(BASH, ["-c", "true"]).status === 0;
+// each. Skipped where there's no bash (see the harness).
 
-const ROOT = path.resolve(__dirname, "../..");
-const INSTALLERS: Record<string, string> = {
-    "single_node_install.sh": path.join(ROOT, "single_node_install.sh"),
-    "deploy/aws/bootstrap.sh": path.join(ROOT, "deploy/aws/bootstrap.sh"),
+/** What the installers set before their OpenBao functions run. */
+const DEFAULTS: Record<string, string> = {
+    NAMESPACE: "rapidmx",
+    FULLNAME: "rapidmx-server",
+    DOMAIN: "example.com",
+    OPENBAO_NAMESPACE: "openbao",
+    OPENBAO_POD: "openbao-0",
+    OPENBAO_IMAGE: "openbao/openbao:2.6.2",
+    OPENBAO_STORAGE_SIZE: "1Gi",
+    STORAGE_CLASS: "gp3",
+    OPENBAO_LOCAL_ADDRESS: "https://127.0.0.1:8200",
+    OPENBAO_ADDRESS: "https://openbao.openbao.svc:8200",
+    OPENBAO_KV_MOUNT: "secret",
+    OPENBAO_PKI_MOUNT: "pki",
+    OPENBAO_PKI_ROLE: "rapidmx-encryption",
+    OPENBAO_SECRETS_PATH: "rapidmx-server/secrets",
+    OPENBAO_KEYRING_PATH: "rapidmx-server/config-keyring",
+    KEYRING_SECRET: "rapidmx-server-config-keyring",
+    OPENBAO_ROOT_TOKEN: "s.root-token",
+    OPENBAO_ESO_SECRET: "rapidmx-server-openbao-eso",
+    OPENBAO_PKI_SECRET: "rapidmx-server-openbao-pki",
+    OPENBAO_TLS_SECRET: "openbao-tls",
+    OPENBAO_CA_SECRET: "openbao-ca",
+    OPENBAO_TLS_DIR: "/openbao/userconfig/openbao-tls",
+    OPENBAO_AUDIENCE: "openbao",
+    OPENBAO_CA_CONFIGMAP: "rapidmx-server-openbao-ca",
+    OPENBAO_ESO_SERVICE_ACCOUNT: "rapidmx-server-openbao-eso",
+    OPENBAO_SERVER_ROLE: "rapidmx-server-server",
+    OPENBAO_ESO_ROLE: "rapidmx-server-eso",
+    OPENBAO_INSTALL: "true",
+    AUTH_SECRET: "auth-secret",
+    COOKIE_SECRET: "cookie-secret",
+    SESSION_SECRET: "session-secret",
+    ESCROW_HMAC_KEY: "escrow-key",
+    MAIL_INGEST_SECRET: "ingest-secret",
+    INGEST_SECRET: "ingest-secret",
 };
-
-/** The text of every `function name() { ... }` in `file`, so they can be sourced without running the script. */
-function functionsOf(file: string): string {
-    const lines = fs.readFileSync(file, "utf8").split(/\r?\n/);
-    const out: string[] = [];
-    let inside = false;
-    // The terminator of the here-document being read, whose lines (a policy's closing braces, say) are text, not the function's end.
-    let heredoc: string | undefined;
-    for (const line of lines) {
-        if (/^function [A-Za-z0-9_]+\(\) \{$/.test(line)) {
-            inside = true;
-        }
-        if (!inside) {
-            continue;
-        }
-        out.push(line);
-        if (heredoc !== undefined) {
-            if (line === heredoc) {
-                heredoc = undefined;
-            }
-            continue;
-        }
-        const start = line.match(/<<\s*'?([A-Za-z_]+)'?\s*(\||\)|$|>|\s)/);
-        if (start && !line.includes("<<<")) {
-            heredoc = start[1];
-        } else if (line === "}") {
-            inside = false;
-        }
-    }
-    return out.join("\n");
-}
-
-/** The shell stubs (stubs.sh) and the fake `bao` the captured pod scripts run against. */
-const FIXTURES = path.join(__dirname, "../fixtures/installer");
-
-interface Run {
-    status: number;
-    stdout: string;
-    stderr: string;
-    work: string;
-    read(name: string): string;
-    exists(name: string): boolean;
-}
 
 /** Sources the installer's functions with the stubs and these variables, then runs `body`; `setup` may add files to the work directory first. */
 function run(installer: string, body: string, vars: Record<string, string> = {}, setup?: (work: string) => void): Run {
-    const work = fs.mkdtempSync(path.join(os.tmpdir(), "installer-"));
-    setup?.(work);
-    fs.mkdirSync(path.join(work, "bin"));
-    // Written with LF endings whatever the checkout has: sh takes a CR as part of the command.
-    const lf = (name: string) => fs.readFileSync(path.join(FIXTURES, name), "utf8").replace(/\r\n/g, "\n");
-    fs.writeFileSync(path.join(work, "bin", "bao"), lf("bao"), { mode: 0o755 });
-    fs.writeFileSync(path.join(work, "stubs.sh"), lf("stubs.sh"));
-    fs.writeFileSync(path.join(work, "functions.sh"), functionsOf(INSTALLERS[installer]));
-    const assignments = Object.entries({
-        NAMESPACE: "rapidmx",
-        FULLNAME: "rapidmx-server",
-        DOMAIN: "example.com",
-        OPENBAO_NAMESPACE: "openbao",
-        OPENBAO_POD: "openbao-0",
-        OPENBAO_IMAGE: "openbao/openbao:2.6.2",
-        OPENBAO_STORAGE_SIZE: "1Gi",
-        STORAGE_CLASS: "gp3",
-        OPENBAO_LOCAL_ADDRESS: "https://127.0.0.1:8200",
-        OPENBAO_ADDRESS: "https://openbao.openbao.svc:8200",
-        OPENBAO_KV_MOUNT: "secret",
-        OPENBAO_PKI_MOUNT: "pki",
-        OPENBAO_PKI_ROLE: "rapidmx-encryption",
-        OPENBAO_SECRETS_PATH: "rapidmx-server/secrets",
-        OPENBAO_KEYRING_PATH: "rapidmx-server/config-keyring",
-        KEYRING_SECRET: "rapidmx-server-config-keyring",
-        OPENBAO_ROOT_TOKEN: "s.root-token",
-        OPENBAO_ESO_SECRET: "rapidmx-server-openbao-eso",
-        OPENBAO_PKI_SECRET: "rapidmx-server-openbao-pki",
-        OPENBAO_TLS_SECRET: "openbao-tls",
-        OPENBAO_CA_SECRET: "openbao-ca",
-        OPENBAO_TLS_DIR: "/openbao/userconfig/openbao-tls",
-        OPENBAO_AUDIENCE: "openbao",
-        OPENBAO_CA_CONFIGMAP: "rapidmx-server-openbao-ca",
-        OPENBAO_ESO_SERVICE_ACCOUNT: "rapidmx-server-openbao-eso",
-        OPENBAO_SERVER_ROLE: "rapidmx-server-server",
-        OPENBAO_ESO_ROLE: "rapidmx-server-eso",
-        OPENBAO_INSTALL: "true",
-        AUTH_SECRET: "auth-secret",
-        COOKIE_SECRET: "cookie-secret",
-        SESSION_SECRET: "session-secret",
-        ESCROW_HMAC_KEY: "escrow-key",
-        MAIL_INGEST_SECRET: "ingest-secret",
-        INGEST_SECRET: "ingest-secret",
-        ...vars,
-    })
-        .map(([key, value]) => `${key}='${value.replace(/'/g, "'\\''")}'`)
-        .join("\n");
-    const script = `export WORK='${work.replace(/\\/g, "/")}'\nsource "$WORK/stubs.sh"\nsource "$WORK/functions.sh"\n${assignments}\n${body}\n`;
-    const res = spawnSync(BASH, ["-c", script], { encoding: "utf8", env: { ...process.env, ...vars } });
-    const file = (name: string) => path.join(work, name);
-    return {
-        status: res.status ?? -1,
-        stdout: res.stdout,
-        stderr: res.stderr,
-        work,
-        read: (name) => (fs.existsSync(file(name)) ? fs.readFileSync(file(name), "utf8").replace(/\r\n/g, "\n") : ""),
-        exists: (name) => fs.existsSync(file(name)),
-    };
+    return runInstaller(installer, body, vars, setup, { defaults: DEFAULTS, binaries: ["bao"] });
 }
 
 /** Runs a captured pod script against the fake `bao`, the way `sh -s` runs it in the vault's pod. */
