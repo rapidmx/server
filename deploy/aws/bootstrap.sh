@@ -569,18 +569,66 @@ function installOpenbao() {
   log "OpenBao is running and unsealed."
 }
 
+# True when $1 reads like a configuration keyring, the document restapi's parseConfigKeyring() reads: a "keys" array of objects with a "kid" and a "key".
+# The server is what validates it fully (an unreadable ring stops it starting); this is what keeps the installer from copying a Secret's wrong content
+# into the vault, where the create-only write would never replace it.
+function looksLikeConfigKeyring() {
+  local shape='"keys"[[:space:]]*:[[:space:]]*\[[[:space:]]*\{'
+  [[ "$1" =~ $shape && "$1" == *'"kid"'* && "$1" == *'"key"'* ]]
+}
+
+# A new configuration keyring: a single key of 32 random bytes with an 8-hex kid, from openssl or, where it isn't installed, the kernel. What was
+# generated is checked before it is used, since a failed command would otherwise leave an empty kid or key in a document the vault keeps for good.
+function newConfigKeyring() {
+  local kid key
+  if command -v openssl >/dev/null 2>&1; then
+    kid=`openssl rand -hex 4 2>/dev/null`
+    key=`openssl rand -base64 32 2>/dev/null`
+  else
+    kid=`od -An -tx1 -N4 /dev/urandom | tr -d ' \n'`
+    key=`head -c 32 /dev/urandom | base64 | tr -d '\n'`
+  fi
+  if [[ ! "$kid" =~ ^[0-9a-f]{8}$ || "`printf '%s' "$key" | base64 -d 2>/dev/null | wc -c | tr -d ' '`" != "32" ]]; then
+    echo "Couldn't generate a configuration keyring: a key of 32 random bytes and an 8-digit hex id are needed." >&2
+    return 1
+  fi
+  printf '{"keys":[{"kid":"%s","key":"%s","createdAt":"%s"}]}' "$kid" "$key" "`date -u +%Y-%m-%dT%H:%M:%S.000Z`"
+}
+
+# The configuration keyring to put in the vault the first time: the one in the Secret $KEYRING_SECRET, which the chart rendered (and Helm kept) for an
+# install without OpenBao, so nothing needs re-encrypting when the deployment moves to OpenBao, or else a new one. A Secret that holds no keyring is an
+# error, not a reason to start over with a new key, which would leave every value already encrypted unreadable.
+function initialConfigKeyring() {
+  local kept
+  if kubectl -n "$NAMESPACE" get secret "$KEYRING_SECRET" >/dev/null 2>&1; then
+    kept=`kubectl -n "$NAMESPACE" get secret "$KEYRING_SECRET" -o jsonpath='{.data.keyring\.json}' 2>/dev/null | base64 -d 2>/dev/null`
+    if ! looksLikeConfigKeyring "$kept"; then
+      echo "The Secret $KEYRING_SECRET in namespace $NAMESPACE holds no configuration keyring (its keyring.json) to move into OpenBao." >&2
+      echo "Values already encrypted with it would become unreadable under a new key, so nothing was changed." >&2
+      return 1
+    fi
+    printf '%s' "$kept"
+    return 0
+  fi
+  newConfigKeyring
+}
+
 # Prepares the vault for this release: the kv v2 mount and this release's secrets, the PKI mount, issuing role and root CA
 # the server signs mail encryption certificates from, and OpenBao's kubernetes auth method with a role and a policy per
 # client. Each client logs in with a short-lived token of its own ServiceAccount, for the audience $OPENBAO_AUDIENCE, which the
 # Kubernetes API vouches for (OpenBao asks it with its own ServiceAccount, which the openbao chart lets review tokens); the
 # OpenBao token it gets lasts an hour. No long-lived token is made. It all runs inside the vault's own pod, over stdin, so no
 # token or secret reaches either host's process list; re-running it changes nothing that already exists.
-#  - $OPENBAO_SERVER_ROLE (the server): the PKI role's sign and revoke, nothing else.
-#  - $OPENBAO_ESO_ROLE (External Secrets): reads the release's secrets.
-# No configuration secret is kept in the vault, and the DNS controller has no role: the role and policy an earlier version of
+#  - $OPENBAO_SERVER_ROLE (the server): the PKI role's sign and revoke, and read and update on the configuration keyring's path
+#    (which its key rotation writes) and read on that path's metadata (for the version it writes at), nothing else.
+#  - $OPENBAO_ESO_ROLE (External Secrets): reads the release's secrets and the configuration keyring.
+# The keyring (restapi's specs/dns_publishing_and_integrations.md, 5.3) is created at $OPENBAO_KV_MOUNT/$OPENBAO_KEYRING_PATH when the vault has
+# none, from the Secret $KEYRING_SECRET an install without OpenBao kept or else a new key, and never written by this script again.
+# No other configuration secret is kept in the vault, and the DNS controller has no role: the role and policy an earlier version of
 # this script made for it are deleted (OpenBao answers success for one that isn't there).
 function prepareOpenbao() {
-  local kv=$OPENBAO_KV_MOUNT
+  local kv=$OPENBAO_KV_MOUNT keyring
+  keyring=`initialConfigKeyring` || fail "couldn't read the configuration keyring to put in OpenBao."
   local out
   out=`mktemp /tmp/openbao-prepare.XXXXXX`
   chmod 600 "$out"
@@ -605,6 +653,12 @@ seed cookie_secret `shQuote "$COOKIE_SECRET"`
 seed session__secret `shQuote "$SESSION_SECRET"`
 seed escrow_audit_hmac_key `shQuote "$ESCROW_HMAC_KEY"`
 seed mail_ingest_secret `shQuote "$INGEST_SECRET"`
+
+# The configuration keyring, in a path of its own so the server's policy can be limited to it. Created once and never replaced: the server's
+# key rotation owns it afterwards, and -cas=0 makes a keyring that appeared meanwhile win. It goes in over stdin, not as an argument.
+if [ -z "\`bao kv get -mount=$kv -field=keyring $OPENBAO_KEYRING_PATH 2> /dev/null\`" ]; then
+  printf '%s' `shQuote "$keyring"` | bao kv put -mount=$kv -cas=0 $OPENBAO_KEYRING_PATH keyring=- > /dev/null
+fi
 
 # The PKI backend the server's encryption CA uses: it signs the certificate signing requests browsers generate, so the
 # private keys stay with the clients and the CA key never leaves the vault. The role has to accept an email address as
@@ -632,12 +686,24 @@ path "$OPENBAO_PKI_MOUNT/sign/$OPENBAO_PKI_ROLE" {
 path "$OPENBAO_PKI_MOUNT/revoke" {
   capabilities = ["update"]
 }
+path "$kv/data/$OPENBAO_KEYRING_PATH" {
+  capabilities = ["read", "update"]
+}
+path "$kv/metadata/$OPENBAO_KEYRING_PATH" {
+  capabilities = ["read"]
+}
 POLICY
 bao policy write $OPENBAO_ESO_ROLE - > /dev/null << 'POLICY'
 path "$kv/data/$OPENBAO_SECRETS_PATH" {
   capabilities = ["read"]
 }
 path "$kv/metadata/$OPENBAO_SECRETS_PATH" {
+  capabilities = ["read"]
+}
+path "$kv/data/$OPENBAO_KEYRING_PATH" {
+  capabilities = ["read"]
+}
+path "$kv/metadata/$OPENBAO_KEYRING_PATH" {
   capabilities = ["read"]
 }
 POLICY
@@ -662,6 +728,42 @@ EOF
   AUTH_SECRET=`sed -n 's/^auth_secret=//p' "$out"`
   rm -f "$out"
   log "OpenBao holds this release's secrets at $OPENBAO_KV_MOUNT/$OPENBAO_SECRETS_PATH."
+}
+
+# After the keyring is in the vault: deletes the Secret $KEYRING_SECRET an install without OpenBao kept, so External Secrets can own it (the chart's
+# ExternalSecret has creationPolicy Owner and can't take over a Secret it didn't create). Only once the vault holds exactly that Secret's keyring,
+# compared inside the vault's pod (the keyring and the root token reach it over stdin), since what is already encrypted needs that ring and no other;
+# a Secret External Secrets already owns is left alone. The pods keep the files they have mounted until the ExternalSecret has made the Secret again.
+function releaseKeyringSecret() {
+  if ! kubectl -n "$NAMESPACE" get secret "$KEYRING_SECRET" >/dev/null 2>&1; then
+    return 0
+  fi
+  local owners kept version
+  owners=`kubectl -n "$NAMESPACE" get secret "$KEYRING_SECRET" -o jsonpath='{.metadata.ownerReferences[*].kind}' 2>/dev/null`
+  if [[ "$owners" == *ExternalSecret* ]]; then
+    return 0
+  fi
+  # Read before the data, so a write in between shows as a changed version below.
+  version=`kubectl -n "$NAMESPACE" get secret "$KEYRING_SECRET" -o jsonpath='{.metadata.resourceVersion}' 2>/dev/null`
+  kept=`kubectl -n "$NAMESPACE" get secret "$KEYRING_SECRET" -o jsonpath='{.data.keyring\.json}' 2>/dev/null | base64 -d 2>/dev/null`
+  if ! kubectl -n "$OPENBAO_NAMESPACE" exec -i "$OPENBAO_POD" -- sh -s > /dev/null << EOF
+set -e
+export BAO_ADDR=$OPENBAO_LOCAL_ADDRESS
+export BAO_TOKEN=`shQuote "$OPENBAO_ROOT_TOKEN"`
+# Fails, deleting nothing, unless the vault holds exactly the Secret's keyring.
+[ "\`bao kv get -mount=$OPENBAO_KV_MOUNT -field=keyring $OPENBAO_KEYRING_PATH\`" = `shQuote "$kept"` ]
+EOF
+  then
+    fail "the Secret $KEYRING_SECRET in namespace $NAMESPACE holds a configuration keyring that OpenBao's $OPENBAO_KV_MOUNT/$OPENBAO_KEYRING_PATH isn't, or can't be confirmed to be, the same one, so the Secret was kept: values already encrypted need the keyring the Secret holds. Put it in the vault, or delete the Secret if the vault's is the right one, then re-run this script."
+  fi
+  # The running pods still write this Secret until the chart switches them to the vault, and a key rotation they finish after the comparison above
+  # would add a key to it that only the Secret holds. kubectl can't delete at a resourceVersion, so this leaves a window of the time between the two
+  # calls, not of the comparison.
+  if [[ -z "$version" || "`kubectl -n "$NAMESPACE" get secret "$KEYRING_SECRET" -o jsonpath='{.metadata.resourceVersion}' 2>/dev/null`" != "$version" ]]; then
+    fail "the Secret $KEYRING_SECRET in namespace $NAMESPACE changed while it was compared with OpenBao's keyring (a key rotation, most likely), so it was kept. Re-run this script once no rotation is in progress."
+  fi
+  kubectl -n "$NAMESPACE" delete secret "$KEYRING_SECRET" >/dev/null
+  log "The configuration keyring is in OpenBao now, and External Secrets takes over the Secret $KEYRING_SECRET."
 }
 
 # Copies the CA OpenBao's listener certificate comes from into the ConfigMap $OPENBAO_CA_CONFIGMAP in the release's namespace,
@@ -819,6 +921,11 @@ if [[ "$NAMESPACE" != *server* ]]; then
   FULLNAME="$NAMESPACE-server"
 fi
 OPENBAO_SECRETS_PATH="$FULLNAME/secrets"
+# The configuration keyring (restapi's specs/dns_publishing_and_integrations.md, 5.3): the key the credentials, API keys and tokens saved in the admin
+# console are encrypted with. In the vault it is its own KV secret (the chart's configEncryption.openbao.path), which the chart's ExternalSecret syncs
+# into the Secret $KEYRING_SECRET the server pods mount.
+OPENBAO_KEYRING_PATH="$FULLNAME/config-keyring"
+KEYRING_SECRET="$FULLNAME-config-keyring"
 # The Secrets holding the tokens earlier versions of this script made: a vault this script installs has its clients log in
 # with Kubernetes auth instead, and migrateOpenbaoTokens revokes them. A vault of your own still gives External Secrets its
 # token in the first.
@@ -1134,10 +1241,12 @@ if [[ "$OPENBAO" = "true" ]]; then
     installOpenbao
     prepareOpenbao
     copyOpenbaoCa
+    releaseKeyringSecret
   else
     log "Keeping this release's secrets in the OpenBao at $OPENBAO_ADDRESS. It must already hold them at"
     log "$OPENBAO_KV_MOUNT/$OPENBAO_SECRETS_PATH, with the Secret $OPENBAO_ESO_SECRET in namespace $NAMESPACE holding"
-    log "a token that may read them."
+    log "a token that may read them. It must also hold the configuration keyring at $OPENBAO_KV_MOUNT/$OPENBAO_KEYRING_PATH (the"
+    log "property keyring), which that token may read and the server's login may read and update."
     if [[ -n "$OPENBAO_CA_FILE" ]]; then
       copyOpenbaoCa
     fi
@@ -1236,6 +1345,7 @@ if [[ "$OPENBAO" = "true" ]]; then
     --set global.openbao.address="$OPENBAO_ADDRESS"
     --set global.openbao.kvMount="$OPENBAO_KV_MOUNT"
     --set global.openbao.secretsPath="$OPENBAO_SECRETS_PATH"
+    --set configEncryption.openbao.path="$OPENBAO_KEYRING_PATH"
     --set openbao.pki.mount="$OPENBAO_PKI_MOUNT"
     --set openbao.pki.role="$OPENBAO_PKI_ROLE")
   if [[ "$OPENBAO_INSTALL" = "true" ]]; then
@@ -1327,6 +1437,15 @@ install -d -m 0700 "`dirname "$SUMMARY_FILE"`"
     echo "Secrets (keep them; an upgrade needs the same values):"
     echo "  global.jwt.secret       $AUTH_SECRET"
     echo "  global.mailIngestSecret $INGEST_SECRET"
+  fi
+  echo
+  echo "Back up the configuration keyring together with the database: the credentials, API keys and tokens saved in the admin console are"
+  echo "encrypted with it in the database, which is useless without it."
+  if [[ "$OPENBAO" = "true" ]]; then
+    echo "It is the OpenBao secret $OPENBAO_KV_MOUNT/$OPENBAO_KEYRING_PATH (External Secrets keeps it in the Secret $KEYRING_SECRET, which the pods mount)."
+  else
+    echo "It is the Secret $KEYRING_SECRET in namespace $NAMESPACE, which a helm upgrade leaves in place:"
+    echo "  kubectl -n $NAMESPACE get secret $KEYRING_SECRET -o jsonpath='{.data.keyring\\.json}' | base64 -d"
   fi
 } > "$SUMMARY_FILE"
 chmod 600 "$SUMMARY_FILE"

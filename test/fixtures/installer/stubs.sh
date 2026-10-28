@@ -7,7 +7,11 @@ sleep() { :; }
 helm() { echo "$*" >> "$WORK/helm.log"; }
 openssl() {
   echo "$*" >> "$WORK/openssl.log"
+  # OPENSSL_FAILS: a failing openssl, which prints nothing; OPENSSL_KID: a kid that isn't 8 hex digits.
+  [ "$1" != rand ] || [ -z "$OPENSSL_FAILS" ] || return 1
   case "$*" in
+    "rand -hex 4") printf '%s' "${OPENSSL_KID:-a1b2c3d4}";;
+    "rand -base64 32") printf 'bmV3LWNvbmZpZy1rZXktMzItYnl0ZXMtbG9uZy4uLi4=';;
     *s_client*) printf '%s' "$SERVED_CERT";;
     *x509*) local cert; cert=$(cat); [ -n "$cert" ] && echo "notAfter=$cert";;
   esac
@@ -26,7 +30,12 @@ kubectl() {
     *"get secret"*)
       local name; name=$(printf '%s\n' "$@" | awk 'prev == "secret" { print; exit } { prev = $0 }')
       [ -f "$WORK/secret-$name" ] || return 1
-      case "$*" in *jsonpath*) cat "$WORK/secret-$name";; esac;;
+      case "$*" in
+        *ownerReferences*) [ ! -f "$WORK/owners-$name" ] || cat "$WORK/owners-$name";;
+        # The first read answers 100; RV_AFTER (a write in between) is what every later one answers.
+        *resourceVersion*) local n; n=$(ls "$WORK" | grep -c '^rv-read'); : > "$WORK/rv-read-$n"; if [ "$n" = 0 ]; then printf 100; else printf '%s' "${RV_AFTER:-100}"; fi;;
+        *jsonpath*) cat "$WORK/secret-$name";;
+      esac;;
     *"get statefulset"*"updateRevision"*) printf '%s' "$UPDATE_REVISION";;
     *"get statefulset"*"observedGeneration"*) printf '1';;
     *"get statefulset"*"metadata.generation"*) printf '1';;

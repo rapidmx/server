@@ -320,6 +320,36 @@ openbao:
   externalSecrets:
     # Creates global.openbao.auth.kubernetes.serviceAccount, the ServiceAccount External Secrets logs in as. No pod runs as it.
     createServiceAccount: true
+# The configuration keyring: the key that encrypts, in the database, the credentials, API keys and tokens saved in the admin console (DNS
+# provider credentials, the Giphy key, the plugin registry's tokens, a plugin's secret settings). A production server refuses to start without
+# it, and a database backup is useless without it: back both up together. The server pods mount it read-only (/etc/rapidmx/config-keyring),
+# and nothing else in the release does.
+#  - Without OpenBao the chart renders the Secret <fullname>-config-keyring once, with a new key, only while the cluster has none, and Helm
+#    keeps it when the release is uninstalled (an upgrade must never render an older ring over one a rotation added a key to). The server's
+#    key rotation replaces it from then on, through the Role <fullname>-config-keyring below. It is created by a pre-install/pre-upgrade hook,
+#    so the release's stored manifests never hold a ring: a `helm rollback` can't restore an older one over a rotated one. Never `helm rollback
+#    --force` all the same, which replaces every resource it touches.
+#    Generating it needs `lookup`, so a render without cluster access (helm template, a GitOps controller, --dry-run) fails unless
+#    configEncryption.existingSecret names a Secret you manage: it would otherwise render a new random ring on every sync.
+#  - With global.openbao.enabled the keyring is the KV secret <kvMount>/<fullname>/config-keyring (property keyring), which the installers
+#    create, and the chart renders an ExternalSecret that syncs it into that same Secret instead. The server's OpenBao role may read and update
+#    that one path, so the server holds no Kubernetes write right. Leaving OpenBao later (global.openbao.enabled or External Secrets off) is
+#    refused while the Secret is still owned by that ExternalSecret, which would delete it: the render says how to release it first.
+configEncryption:
+  # Without OpenBao: a Secret you manage (GitOps, sealed secrets, ...) with the key keyring.json, holding the keyring as restapi's
+  # parseConfigKeyring() reads it: { "keys": [ { "kid", "key", "createdAt" } ] }. The chart then renders no Secret of its own and mounts this
+  # one, and the server's key rotation (the Role below, if configEncryption.rbac.create) replaces it in place. Ignored with OpenBao.
+  existingSecret: ''
+  # How often External Secrets looks at the vault's keyring, which is how soon a key the server adds reaches the other pods.
+  externalSecretRefreshInterval: 1m
+  rbac:
+    # The Role <fullname>-config-keyring (namespace-scoped, no ClusterRole): get and update on the keyring Secret alone, by name, bound to
+    # the server's ServiceAccount, which is what lets the server's key rotation write a new ring when the vault is off. Not rendered with
+    # OpenBao. Off, a rotation can't write the new ring (the console shows the error) and everything else works.
+    create: true
+  openbao:
+    # The keyring's KV path under global.openbao.kvMount. Empty: <fullname>/config-keyring.
+    path: ''
 authserver:
   create: true
   # The auth-server subchart renders its own copy of these datastores (same names as the ones above): keep them identical.

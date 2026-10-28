@@ -1,0 +1,75 @@
+{{- /*
+The configuration keyring (restapi's specs/dns_publishing_and_integrations.md, section 5): the AES-256-GCM key that the credentials, API keys and
+tokens saved in the admin console are encrypted with in the database, as a JSON document { "keys": [ { "kid", "key", "createdAt" } ] } the server pods
+mount as /etc/rapidmx/config-keyring/keyring.json. A database backup is useless without it, and a production server refuses to start without it.
+
+With OpenBao (global.openbao.enabled and External Secrets) the keyring is the vault's KV secret <fullname>/config-keyring, which the installers create and
+4_vault/external-secrets.yaml syncs into the Secret of the same name; nothing is rendered here.
+
+Without it the chart generates the keyring, one new key, into the Secret <fullname>-config-keyring - but only while the cluster has no such Secret. That is
+unlike the JWT, coturn and rspamd secrets, which are rendered again from their stored value on every upgrade: once the server's key rotation has added a
+key to this one, rendering it again from a lookup made just before would write the older ring back, and every value encrypted with the new key would be
+lost. So it is rendered once, as a hook (the stored release never holds a ring a rollback could restore), Helm keeps it when the release is
+uninstalled (a kept database needs it), and the rotation owns it from then on. Because it depends on `lookup`, a render without cluster access fails
+instead of generating a ring it can't keep; configEncryption.existingSecret names a Secret you manage (GitOps), and then nothing is generated here.
+*/}}
+{{- if ne (include "rrst.vaultManagedSecrets" .) "true" }}
+{{-   $name := include "rapidmx.configKeyringSecretName" . }}
+{{-   if not .Values.configEncryption.existingSecret }}
+{{-     $existing := lookup "v1" "Secret" .Release.Namespace $name }}
+{{-     include "rapidmx.assertConfigKeyringNotOwnedByVault" (dict "existing" $existing "context" .) }}
+{{-     if not $existing }}
+{{-       include "rapidmx.assertConfigKeyringStable" . }}
+{{-       $key := dict "kid" (sha256sum (randAlphaNum 32) | trunc 8) "key" (randBytes 32) "createdAt" (dateInZone "2006-01-02T15:04:05.000Z" now "UTC") }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "rrst.labels" . | nindent 4 }}
+  annotations:
+    # A hook, so the release's stored manifests never contain the ring: `helm rollback` to the revision that created it would otherwise
+    # either fail (it isn't in the manifest rolled back from) or, with --force, replace the live ring with this first one. Hook resources
+    # are left alone by an uninstall, which is what the keep policy asks for too.
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/resource-policy: keep
+type: Opaque
+data:
+  keyring.json: {{ dict "keys" (list $key) | toJson | b64enc | quote }}
+{{-     end }}
+{{-   end }}
+{{-   if and .Values.configEncryption.rbac.create (include "rrst.serviceAccountName" .) }}
+---
+# What the server's key rotation needs of the Kubernetes API when the vault is off, and nothing more: it reads the keyring Secret and replaces it
+# (a PUT at the resourceVersion it read, so a concurrent change fails the write instead of being overwritten). get and update on that one Secret by
+# name, in this namespace (a Role, not a ClusterRole), bound to the chart's own ServiceAccount: the server stays read-only on every other resource.
+# With OpenBao the server writes the vault's KV path instead and holds no Kubernetes write right. Turn it off with configEncryption.rbac.create=false.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "rrst.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: [{{ $name | quote }}]
+    verbs: ["get", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "rrst.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $name }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "rrst.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{-   end }}
+{{- end }}

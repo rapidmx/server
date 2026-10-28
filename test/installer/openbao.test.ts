@@ -1,6 +1,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 // Copyright (C) 2026 Jean-Philippe Steinmetz. All rights reserved.
 ///////////////////////////////////////////////////////////////////////////////
+import { parseConfigKeyring } from "@rapidmx/restapi";
 import { spawnSync } from "child_process";
 import fs from "fs";
 import { loadAll } from "js-yaml";
@@ -88,6 +89,8 @@ function run(installer: string, body: string, vars: Record<string, string> = {},
         OPENBAO_PKI_MOUNT: "pki",
         OPENBAO_PKI_ROLE: "rapidmx-encryption",
         OPENBAO_SECRETS_PATH: "rapidmx-server/secrets",
+        OPENBAO_KEYRING_PATH: "rapidmx-server/config-keyring",
+        KEYRING_SECRET: "rapidmx-server-config-keyring",
         OPENBAO_ROOT_TOKEN: "s.root-token",
         OPENBAO_ESO_SECRET: "rapidmx-server-openbao-eso",
         OPENBAO_PKI_SECRET: "rapidmx-server-openbao-pki",
@@ -208,22 +211,30 @@ describe.skipIf(!bashAvailable)("installers: OpenBao with Kubernetes auth and TL
                     expect(r.read("kubectl.log")).not.toMatch(/create secret generic rapidmx-server-openbao-(eso|pki)/);
                 });
 
-                it("lets the server sign and revoke on the PKI role and nothing else, and External Secrets read the release's secrets only", () => {
+                it("lets the server sign and revoke on the PKI role and read and update the configuration keyring, and External Secrets read the release's secrets and that keyring only", () => {
                     const r = run(installer, "prepareOpenbao");
                     const { bao } = runInPod(r, "pod-script-0.sh", { BAO_SECRETS: '{"secret/":{},"pki/":{}}', BAO_AUTHS: '{"kubernetes/":{}}' });
                     const server = policy(bao, "rapidmx-server-server");
                     expect(capabilities(server, "pki/sign/rapidmx-encryption")).toEqual(["update"]);
                     expect(capabilities(server, "pki/revoke")).toEqual(["update"]);
-                    // Nothing else: no KV path at all, and not the release's own secrets, which only External Secrets reads. No
-                    // configuration secret is kept in OpenBao.
-                    expect(server.match(/path "/g)).toHaveLength(2);
-                    expect(server).not.toContain("secret/");
+                    // The keyring's path alone: it must read the ring to add a key to it and write it back (KV v2's check-and-set
+                    // needs the version, which is in the metadata), and may neither create, delete, list nor patch anything.
+                    expect(capabilities(server, "secret/data/rapidmx-server/config-keyring")).toEqual(["read", "update"]);
+                    expect(capabilities(server, "secret/metadata/rapidmx-server/config-keyring")).toEqual(["read"]);
+                    // Nothing else: not the release's own secrets, which only External Secrets reads, and no configuration secret
+                    // (those are in the database, encrypted).
+                    expect(server.match(/path "/g)).toHaveLength(4);
+                    expect(server).not.toContain("rapidmx-server/secrets");
+                    expect(server).not.toContain("*");
                     expect(server).not.toContain("integrations");
 
                     const eso = policy(bao, "rapidmx-server-eso");
                     expect(capabilities(eso, "secret/data/rapidmx-server/secrets")).toEqual(["read"]);
                     expect(capabilities(eso, "secret/metadata/rapidmx-server/secrets")).toEqual(["read"]);
-                    expect(eso.match(/path "/g)).toHaveLength(2);
+                    // Read only: it syncs the keyring into the Secret the pods mount and never writes it.
+                    expect(capabilities(eso, "secret/data/rapidmx-server/config-keyring")).toEqual(["read"]);
+                    expect(capabilities(eso, "secret/metadata/rapidmx-server/config-keyring")).toEqual(["read"]);
+                    expect(eso.match(/path "/g)).toHaveLength(4);
                     expect(eso).not.toContain("integrations");
                     expect(eso).not.toContain("pki/");
 
@@ -241,9 +252,195 @@ describe.skipIf(!bashAvailable)("installers: OpenBao with Kubernetes auth and TL
                     expect(bao).toContain("bao write pki/roles/rapidmx-encryption");
                 });
 
+                describe("the configuration keyring", () => {
+                    const KEPT = JSON.stringify({ keys: [{ kid: "0f1e2d3c", key: Buffer.alloc(32, 7).toString("base64"), createdAt: "2026-10-01T00:00:00.000Z" }] });
+                    const kept = (work: string) => fs.writeFileSync(path.join(work, "secret-rapidmx-server-config-keyring"), b64(KEPT));
+                    /** The text `bao kv put` of the keyring was given on stdin, from the fake bao's log. */
+                    const putKeyring = (bao: string) => bao.match(/bao kv put -mount=secret -cas=0 rapidmx-server\/config-keyring keyring=-\n<<<\n([\s\S]*?)\n>>>/)?.[1];
+
+                    it("creates a new keyring in the vault when there is none, in a path of its own and through stdin", () => {
+                        const r = run(installer, "prepareOpenbao");
+                        expect(r.status, r.stderr + r.stdout).toBe(0);
+                        const { status, bao } = runInPod(r, "pod-script-0.sh", { BAO_SECRETS: '{"secret/":{},"pki/":{}}', BAO_AUTHS: '{"kubernetes/":{}}' });
+                        expect(status).toBe(0);
+                        const text = putKeyring(bao);
+                        expect(text).toBeDefined();
+                        // A keyring the server can read: one 32-byte key with an 8-hex kid (the stubbed openssl's), dated now.
+                        const keyring = parseConfigKeyring(text);
+                        expect(keyring.keys).toHaveLength(1);
+                        expect(keyring.keys[0].kid).toBe("a1b2c3d4");
+                        expect(Date.now() - Date.parse(keyring.keys[0].createdAt)).toBeLessThan(5 * 60 * 1000);
+                        expect(r.read("openssl.log")).toContain("rand -base64 32");
+                        // Its value is never an argument: not of kubectl on this host, and not of bao in the pod.
+                        expect(r.read("kubectl.log")).not.toContain(keyring.keys[0].key);
+                        expect(bao.split("\n").filter((l) => l.startsWith("bao ")).join("\n")).not.toContain(keyring.keys[0].key);
+                        // Not under the release's secrets path: the server's policy is limited to this one.
+                        expect(bao).not.toMatch(/bao kv (put|patch) [^\n]*rapidmx-server\/secrets keyring/);
+                    });
+
+                    it("creates it only when it doesn't exist, so a re-run never re-keys what is encrypted with it", () => {
+                        const r = run(installer, "prepareOpenbao");
+                        const { status, bao } = runInPod(r, "pod-script-0.sh", {
+                            BAO_SECRETS: '{"secret/":{},"pki/":{}}',
+                            BAO_AUTHS: '{"kubernetes/":{}}',
+                            BAO_KEYRING: KEPT,
+                        });
+                        expect(status).toBe(0);
+                        expect(bao).toContain("bao kv get -mount=secret -field=keyring rapidmx-server/config-keyring");
+                        expect(putKeyring(bao)).toBeUndefined();
+                        expect(bao).not.toContain("config-keyring keyring=");
+                    });
+
+                    it("writes it with check-and-set 0, so a keyring that appeared meanwhile is never overwritten", () => {
+                        const r = run(installer, "prepareOpenbao");
+                        expect(r.read("pod-script-0.sh")).toContain("bao kv put -mount=secret -cas=0 rapidmx-server/config-keyring keyring=-");
+                    });
+
+                    it("copies the keyring of the Secret an install without OpenBao kept, byte for byte, so nothing needs re-encrypting", () => {
+                        const r = run(installer, "prepareOpenbao", {}, kept);
+                        expect(r.status, r.stderr + r.stdout).toBe(0);
+                        const { bao } = runInPod(r, "pod-script-0.sh", { BAO_SECRETS: '{"secret/":{},"pki/":{}}', BAO_AUTHS: '{"kubernetes/":{}}' });
+                        expect(putKeyring(bao)).toBe(KEPT);
+                        // No new key was generated.
+                        expect(r.read("openssl.log")).not.toContain("rand -base64 32");
+                    });
+
+                    it("refuses to go on when that Secret holds no keyring, rather than starting over with a new key", () => {
+                        const r = run(installer, "prepareOpenbao", {}, (work) => fs.writeFileSync(path.join(work, "secret-rapidmx-server-config-keyring"), b64("not a keyring")));
+                        expect(r.status).not.toBe(0);
+                        expect(r.stdout + r.stderr).toContain("rapidmx-server-config-keyring");
+                        expect(r.exists("pod-script-0.sh")).toBe(false);
+                    });
+
+                    it("refuses a Secret that mentions keys but doesn't hold a keyring a server could read, rather than copying it for good into the vault", () => {
+                        for (const content of ['{"keys":[]}', '{"keys":"kid key"}', "keys"]) {
+                            const r = run(installer, "prepareOpenbao", {}, (work) => fs.writeFileSync(path.join(work, "secret-rapidmx-server-config-keyring"), b64(content)));
+                            expect(r.status, content).not.toBe(0);
+                            expect(r.exists("pod-script-0.sh"), content).toBe(false);
+                        }
+                    });
+
+                    it("puts nothing in the vault when openssl fails or answers something else than an 8-digit hex id and 32 bytes", () => {
+                        // A failed command inside the printf's arguments used to leave {"kid":"","key":""} for the create-only write to keep for good.
+                        for (const vars of [{ OPENSSL_FAILS: "1" }, { OPENSSL_KID: "zz" }, { OPENSSL_KID: "a1b2c3d" }, { OPENSSL_KID: "A1B2C3D4" }]) {
+                            const r = run(installer, "prepareOpenbao", vars);
+                            expect(r.status, JSON.stringify(vars)).not.toBe(0);
+                            expect(r.exists("pod-script-0.sh"), JSON.stringify(vars)).toBe(false);
+                            expect(r.stdout + r.stderr, JSON.stringify(vars)).toContain("Couldn't generate a configuration keyring");
+                        }
+                    });
+
+                    it("makes the keyring from the kernel's random bytes where openssl isn't installed", () => {
+                        const body = 'unset -f openssl; command() { if [ "$1" = -v ] && [ "$2" = openssl ]; then return 1; fi; builtin command "$@"; }; prepareOpenbao';
+                        const r = run(installer, body);
+                        expect(r.status, r.stderr + r.stdout).toBe(0);
+                        const { bao } = runInPod(r, "pod-script-0.sh", { BAO_SECRETS: '{"secret/":{},"pki/":{}}', BAO_AUTHS: '{"kubernetes/":{}}' });
+                        const keyring = parseConfigKeyring(putKeyring(bao)!);
+                        expect(keyring.keys[0].kid).toMatch(/^[0-9a-f]{8}$/);
+                        expect(Buffer.from(keyring.keys[0].key, "base64")).toHaveLength(32);
+                        expect(r.read("openssl.log")).toBe("");
+                    });
+                });
+
                 it("fails when the vault refuses the preparation", () => {
                     const r = run(installer, "prepareOpenbao", { POD_EXIT: "1" });
                     expect(r.status).not.toBe(0);
+                });
+            });
+
+            describe("releaseKeyringSecret", () => {
+                const KEPT = JSON.stringify({ keys: [{ kid: "0f1e2d3c", key: Buffer.alloc(32, 7).toString("base64"), createdAt: "2026-10-01T00:00:00.000Z" }] });
+                const kept = (work: string) => fs.writeFileSync(path.join(work, "secret-rapidmx-server-config-keyring"), b64(KEPT));
+                const owned = (work: string) => {
+                    kept(work);
+                    fs.writeFileSync(path.join(work, "owners-rapidmx-server-config-keyring"), "ExternalSecret");
+                };
+
+                it("deletes the Secret an install without OpenBao kept once the vault holds exactly its keyring, so External Secrets can own it", () => {
+                    const r = run(installer, "releaseKeyringSecret", {}, kept);
+                    expect(r.status, r.stderr + r.stdout).toBe(0);
+                    const lines = r.read("kubectl.log").split("\n");
+                    const compared = lines.findIndex((l) => l.includes("exec -i openbao-0"));
+                    const deleted = lines.findIndex((l) => l.includes("delete secret rapidmx-server-config-keyring"));
+                    expect(compared).toBeGreaterThanOrEqual(0);
+                    expect(deleted).toBeGreaterThan(compared);
+                    // The keyring and the root token reach the pod over stdin, never as an argument.
+                    expect(r.read("kubectl.log")).not.toContain("0f1e2d3c");
+                    expect(r.read("kubectl.log")).not.toContain("s.root-token");
+                });
+
+                it("compares the vault's keyring with the Secret's in the pod, and only an identical one passes", () => {
+                    const r = run(installer, "releaseKeyringSecret", {}, kept);
+                    expect(runInPod(r, "pod-script-0.sh", { BAO_KEYRING: KEPT }).status).toBe(0);
+                    expect(runInPod(r, "pod-script-0.sh", { BAO_KEYRING: KEPT.replace("0f1e2d3c", "ffffffff") }).status).not.toBe(0);
+                    expect(runInPod(r, "pod-script-0.sh", { BAO_KEYRING: "" }).status).not.toBe(0);
+                });
+
+                it("keeps the Secret, and stops, when the vault's keyring can't be confirmed to be the same", () => {
+                    const r = run(installer, "releaseKeyringSecret", { POD_EXIT: "1" }, kept);
+                    expect(r.status).not.toBe(0);
+                    expect(r.read("kubectl.log")).not.toContain("delete secret");
+                    expect(r.stdout + r.stderr).toContain("rapidmx-server-config-keyring");
+                });
+
+                it("keeps the Secret, and stops, when it was written after it was read: a key rotation the running pods finished must not be lost", () => {
+                    // The pods still write the Secret until the chart switches them to the vault; the delete must not follow a write it never compared.
+                    const r = run(installer, "releaseKeyringSecret", { RV_AFTER: "101" }, kept);
+                    expect(r.status).not.toBe(0);
+                    expect(r.read("kubectl.log")).not.toContain("delete secret");
+                    expect(r.stdout + r.stderr).toContain("changed while it was compared");
+
+                    // The version is read before the data (a write between the two shows), and again right before the delete.
+                    const reads = r.read("kubectl.log").split("\n").filter((l) => l.includes("get secret"));
+                    const version = reads.map((l, i) => (l.includes("resourceVersion") ? i : -1)).filter((i) => i >= 0);
+                    const data = reads.findIndex((l) => l.includes("keyring\\.json"));
+                    expect(version).toHaveLength(2);
+                    expect(version[0]).toBeLessThan(data);
+                    expect(version[1]).toBeGreaterThan(data);
+                });
+
+                it("leaves a Secret External Secrets already owns alone, and does nothing when there is none", () => {
+                    const synced = run(installer, "releaseKeyringSecret", {}, owned);
+                    expect(synced.status).toBe(0);
+                    expect(synced.exists("pod-script-0.sh")).toBe(false);
+                    expect(synced.read("kubectl.log")).not.toContain("delete secret");
+
+                    const none = run(installer, "releaseKeyringSecret");
+                    expect(none.status).toBe(0);
+                    expect(none.exists("pod-script-0.sh")).toBe(false);
+                    expect(none.read("kubectl.log")).not.toContain("delete secret");
+                });
+            });
+
+            // Only single_node_install.sh has an --uninstall.
+            describe.skipIf(installer !== "single_node_install.sh")("reportConfigKeyring, before the release is uninstalled", () => {
+                // A release "mail" whose chart name is "mail-server", recorded as such, while --namespace (NAMESPACE here) was left at its default.
+                const secret = (work: string) => fs.writeFileSync(path.join(work, "secret-mail-server-config-keyring"), b64("{}"));
+                const owned = (work: string) => {
+                    secret(work);
+                    fs.writeFileSync(path.join(work, "owners-mail-server-config-keyring"), "ExternalSecret");
+                };
+
+                it("says the Secret is kept, for the recorded release's name and namespace rather than the command line's", () => {
+                    const r = run(installer, "reportConfigKeyring mail", {}, secret);
+                    expect(r.status).toBe(0);
+                    expect(r.stdout).toContain("Keeping the configuration keyring Secret mail-server-config-keyring in namespace mail");
+                    expect(r.stdout).toContain("kubectl -n mail delete secret mail-server-config-keyring");
+                    expect(r.stdout).not.toContain("rapidmx");
+                    expect(r.read("kubectl.log")).toContain("-n mail get secret mail-server-config-keyring");
+                });
+
+                it("doesn't claim a Secret an ExternalSecret owns is kept: it goes with the release, and the keyring is the vault's", () => {
+                    const r = run(installer, "reportConfigKeyring mail", {}, owned);
+                    expect(r.stdout).not.toContain("Keeping");
+                    expect(r.stdout).toContain("goes with the release");
+                    expect(r.stdout).toContain("secret/mail-server/config-keyring");
+                });
+
+                it("names the chart's fullname as it is for a release that already has 'server' in its name, and says nothing without a Secret", () => {
+                    const r = run(installer, "reportConfigKeyring rapidmx-server", {}, (work) => fs.writeFileSync(path.join(work, "secret-rapidmx-server-config-keyring"), b64("{}")));
+                    expect(r.stdout).toContain("rapidmx-server-config-keyring in namespace rapidmx-server");
+                    expect(run(installer, "reportConfigKeyring mail").stdout).toBe("");
                 });
             });
 
@@ -470,6 +667,35 @@ describe.skipIf(!bashAvailable)("installers: OpenBao with Kubernetes auth and TL
                     expect(changed.read("kubectl.log")).toContain("delete pod openbao-0");
                     const same = run(installer, "restartOpenbaoIfChanged", { UPDATE_REVISION: "openbao-2", POD_REVISION: "openbao-2" });
                     expect(same.read("kubectl.log")).not.toContain("delete pod");
+                });
+            });
+
+            describe("the script itself", () => {
+                const text = fs.readFileSync(INSTALLERS[installer], "utf8").replace(/\r\n/g, "\n");
+
+                it("passes the keyring's path to the chart with the other OpenBao values, and moves a kept Secret into the vault before the chart is applied", () => {
+                    expect(text).toContain('--set configEncryption.openbao.path="$OPENBAO_KEYRING_PATH"');
+                    expect(text).toContain('OPENBAO_KEYRING_PATH="$FULLNAME/config-keyring"');
+                    expect(text).toContain('KEYRING_SECRET="$FULLNAME-config-keyring"');
+                    const calls = (name: string) => [...text.matchAll(new RegExp(`^\\s+${name}$`, "gm"))].map((m) => m.index);
+                    const [prepare] = calls("prepareOpenbao");
+                    const [release] = calls("releaseKeyringSecret");
+                    const chart = text.indexOf("helm upgrade --install --create-namespace");
+                    expect(prepare).toBeGreaterThan(0);
+                    expect(release).toBeGreaterThan(prepare);
+                    expect(chart).toBeGreaterThan(release);
+                });
+
+                it("tells the operator to back the keyring up with the database, where it lives with and without OpenBao", () => {
+                    expect(text).toContain("Back up the configuration keyring");
+                    const message = text.slice(text.indexOf("Back up the configuration keyring"));
+                    expect(message).toContain("$KEYRING_SECRET");
+                    expect(message).toContain("$OPENBAO_KV_MOUNT/$OPENBAO_KEYRING_PATH");
+                    expect(message).toMatch(/useless without it|without it[^\n]*can't be read/);
+                });
+
+                it("asks a vault it doesn't install to hold the keyring too", () => {
+                    expect(text).toMatch(/It must (also )?already hold[\s\S]{0,300}\$OPENBAO_KV_MOUNT\/\$OPENBAO_SECRETS_PATH[\s\S]{0,500}\$OPENBAO_KEYRING_PATH/);
                 });
             });
 

@@ -247,6 +247,12 @@ spec:
               mountPath: /etc/rapidmx/openbao-ca
               readOnly: true
             {{- end }}
+            # The configuration keyring (config_encryption:keyring_file): this Deployment's pods are the only ones that mount it. The server re-reads
+            # the file every minute, so a rotation reaches every pod without a restart, and writes a new ring through the Kubernetes API or OpenBao,
+            # never through this mount.
+            - name: config-keyring
+              mountPath: /etc/rapidmx/config-keyring
+              readOnly: true
       volumes:
         - name: plugins
           emptyDir: {}
@@ -270,6 +276,9 @@ spec:
         - name: pki-data
           persistentVolumeClaim:
             claimName: {{ include "rrst.fullname" . }}-pki-data
+        - name: config-keyring
+          secret:
+            secretName: {{ include "rapidmx.configKeyringSecretName" . }}
         {{- if $openbaoAuth }}
         # A token of the pod's own ServiceAccount for OpenBao alone (its audience), valid for an hour and rotated by the kubelet:
         # the OpenBao role checks the audience, so the token the pod uses for the Kubernetes API can't log in, and this one is

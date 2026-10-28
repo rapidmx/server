@@ -748,3 +748,80 @@ the server reads its environment with parseValues and would turn an all-digit on
 {{-     fail "mail.rspamd.bayes.minLearns must be at least 1." -}}
 {{-   end -}}
 {{- end -}}
+
+{{/*
+The Secret the configuration keyring is mounted from (restapi's specs/dns_publishing_and_integrations.md, 5.3). Without OpenBao the chart
+renders it once, or configEncryption.existingSecret names one you manage; with OpenBao External Secrets creates it from the vault, under the
+chart's own name (existingSecret is ignored: the ExternalSecret owns that Secret).
+*/}}
+{{- define "rapidmx.configKeyringSecretName" -}}
+{{-   if and (ne (include "rrst.vaultManagedSecrets" .) "true") .Values.configEncryption.existingSecret -}}
+{{-     include "rrst.render" (dict "value" .Values.configEncryption.existingSecret "context" .) -}}
+{{-   else -}}
+{{-     printf "%s-config-keyring" (include "rrst.fullname" .) -}}
+{{-   end -}}
+{{- end -}}
+
+{{/*
+The keyring's KV path under the OpenBao KV mount: its own path, not a key of the release's secrets, so the server's OpenBao role can be limited
+to it (configEncryption.openbao.path, <fullname>/config-keyring when empty).
+*/}}
+{{- define "rapidmx.configKeyringPath" -}}
+{{-   include "rrst.render" (dict "value" (dig "openbao" "path" "" (.Values.configEncryption | default dict)) "context" .) | default (printf "%s/config-keyring" (include "rrst.fullname" .)) -}}
+{{- end -}}
+
+{{/*
+Where the server writes a new keyring when an administrator rotates the key (config_encryption:keyring_store:backend): the vault when
+External Secrets syncs the keyring out of it and the server holds an OpenBao identity to write it with (openbao.auth.method "kubernetes" or
+"token"), "none" when it syncs but the server has no such identity (rotation is then refused with 503, and the console says so, instead of
+failing on a missing OpenBao login when it is needed), else the Kubernetes Secret itself.
+*/}}
+{{- define "rapidmx.configKeyringBackend" -}}
+{{-   if eq (include "rrst.vaultManagedSecrets" .) "true" -}}
+{{-     if or (eq (include "rapidmx.openbaoServerAuth" .) "true") (include "rapidmx.openbaoTokenSecret" .) -}}
+openbao
+{{-     else -}}
+none
+{{-     end -}}
+{{-   else -}}
+kubernetes
+{{-   end -}}
+{{- end -}}
+
+{{/*
+Fails the render that would generate the keyring without being able to keep it: it is rendered only while `lookup` finds no Secret, and a
+render without cluster access (helm template, a GitOps controller, --dry-run) finds none every time, so it would write a new random ring over the
+live one on every sync and every value encrypted with the old one would be lost. Unlike the JWT, coturn and rspamd secrets, which fail the same
+render, there is no value to set that the server's rotation wouldn't then overwrite: a Secret you manage (configEncryption.existingSecret) is
+the way out.
+*/}}
+{{- define "rapidmx.assertConfigKeyringStable" -}}
+{{-   include "rrst.assertStableSecrets" (dict "missing" (list "configEncryption.existingSecret (a Secret you manage, holding the keyring as keyring.json)") "always" true "context" .) -}}
+{{- end -}}
+
+{{/*
+Fails the render when the keyring Secret that already exists belongs to an ExternalSecret that this render no longer produces (OpenBao or
+External Secrets is now off): the apply would delete the ExternalSecret, Kubernetes would delete the Secret it owns, and the next upgrade would
+find none and generate a new ring, leaving everything encrypted with the old one (kept only in the vault) unreadable. `existing` is the Secret
+`lookup` returned (empty when there is none).
+Usage: include "rapidmx.assertConfigKeyringNotOwnedByVault" (dict "existing" $secret "context" $)
+*/}}
+{{- define "rapidmx.assertConfigKeyringNotOwnedByVault" -}}
+{{-   $ctx := .context -}}
+{{-   $name := include "rapidmx.configKeyringSecretName" $ctx -}}
+{{-   $meta := (get (.existing | default dict) "metadata") | default dict -}}
+{{-   range $owner := (get $meta "ownerReferences" | default list) -}}
+{{-     if eq (toString (get $owner "kind")) "ExternalSecret" -}}
+{{-       fail (printf "The Secret %s was created by an ExternalSecret (OpenBao delivers the configuration keyring), but this render has no ExternalSecret for it: applying it would delete the ExternalSecret and Kubernetes would delete the Secret with it, and the next upgrade would generate a new keyring, leaving every value encrypted with the old one unreadable. To leave OpenBao, first keep the Secret (kubectl -n %s get secret %s -o yaml > keyring-backup.yaml), then release it from the ExternalSecret: kubectl -n %s delete externalsecret %s --cascade=orphan. Then run the upgrade again." $name $ctx.Release.Namespace $name $ctx.Release.Namespace $name) -}}
+{{-     end -}}
+{{-   end -}}
+{{- end -}}
+
+{{/*
+The label selector of the server Deployment's pods, which the server lists to see whether the rolling upgrade has finished before it
+encrypts the plugins' secret settings (config_encryption:plugin_secrets:pod_selector). The Deployment's own selector label, plus the
+instance label its pods carry, so a second release of the chart in the namespace is not mistaken for this one.
+*/}}
+{{- define "rapidmx.serverPodSelector" -}}
+{{-   printf "app=%s,app.kubernetes.io/instance=%s-services" (include "rrst.name" .) (include "rrst.fullname" .) -}}
+{{- end -}}

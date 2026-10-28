@@ -40,6 +40,18 @@ data:
   mail__pki__openbao__mount: {{ dig "pki" "mount" "pki" $openbao | quote }}
   mail__pki__openbao__role: {{ dig "pki" "role" "rapidmx-encryption" $openbao | quote }}
   {{- end }}
+  # The configuration keyring (restapi's specs/dns_publishing_and_integrations.md, section 5): the pods mount it as a file (service.yaml) and re-read it
+  # every minute; a key rotation writes a new ring to the Secret or, with OpenBao, to the vault, which External Secrets syncs into that Secret.
+  config_encryption__keyring_file: /etc/rapidmx/config-keyring/keyring.json
+  config_encryption__keyring_store__backend: {{ include "rapidmx.configKeyringBackend" $ | quote }}
+  {{- if eq (include "rapidmx.configKeyringBackend" $) "openbao" }}
+  config_encryption__keyring_store__kv_mount: {{ include "rrst.vaultKvMount" $ | quote }}
+  config_encryption__keyring_store__kv_path: {{ include "rapidmx.configKeyringPath" $ | quote }}
+  {{- else if eq (include "rapidmx.configKeyringBackend" $) "kubernetes" }}
+  config_encryption__keyring_store__secret_name: {{ include "rapidmx.configKeyringSecretName" $ | quote }}
+  {{- end }}
+  # The pods of this Deployment, which the server lists (with the Diagnostics Role's read access) to wait for the rollout before it encrypts plugin secret settings.
+  config_encryption__plugin_secrets__pod_selector: {{ include "rapidmx.serverPodSelector" $ | quote }}
   {{- range $k, $v := $.Values.service.config }}
   {{ $k }}: {{ include "rrst.render" (dict "value" $v "context" $) | quote }}
   {{- end }}

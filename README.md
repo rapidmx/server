@@ -599,10 +599,10 @@ alone, and gets an OpenBao token that lasts an hour:
 
 | Role | ServiceAccount | May |
 | --- | --- | --- |
-| `<fullname>-eso` | `<fullname>-openbao-eso` (the chart creates it; External Secrets requests its tokens) | read the release's secrets |
-| `<fullname>-server` | the server's own (`global.serviceAccount`) | sign and revoke on the PKI role |
+| `<fullname>-eso` | `<fullname>-openbao-eso` (the chart creates it; External Secrets requests its tokens) | read the release's secrets and the configuration keyring |
+| `<fullname>-server` | the server's own (`global.serviceAccount`) | sign and revoke on the PKI role, and read and update the configuration keyring |
 
-The vault holds the release's secrets and the PKI CA and nothing an administrator saves in the console. An earlier build of
+The vault holds the release's secrets, the PKI CA and the configuration keyring, and nothing an administrator saves in the console. An earlier build of
 the installers also made a `<fullname>-dns-controller` role and policy; re-running the installer deletes them.
 
 An install from before this keeps working while it is upgraded: the installer re-runs move the vault to TLS, create the
@@ -624,13 +624,33 @@ Point `global.openbao.address` at an OpenBao you already run to use that one ins
 `OPENBAO_ADDRESS`/`RAPIDMX_OPENBAO_ADDRESS`, which must be https (plain http only to the host itself), with
 `OPENBAO_CA_FILE`/`RAPIDMX_OPENBAO_CA_FILE` naming its CA when the system doesn't trust it. It has to hold, under
 `global.openbao.kvMount` at `global.openbao.secretsPath` (`<release>/secrets` by default), the fields `auth_secret`,
-`cookie_secret`, `session__secret`, `escrow_audit_hmac_key` and `mail_ingest_secret`. External Secrets reads them with
+`cookie_secret`, `session__secret`, `escrow_audit_hmac_key` and `mail_ingest_secret`, and, at `configEncryption.openbao.path` (`<release>/config-keyring`) in the same mount, the property `keyring` (the keyring described below; the installation's existing `keyring.json` if it has one). External Secrets reads them, and the server's role the keyring (read and update, with read on its metadata), with
 `global.openbao.auth`: `method: token` and a Secret (`tokenSecret`) whose `token` may read them, or `method: kubernetes`
 with `kubernetes.role`, `kubernetes.serviceAccount` and `kubernetes.audience`, which stores no token at all. For the
 encryption CA, a PKI mount (`openbao.pki.mount`) with an issuing role (`openbao.pki.role`) that accepts an email address
 as the common name, which the server's role may `update` on `<mount>/sign/<role>` and `<mount>/revoke` - the server signs
 client CSRs, so the CA key never leaves the vault - and `mail__pki__backend: openbao` in `service.config`; without it
 the local CA on the `pki-data` volume stays in use.
+
+**The configuration keyring** is the key the credentials, API keys and tokens saved in the admin console (DNS provider credentials, the
+Giphy key, the plugin registry's tokens, a plugin's secret settings) are encrypted with in the database. A production server refuses to start
+without it, and a database backup is **useless without it**: back the two up together, and keep the keyring backup as long as the database
+backups it serves. It is the Secret `<fullname>-config-keyring` (key `keyring.json`), mounted read-only into the server pods and no others
+and re-read every minute. Without OpenBao the chart renders it once, with a new key, only while the cluster has none, and Helm keeps it when
+the release is uninstalled (the installer's `--uninstall` leaves it too, except with k3s, which removes the whole cluster; delete it yourself to
+remove it), because a key rotation adds keys to it and rendering it again on an upgrade would write the older ring back; the server's rotation replaces
+it through the Role `<fullname>-config-keyring` (`configEncryption.rbac.create`), which allows `get` and `update` on that one Secret and nothing
+else. It is created by a pre-install/pre-upgrade hook, so the release's stored manifests never hold a ring and `helm rollback` can't put an old one
+back over a rotated one: never use `--force` on a rollback all the same. The chart can only generate it where it can `lookup` the cluster, so a render
+without cluster access (`helm template`, a GitOps controller, `--dry-run`) fails rather than render a new ring on every sync: set
+`configEncryption.existingSecret` to a Secret you manage (key `keyring.json`) and the chart mounts that one instead. With
+OpenBao it is the KV secret `<kv mount>/<release>/config-keyring` instead: the installers create it once (copying the Secret's keyring when an
+existing installation moves to OpenBao, so nothing needs re-encrypting), an ExternalSecret syncs it into the same Secret every
+`configEncryption.externalSecretRefreshInterval` (1m), and the server writes the vault and holds no Kubernetes write right at all. That needs the
+server to hold an OpenBao identity (`openbao.auth.method`); without one a rotation is refused (the chart sets `config_encryption:keyring_store:backend`
+to `none`) and the keyring is only delivered. The ExternalSecret owns the Secret, so **leaving OpenBao** (turning it or External Secrets off on
+an upgrade) is refused by the chart until the Secret is released: `kubectl delete externalsecret <fullname>-config-keyring --cascade=orphan`, after
+saving the keyring, or Kubernetes would delete the Secret with the ExternalSecret and the next upgrade would generate a new ring.
 
 Keeping the unseal key in a Secret is what makes the deployment heal itself after a reboot, at the cost that anyone who
 can read Secrets in the vault's namespace can unseal it (roughly what those Secrets exposed before). A cluster with a KMS

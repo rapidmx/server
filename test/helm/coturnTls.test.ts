@@ -21,6 +21,8 @@ const BASE = [
     "global.secrets.cookies=c",
     "global.secrets.sessions=s",
     "mail.escrow.auditHmacKey=k",
+    // The keyring is generated only where `lookup` can keep it (a render without cluster access refuses), else it is a Secret you manage.
+    "configEncryption.existingSecret=keyring",
     "global.openbao.enabled=false",
     "mail.rspamd.controller.password=abcdefghijklmnop1",
     "coturn.auth.sharedSecret=abc123",

@@ -3,12 +3,16 @@
 # policy or JSON it is given on stdin, and answers the lists the scripts check.
 echo "bao $*" >> "$WORK/bao.log"
 for last; do :; done
-if [ "$last" = "-" ]; then
-  echo "<<<" >> "$WORK/bao.log"; cat >> "$WORK/bao.log"; echo ">>>" >> "$WORK/bao.log"
+case "$last" in -|*=-) stdin=true;; *) stdin=false;; esac
+if [ "$stdin" = true ]; then
+  # The input is logged on lines of its own, whether or not it ends in a newline.
+  input=$(cat)
+  { echo "<<<"; echo "$input"; echo ">>>"; } >> "$WORK/bao.log"
 fi
 case "$*" in
   "secrets list"*) printf '%s' "$BAO_SECRETS";;
   "auth list"*) printf '%s' "$BAO_AUTHS";;
+  "kv get -mount="*"-field=keyring "*) printf '%s' "$BAO_KEYRING";;
   "read -field=certificate"*) echo CERT;;
   "write -field=token auth/kubernetes/login"*) echo s.login-token;;
 esac
