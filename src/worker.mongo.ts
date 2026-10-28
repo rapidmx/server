@@ -22,6 +22,7 @@ import { DevLocalDeliveryTransportMongo } from "./dev/DevLocalDeliveryTransportM
 import { registerCoreProviders } from "./lib/registerCoreProviders.js";
 import { enableBasicAuthIfApplicable } from "./lib/enableBasicAuth.js";
 import { assertConfigKeyringIsSet, createPluginHostCipher, ensureDevelopmentKeyring, startConfigEncryption, type ConfigEncryptionRuntime } from "./lib/configEncryption.js";
+import { startDnsPublishing } from "./dns/AutodiscoverAnnouncement.js";
 
 import * as fs from "fs";
 import { readFile } from "fs/promises";
@@ -129,6 +130,10 @@ const start = async function (config: any, logger: any) {
     // The datastores are connected: report the keys this copy has loaded to the others, and encrypt the plugin secret settings once the rollout is done.
     // Both run in the background and neither can stop the server.
     configEncryption = await startConfigEncryption(objectFactory, PluginSecretEncryptorMongo, logger);
+
+    // The plugins are loaded, so this copy knows whether the Autodiscover plugin runs: tell the DNS controller when that changed its records. Not awaited: it
+    // waits on Redis and cannot stop the server from starting.
+    void startDnsPublishing(objectFactory, config, logger);
 
     // DEV-ONLY (see enableDevAutoLogin.ts) — a no-op outside of `yarn dev`.
     await mountDevImpersonationRouteIfApplicable(server, objectFactory, logger);

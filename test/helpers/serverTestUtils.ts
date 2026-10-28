@@ -21,21 +21,23 @@ export function freePort(): Promise<number> {
     });
 }
 
-/** A minimal HTTP call to a test server on 127.0.0.1 (never `localhost`, which may resolve to ::1 first). */
+/** A minimal HTTP call to a test server on 127.0.0.1 (never `localhost`, which may resolve to ::1 first), with a JSON `body` when given. */
 export function localRequest(
     port: number,
     method: string,
     path: string,
     headers: Record<string, string> = {},
+    body?: string,
 ): Promise<{ status: number; headers: http.IncomingHttpHeaders; body: string }> {
     return new Promise((resolve, reject) => {
-        const req: http.ClientRequest = http.request({ host: "127.0.0.1", port, method, path, headers }, (res) => {
-            let body: string = "";
+        const sent: Record<string, string> = body === undefined ? headers : { "Content-Type": "application/json", "Content-Length": String(Buffer.byteLength(body)), ...headers };
+        const req: http.ClientRequest = http.request({ host: "127.0.0.1", port, method, path, headers: sent }, (res) => {
+            let text: string = "";
             res.setEncoding("utf-8");
-            res.on("data", (chunk: string) => (body += chunk));
-            res.on("end", () => resolve({ status: res.statusCode ?? 0, headers: res.headers, body }));
+            res.on("data", (chunk: string) => (text += chunk));
+            res.on("end", () => resolve({ status: res.statusCode ?? 0, headers: res.headers, body: text }));
         });
         req.on("error", reject);
-        req.end();
+        req.end(body);
     });
 }

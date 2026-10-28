@@ -35,6 +35,17 @@ import { OpenBaoClientPkiCertificateAuthority } from "../src/openbao/OpenBaoClie
 import { setDraining } from "../src/plugins/readiness.js";
 import { freePort, localRequest } from "./helpers/serverTestUtils.js";
 
+const DNS_CONTROLLER_SUBJECT = "system:serviceaccount:mail:rel-dns-controller";
+
+class StubDnsControllerTokenVerifier {
+    public async verify(token: string): Promise<{ subject: string }> {
+        if (token === "controller" || token === "someone-else") {
+            return { subject: token === "controller" ? DNS_CONTROLLER_SUBJECT : "system:serviceaccount:mail:rel" };
+        }
+        throw new Error("the token's signature does not verify");
+    }
+}
+
 // No fixed port: a free one is picked when it starts, and the datastore URLs below point at it.
 const mongod: MongoMemoryServer = new MongoMemoryServer({
     instance: {
@@ -78,12 +89,16 @@ describe("Server Tests", () => {
     objectFactory.register(TieredRateLimiter, "RateLimiter");
     // Reads the active key from the datastore; the keyring is the one beforeAll() configures.
     objectFactory.register(TrackedConfigCipherMongo, "ConfigCipher");
+    // The verifier the server registers checks the controller's projected token against the cluster's keys, which a test run doesn't have: this one knows two tokens.
+    objectFactory.register(StubDnsControllerTokenVerifier, "DnsControllerTokenVerifier");
     let server: Server;
     let port: number;
 
     beforeAll(async () => {
         // The keyring the configuration cipher reads when the server starts.
         config.set("config_encryption:keyring", JSON.stringify(generateConfigKeyring()));
+        // The one ServiceAccount whose token /internal/dns accepts (the chart sets it).
+        config.set("mail:dns:controller:subject", DNS_CONTROLLER_SUBJECT);
         await mongod.start();
         for (const name of ["acl", "mongo"]) {
             config.set(`datastores:${name}:url`, mongod.getUri());
@@ -157,6 +172,24 @@ describe("Server Tests", () => {
         for (const path of ["/api/system/config-keys", "/api/system/dns-providers", "/api/system/integrations"]) {
             const result = await localRequest(port, "GET", path);
             expect([401, 403], path).toContain(result.status);
+        }
+    });
+
+    it("Mounts the DNS controller's API at /internal/dns, which takes the controller's token only and never a proxied request.", async () => {
+        const handshake = JSON.stringify({ kind: "Handshake", controllerVersion: "0.1.0", apiVersions: ["dns.rapidmx.io/v1"] });
+        const call = (token?: string, extra: Record<string, string> = {}) =>
+            localRequest(port, "POST", "/internal/dns/handshake", { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...extra }, handshake);
+        expect((await call()).status).toBe(403);
+        expect((await call("forged")).status).toBe(403);
+        // A valid token of another ServiceAccount than mail:dns:controller:subject.
+        expect((await call("someone-else")).status).toBe(403);
+        expect((await call("controller", { "X-Forwarded-For": "203.0.113.9" })).status).toBe(403);
+        const accepted = await call("controller");
+        expect(accepted.status).toBe(200);
+        expect(JSON.parse(accepted.body)).toMatchObject({ kind: "HandshakeResult", compatible: true, selected: "dns.rapidmx.io/v1" });
+        // The other handlers, the credentials one included, answer the same refusal without a token.
+        for (const path of ["/internal/dns/v1/desired-state", "/internal/dns/v1/providers/dns-cloudflare-1a2b3c4d/credentials"]) {
+            expect((await localRequest(port, "GET", path)).status, path).toBe(403);
         }
     });
 

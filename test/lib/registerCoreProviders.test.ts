@@ -23,6 +23,8 @@ import { DevBypassAvScanProvider, DevBypassSpamScanProvider } from "../../src/de
 import { DevLocalDeliveryTransportMongo } from "../../src/dev/DevLocalDeliveryTransportMongo.js";
 import { TieredRateLimiter } from "../../src/lib/TieredRateLimiter.js";
 import { OpenBaoClientPkiCertificateAuthority } from "../../src/openbao/OpenBaoClientPkiCertificateAuthority.js";
+import { KubeDnsControllerTokenVerifier } from "../../src/dns/KubeDnsControllerTokenVerifier.js";
+import { RedisDnsPublisher } from "../../src/dns/RedisDnsPublisher.js";
 import { KubePodRolloutCheck } from "../../src/secrets/KubePodRolloutCheck.js";
 import { KubernetesConfigKeyringStore } from "../../src/secrets/KubernetesConfigKeyringStore.js";
 import { OpenBaoConfigKeyringStore } from "../../src/secrets/OpenBaoConfigKeyringStore.js";
@@ -71,6 +73,7 @@ describe("registerCoreProviders", () => {
                 "SigningCertificateEnrollment",
                 "ConfigCipher",
                 "ServerRolloutCheck",
+                "DnsControllerTokenVerifier",
             ].sort(),
         );
     });
@@ -93,6 +96,22 @@ describe("registerCoreProviders", () => {
             vi.resetModules();
             const { default: shipped } = await import(file);
             expect(recordRegistrations(shipped).ConfigKeyChannel, file).toBe(RedisConfigKeyChannel);
+        }
+    });
+
+    it("registers the verifier of the DNS controller's projected token always: outside Kubernetes it refuses every token, which is what no verifier at all would do", () => {
+        expect(recordRegistrations(fakeConfig()).DnsControllerTokenVerifier).toBe(KubeDnsControllerTokenVerifier);
+    });
+
+    it("registers the Redis version counter the DNS controller's long poll waits on when both Redis datastores are configured, and leaves it out otherwise", async () => {
+        expect(recordRegistrations(fakeConfig(REDIS)).DnsPublisher).toBe(RedisDnsPublisher);
+        // Without them restapi uses its NullDnsPublisher, so a deployment without the controller behaves as it did.
+        expect(recordRegistrations(fakeConfig()).DnsPublisher).toBeUndefined();
+        expect(recordRegistrations(fakeConfig({ "datastores:events": { url: "redis://events" } })).DnsPublisher).toBeUndefined();
+        for (const file of ["../../src/config.mongo.js", "../../src/config.sql.js"]) {
+            vi.resetModules();
+            const { default: shipped } = await import(file);
+            expect(recordRegistrations(shipped).DnsPublisher, file).toBe(RedisDnsPublisher);
         }
     });
 
@@ -175,6 +194,16 @@ describe("worker.ts/worker.mongo.ts/worker.sql.ts registration drift guard", () 
             // appears in doc-comment prose elsewhere in the file.
             const calls = source.match(/registerCoreProviders\(objectFactory,/g) ?? [];
             expect(calls).toHaveLength(1);
+        }
+    });
+
+    it("announces the Autodiscover state exactly once, after the plugin host has loaded the plugins that decide it", () => {
+        for (const file of files) {
+            const source = fs.readFileSync(file, "utf-8");
+            expect(source).toMatch(/import\s*\{\s*startDnsPublishing\s*\}\s*from\s*"\.\/dns\/AutodiscoverAnnouncement\.js"/);
+            const calls = source.match(/startDnsPublishing\(objectFactory,/g) ?? [];
+            expect(calls, file).toHaveLength(1);
+            expect(source.indexOf("startDnsPublishing(objectFactory,"), file).toBeGreaterThan(source.indexOf("await pluginHost.start("));
         }
     });
 

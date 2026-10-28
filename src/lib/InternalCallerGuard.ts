@@ -81,24 +81,43 @@ export class InternalCallerGuard {
 }
 
 /**
- * Wraps a route's `authorizeInternalCaller()` (a private method of `BaseMailIngestRoute`, called first by each of its
- * routes) so a proxied request is refused and a wrong secret is counted and, past the limit, answered 429. A correct secret
- * always passes. Applied to the route's prototype, since the base method is private to TypeScript.
+ * Wraps a route's check of its caller (`authorizeInternalCaller()`, a private method of `BaseMailIngestRoute`, by default; `authorize()`, an asynchronous
+ * private method of `BaseDnsDesiredStateRoute`, for the DNS controller's API), which each of its routes calls first, so a proxied request is refused and a wrong
+ * secret or token is counted and, past the limit, answered 429. A correct one always passes. Applied to the route's prototype, since the base method is private to
+ * TypeScript.
  *
- * @param routeClass The `MailIngestRoute` subclass, whose instances have `allowForwarded` and `trustedProxies` set from configuration.
- * @param guard The guard to use; one per process.
+ * @param routeClass The route subclass, whose instances have `allowForwarded` and `trustedProxies` set from configuration.
+ * @param guard The guard to use; one per process and API, so one API's wrong secrets don't count against another's callers.
+ * @param method The name of the check. Throws when the route has none, so a base route that renames it can't be left unguarded without anyone noticing.
  */
-export function guardInternalCaller(routeClass: { prototype: any }, guard: InternalCallerGuard = new InternalCallerGuard()): void {
-    const authorize: (req: any) => void = routeClass.prototype.authorizeInternalCaller;
-    routeClass.prototype.authorizeInternalCaller = function (this: any, req: any): void {
-        guard.check(req, this.allowForwarded === true);
+export function guardInternalCaller(routeClass: { prototype: any }, guard: InternalCallerGuard = new InternalCallerGuard(), method: string = "authorizeInternalCaller"): void {
+    const authorize: ((req: any) => unknown) | undefined = routeClass.prototype[method];
+    if (typeof authorize !== "function") {
+        throw new Error(`The route has no ${method}() to guard, so its callers would not be checked for a proxy or counted.`);
+    }
+    // An asynchronous check refuses with a rejection, as its callers (which await it) expect, a synchronous one by throwing.
+    const isAsync: boolean = authorize.constructor.name === "AsyncFunction";
+    routeClass.prototype[method] = function (this: any, req: any): unknown {
         try {
-            authorize.call(this, req);
+            guard.check(req, this.allowForwarded === true);
         } catch (err) {
+            if (isAsync) {
+                return Promise.reject(err);
+            }
+            throw err;
+        }
+        const refuse = (err: unknown): never => {
             if (guard.noteFailure(req, this.trustedProxies)) {
                 throw new ApiError(ApiErrors.AUTH_PERMISSION_FAILURE, 429, "Too many failed attempts. Try again later.");
             }
             throw err;
+        };
+        let result: unknown;
+        try {
+            result = authorize.call(this, req);
+        } catch (err) {
+            return refuse(err);
         }
+        return result instanceof Promise ? result.catch(refuse) : result;
     };
 }

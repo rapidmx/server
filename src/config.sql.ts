@@ -452,6 +452,12 @@ conf.defaults({
                 require_ad: true,
                 timeout_ms: 5_000,
             },
+            // The DNS controller's API (/internal/dns, DNS publishing): the one ServiceAccount whose projected token it accepts,
+            // `system:serviceaccount:<namespace>:<fullname>-dns-controller`, which a chart that deploys the controller sets (mail__dns__controller__subject).
+            // Empty refuses every call, which is what a deployment without the controller wants.
+            controller: {
+                subject: "",
+            },
         },
         // EncryptionCertificateAuthority backend selection (see server.sql.ts) plus that backend's own
         // config. `backend: "local"` (default) needs only `local_ca.*` below; `backend: "openbao"` needs

@@ -13,6 +13,8 @@ import {
     S3BlobStore,
 } from "@rapidmx/restapi";
 import { DohDnssecDnsResolver } from "../dns/DohDnssecDnsResolver.js";
+import { KubeDnsControllerTokenVerifier } from "../dns/KubeDnsControllerTokenVerifier.js";
+import { RedisDnsPublisher } from "../dns/RedisDnsPublisher.js";
 import { OpenBaoClientPkiCertificateAuthority } from "../openbao/OpenBaoClientPkiCertificateAuthority.js";
 import { KubePodRolloutCheck } from "../secrets/KubePodRolloutCheck.js";
 import { KubernetesConfigKeyringStore } from "../secrets/KubernetesConfigKeyringStore.js";
@@ -153,4 +155,12 @@ export function registerCoreProviders(objectFactory: ClassRegistry, config: Core
     // Whether the rolling upgrade has finished, which PluginSecretEncryptor waits for before encrypting plugin secret settings (answers "rolled out" at once
     // outside Kubernetes).
     objectFactory.register(KubePodRolloutCheck, "ServerRolloutCheck");
+    // The DNS controller's API (/internal/dns): its projected ServiceAccount token is verified against the cluster's keys, which a server outside Kubernetes
+    // has none of, so it refuses every token there, as an unregistered verifier would.
+    objectFactory.register(KubeDnsControllerTokenVerifier, "DnsControllerTokenVerifier");
+    // The desired-state version the controller's long poll waits on is a counter in Redis, so every replica answers alike. Without the two Redis datastores
+    // (the Server.*.test.ts harnesses) restapi's NullDnsPublisher stands in, and nothing is announced.
+    if (config.get("datastores:cache") && config.get("datastores:events")) {
+        objectFactory.register(RedisDnsPublisher, "DnsPublisher");
+    }
 }

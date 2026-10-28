@@ -22,7 +22,7 @@ const RESTAPI_ROUTES = new Set([
     "MatterSearchRoute", "MessageRoute", "NoteRoute", "PluginRoute", "PushRoute", "QuarantineRoute", "RetentionPolicyRoute",
     "SearchRoute", "SetupRoute", "TaskListRoute", "TaskRoute", "TransportRuleRoute",
     "SigningEnrollmentAdminRoute", "SigningEnrollmentInfoRoute", "ServerInfoRoute", "WkdRoute", "ZeroAccessIndexRoute",
-    "ConfigKeyRoute", "DnsProviderRoute", "IntegrationsRoute",
+    "ConfigKeyRoute", "DnsProviderRoute", "DnsDesiredStateRoute", "IntegrationsRoute",
 ]);
 
 /** The server's own route classes: what serves mail data (and how it is gated), or serves none. */

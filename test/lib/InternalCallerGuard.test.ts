@@ -70,4 +70,53 @@ describe("InternalCallerGuard", () => {
         expect(() => route.authorizeInternalCaller(request({ authorization: "Bearer no" }))).toThrow(expect.objectContaining({ status: 429 }));
         expect(() => route.authorizeInternalCaller(request({ authorization: "Bearer ok" }))).not.toThrow();
     });
+
+    describe("a route whose check is another, asynchronous method (the DNS controller's, BaseDnsDesiredStateRoute.authorize)", () => {
+        const inner = vi.fn(async (req: any) => {
+            if (req.headers.authorization !== "Bearer ok") {
+                throw new Error("forbidden");
+            }
+        });
+
+        class Route {
+            allowForwarded = false;
+            trustedProxies: string[] = [];
+            async authorize(req: any): Promise<void> {
+                await inner(req);
+            }
+        }
+
+        it("refuses a proxied request before the token is looked at, counts a wrong token and, past the limit, answers 429; a right one always passes", async () => {
+            guardInternalCaller(Route, new InternalCallerGuard({ failureLimit: 2 }), "authorize");
+            const route = new Route();
+            await expect(route.authorize(request({ authorization: "Bearer ok", "x-forwarded-for": "1.2.3.4" }))).rejects.toMatchObject({ status: 403 });
+            expect(inner).not.toHaveBeenCalled();
+            await expect(route.authorize(request({ authorization: "Bearer ok" }))).resolves.toBeUndefined();
+            await expect(route.authorize(request({ authorization: "Bearer no" }))).rejects.toThrow("forbidden");
+            await expect(route.authorize(request({ authorization: "Bearer no" }))).rejects.toThrow("forbidden");
+            await expect(route.authorize(request({ authorization: "Bearer no" }))).rejects.toMatchObject({ status: 429 });
+            await expect(route.authorize(request({ authorization: "Bearer ok" }))).resolves.toBeUndefined();
+        });
+
+        it("still guards the MTA route's own method by default", () => {
+            class Mta {
+                allowForwarded = false;
+                trustedProxies: string[] = [];
+                authorizeInternalCaller(_req: any): void {
+                    inner(_req);
+                }
+            }
+            guardInternalCaller(Mta, new InternalCallerGuard());
+            expect(() => new Mta().authorizeInternalCaller(request({ forwarded: "for=1.2.3.4" }))).toThrow(expect.objectContaining({ status: 403 }));
+        });
+
+        it("fails when the method is not there, so a restapi that renames it can't leave the route unguarded", () => {
+            class Renamed {
+                async check(req: any): Promise<void> {
+                    await inner(req);
+                }
+            }
+            expect(() => guardInternalCaller(Renamed, new InternalCallerGuard(), "authorize")).toThrow(/authorize/);
+        });
+    });
 });

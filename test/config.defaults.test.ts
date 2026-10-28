@@ -357,3 +357,20 @@ describe("config_encryption in the shipped configuration", () => {
         });
     }
 });
+
+describe("the DNS controller in the shipped configuration", () => {
+    for (const file of ["../src/config.mongo.js", "../src/config.sql.js"]) {
+        it(`${file} names no controller until the chart sets mail:dns:controller:subject, so every call to /internal/dns is refused`, async () => {
+            vi.resetModules();
+            const { default: conf } = await import(file);
+            expect(conf.get("mail:dns:controller")).toEqual({ subject: "" });
+            // The resolver settings beside it are untouched.
+            expect(conf.get("mail:dns:resolver")).toBe("node");
+        });
+    }
+
+    it("keeps the controller's subject out of a plugin's reach", () => {
+        expect(isProtectedPluginSettingKey("mail:dns:controller:subject")).toBe(true);
+        expect(isProtectedPluginSettingKey("mail__dns__controller__subject")).toBe(true);
+    });
+});

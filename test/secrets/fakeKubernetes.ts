@@ -33,6 +33,10 @@ export class FakeKubernetes {
     public failWith?: number;
     /** Runs when a PUT arrives, before it is judged: another writer getting in between the server's read and its write. */
     public beforePut?: () => void;
+    /** The service-account issuer `/.well-known/openid-configuration` names, and the keys `/openid/v1/jwks` lists: every ServiceAccount may read both (the default
+     * `system:service-account-issuer-discovery` binding). */
+    public issuer: string = "https://kubernetes.default.svc.cluster.local";
+    public jwks: unknown[] = [];
     private nextVersion = 100;
 
     constructor(public readonly namespace: string = "mail") {}
@@ -60,6 +64,12 @@ export class FakeKubernetes {
             return { status: this.failWith, body: "{}" };
         }
         const method: string = request.method ?? "GET";
+        if (method === "GET" && request.url.pathname === "/.well-known/openid-configuration") {
+            return { status: 200, body: JSON.stringify({ issuer: this.issuer, jwks_uri: "https://203.0.113.10:6443/openid/v1/jwks" }) };
+        }
+        if (method === "GET" && request.url.pathname === "/openid/v1/jwks") {
+            return { status: 200, body: JSON.stringify({ keys: this.jwks }) };
+        }
         const secretMatch = request.url.pathname.match(new RegExp(`^/api/v1/namespaces/${this.namespace}/secrets/([^/]+)$`));
         if (secretMatch) {
             const secret: FakeSecret | undefined = this.secrets.get(secretMatch[1]);

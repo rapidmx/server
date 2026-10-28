@@ -6,6 +6,8 @@
 // publish/subscribe/unsubscribe, and connect/disconnect/duplicate/isOpen. Used in place of the no-longer
 // relevant `ioredis-mock` package now that the codebase talks to `redis` instead of `ioredis`.
 
+import { EventEmitter } from "node:events";
+
 type PubSubListener = (message: string, channel: string) => void;
 
 interface Entry {
@@ -45,6 +47,15 @@ export class FakeRedisServer {
 
     public setEx(key: string, seconds: number, value: string): void {
         this.store.set(key, { value, expiresAt: Date.now() + seconds * 1000 });
+    }
+
+    /** Adds one to the integer at `key` (0 when there is none), keeping its expiry, and answers the new value. */
+    public incr(key: string): number {
+        const entry: Entry | undefined = this.store.get(key);
+        const live: Entry | undefined = entry && !this.isExpired(entry) ? entry : undefined;
+        const next: number = (live ? Number(live.value) : 0) + 1;
+        this.store.set(key, { value: String(next), expiresAt: live?.expiresAt });
+        return next;
     }
 
     public ttl(key: string): number {
@@ -150,12 +161,14 @@ class FakeMulti {
 
 /** A single fake connection to a `FakeRedisServer`. Multiple clients on the same server behave like multiple
  * real connections to the same Redis instance: they share data and pub/sub, independently of one another. */
-export class FakeRedisClient {
+export class FakeRedisClient extends EventEmitter {
     public isOpen: boolean = false;
     public isReady: boolean = false;
     private readonly listenersByChannel: Map<string, PubSubListener> = new Map();
 
-    constructor(private readonly server: FakeRedisServer) {}
+    constructor(private readonly server: FakeRedisServer) {
+        super();
+    }
 
     public async connect(): Promise<this> {
         this.isOpen = true;
@@ -185,9 +198,17 @@ export class FakeRedisClient {
         return this.server.get(key);
     }
 
-    public async set(key: string, value: string): Promise<string> {
-        this.server.set(key, value);
+    public async set(key: string, value: string, options?: { EX?: number }): Promise<string> {
+        if (options?.EX !== undefined) {
+            this.server.setEx(key, options.EX, value);
+        } else {
+            this.server.set(key, value);
+        }
         return "OK";
+    }
+
+    public async incr(key: string): Promise<number> {
+        return this.server.incr(key);
     }
 
     public async setEx(key: string, seconds: number, value: string): Promise<string> {
