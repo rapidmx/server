@@ -9,6 +9,7 @@ vi.mock("redis", async () => {
 const corsOrigins = ["http://localhost:3000", "http://localhost:3001", "http://localhost:3002"];
 process.env[`cors__origins`] = JSON.stringify(corsOrigins);
 
+import { LocalIntegrationsChannel } from "../src/integrations/IntegrationsChannel.js";
 import config from "../src/config.sql.js";
 import { Logger, sleep } from "@rapidrest/core";
 import { ObjectFactory, RepoUtils, Server } from "@rapidrest/service-core";
@@ -99,6 +100,8 @@ describe("Server Tests", () => {
     objectFactory.register(TieredRateLimiter, "RateLimiter");
     // Reads the active key from the datastore; the keyring is the one beforeAll() configures.
     objectFactory.register(TrackedConfigCipherSQL, "ConfigCipher");
+    // Where a saved change to the Integrations is announced (a test server is one copy, so the process's own listeners are all there are).
+    objectFactory.register(LocalIntegrationsChannel, "IntegrationsChannel");
     // The verifier the server registers checks the controller's projected token against the cluster's keys, which a test run doesn't have: this one knows two tokens.
     objectFactory.register(StubDnsControllerTokenVerifier, "DnsControllerTokenVerifier");
     let server: Server;

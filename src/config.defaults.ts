@@ -199,6 +199,14 @@ export function escrowAuditKeyWarning(config: SecretsConfig, environment: string
 export const PLUGIN_SETTINGS_STORE = "plugins";
 
 /**
+ * The name of the nconf layer that holds what an administrator set in the console's Integrations (Giphy, STUN, the signing CA, the DNS resolver, the plugin
+ * registry; restapi spec 11.1): directly below the plugin settings, so it outranks the command line, the environment and the defaults, and empty until the
+ * server builds it from the Integrations row (`src/integrations/IntegrationsLayer.ts`). `integrations` is in `PROTECTED_PLUGIN_SETTING_KEYS`, and every other
+ * key the layer sets is under a protected namespace, so a plugin can never declare or save these keys.
+ */
+export const INTEGRATIONS_STORE = "integrations";
+
+/**
  * Configuration a plugin's saved settings may never set, whatever its manifest declares: the backstop under
  * `isAllowedPluginSettingKey()`. They are applied in the top configuration layer, which outranks the environment and the
  * defaults and is read after `assertProductionSecretsAreSet()` has run, so a plugin manifest declaring one of these keys (or a

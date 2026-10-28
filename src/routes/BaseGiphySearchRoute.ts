@@ -4,7 +4,9 @@
 ///////////////////////////////////////////////////////////////////////////////
 import { ApiError, ObjectDecorators } from "@rapidrest/core";
 import { ApiErrors, RouteDecorators } from "@rapidrest/service-core";
+import { isConfigFlagOn } from "@rapidmx/restapi";
 import { DEFAULT_GIPHY_API_KEY } from "../config.defaults.js";
+import { liveConfig } from "../integrations/liveConfig.js";
 
 const { Config } = ObjectDecorators;
 const { Auth, Get, Query, RateLimit } = RouteDecorators;
@@ -76,8 +78,13 @@ function toGiphyGif(gif: GiphyApiGif): GiphyGif {
  * for the identical reason).
  */
 export class BaseGiphySearchRoute {
+    // What the deployment configured when the server started: only what applies in a process with no host. The key and `giphy:enabled` an administrator sets in
+    // the console's Integrations are read at each search (`liveConfig()`), so changing or turning them off applies without a restart (restapi spec 10.2, 11.3).
     @Config("giphy:api_key", undefined)
     private apiKey?: string;
+
+    @Config("giphy:enabled", true)
+    private enabled: unknown = true;
 
     @Auth(["jwt"])
     // Every search spends this deployment's shared Giphy quota, so each user gets a budget of their own. The GIF
@@ -86,14 +93,15 @@ export class BaseGiphySearchRoute {
     @RateLimit({ perUser: true, maxAttempts: 300, windowSeconds: 60 })
     @Get("/search")
     public async search(@Query("q") query?: string, @Query("limit") limitParam?: string): Promise<GiphyGif[]> {
-        // The checked-in placeholder key counts as unset.
-        if (!this.apiKey || this.apiKey === DEFAULT_GIPHY_API_KEY) {
+        const apiKey: string | undefined = liveConfig<string>("giphy:api_key", this.apiKey);
+        // Turned off by the administrator (which also empties the key) or by the deployment; the checked-in placeholder key counts as unset.
+        if (!isConfigFlagOn(liveConfig("giphy:enabled", this.enabled), true) || !apiKey || apiKey === DEFAULT_GIPHY_API_KEY) {
             throw new ApiError(ApiErrors.INTERNAL_ERROR, 500, "GIF search is not configured on this server.");
         }
 
         const limit: number = clampLimit(limitParam);
         const trimmed = query?.trim();
-        const params = new URLSearchParams({ api_key: this.apiKey, limit: String(limit), rating: "pg-13" });
+        const params = new URLSearchParams({ api_key: apiKey, limit: String(limit), rating: "pg-13" });
         if (trimmed) {
             params.set("q", trimmed);
         }

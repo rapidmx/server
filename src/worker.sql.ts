@@ -23,6 +23,7 @@ import { registerCoreProviders } from "./lib/registerCoreProviders.js";
 import { enableBasicAuthIfApplicable } from "./lib/enableBasicAuth.js";
 import { assertConfigKeyringIsSet, createPluginHostCipher, ensureDevelopmentKeyring, startConfigEncryption, type ConfigEncryptionRuntime } from "./lib/configEncryption.js";
 import { startDnsPublishing } from "./dns/AutodiscoverAnnouncement.js";
+import { prepareIntegrations, startIntegrationsSync, type PreparedIntegrations, type RunningIntegrationsSync } from "./integrations/startIntegrations.js";
 
 import * as fs from "fs";
 import { readFile } from "fs/promises";
@@ -30,7 +31,7 @@ import { assertProductionSecretsAreSet, DEVELOPMENT_ENVIRONMENTS, escrowAuditKey
 import { configMs, DEFAULT_RELEASE_TIMEOUT_MS, drainAndStop, withTimeout } from "./lib/gracefulShutdown.js";
 import { startTelemetryToken } from "./lib/telemetryToken.js";
 import { applySqlColumnTypes } from "./lib/sqlColumnTypes.js";
-import { ConfigKeyStateSQL, MailboxSQL, PluginSQL, PluginSecretEncryptorSQL } from "@rapidmx/restapi/sql";
+import { ConfigKeyStateSQL, IntegrationSettingsSQL, MailboxSQL, PluginSQL, PluginSecretEncryptorSQL } from "@rapidmx/restapi/sql";
 import { PluginHost } from "./plugins/PluginHost.js";
 import { TrackedConfigCipherSQL } from "./secrets/TrackedConfigCipherSQL.js";
 import { SQL_PLUGIN_PURGE, SQL_PLUGIN_UI_HOSTS } from "./plugins/hosts/sql.js";
@@ -95,6 +96,8 @@ let server: any = undefined;
 let pluginHost: PluginHost | undefined = undefined;
 let telemetry: { stop: () => void } | undefined = undefined;
 let configEncryption: ConfigEncryptionRuntime | undefined = undefined;
+let integrations: PreparedIntegrations | undefined = undefined;
+let integrationsSync: RunningIntegrationsSync | undefined = undefined;
 
 const start = async function (config: any, logger: any) {
     // Load the release notes file
@@ -125,7 +128,12 @@ const start = async function (config: any, logger: any) {
     // are widened first: the main connection's would otherwise differ, and each start would drop and re-add (emptying) every column that differs.
     await applySqlColumnTypes(config.get("datastores:sql:type"), [PluginSQL, ConfigKeyStateSQL], logger);
     // Install and load this deployment's plugins before the server scans for classes - see plugins/PluginHost.ts.
-    pluginHost = await PluginHost.prepare({ config, logger, datastore: "sql", pluginClass: PluginSQL, configKeyStateClass: ConfigKeyStateSQL, cipher: await createPluginHostCipher(objectFactory), appRoot: process.cwd(), uiHosts: SQL_PLUGIN_UI_HOSTS, purge: SQL_PLUGIN_PURGE });
+    // What an administrator set in the console's Integrations is a configuration layer, and HostConfig reads the configuration at use time: both are in place
+    // before any plugin loads (the layer stays empty until the datastores are connected, so the plugin host installs from the deployment's registry) - see
+    // integrations/startIntegrations.ts.
+    const hostCipher = await createPluginHostCipher(objectFactory);
+    integrations = prepareIntegrations(config, hostCipher, logger);
+    pluginHost = await PluginHost.prepare({ config, logger, datastore: "sql", pluginClass: PluginSQL, configKeyStateClass: ConfigKeyStateSQL, cipher: hostCipher, appRoot: process.cwd(), uiHosts: SQL_PLUGIN_UI_HOSTS, purge: SQL_PLUGIN_PURGE });
     // MySQL/MariaDB column types for restapi's and the plugins' SQL models, applied once they're all loaded and before
     // the datastore connects (a no-op on Postgres) - see lib/sqlColumnTypes.ts.
     pluginHost.classLoader.afterLoad = async (classes) => {
@@ -143,6 +151,10 @@ const start = async function (config: any, logger: any) {
     // Both run in the background and neither can stop the server.
     configEncryption = await startConfigEncryption(objectFactory, PluginSecretEncryptorSQL, logger);
 
+    // The datastores are connected: follow the Integrations row from here on (the change notice, and its version on a timer), so a change made in the admin
+    // console applies in this copy without a restart. Not stoppable by a failure; see integrations/startIntegrations.ts.
+    integrationsSync = await startIntegrationsSync(objectFactory, integrations.layer, IntegrationSettingsSQL, logger);
+
     // The plugins are loaded, so this copy knows whether the Autodiscover plugin runs: tell the DNS controller when that changed its records. Not awaited: it
     // waits on Redis and cannot stop the server from starting.
     void startDnsPublishing(objectFactory, config, logger);
@@ -157,6 +169,7 @@ void start(config, logger);
 let stopping: Promise<void> | undefined;
 const stopServer = (): Promise<void> =>
     (stopping ??= (async () => {
+        await withTimeout(integrationsSync?.stop() ?? Promise.resolve(), DEFAULT_RELEASE_TIMEOUT_MS);
         await withTimeout(configEncryption?.stop() ?? Promise.resolve(), DEFAULT_RELEASE_TIMEOUT_MS);
         // Bounded like shutdown's own release below: with Redis down this would otherwise use up the whole stop timeout.
         await withTimeout(pluginHost?.stop() ?? Promise.resolve(), DEFAULT_RELEASE_TIMEOUT_MS);
@@ -166,6 +179,7 @@ const stopServer = (): Promise<void> =>
         if (objectFactory) {
             await objectFactory.destroy();
         }
+        integrations?.stop();
     })());
 
 let shuttingDown: boolean = false;

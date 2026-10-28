@@ -172,7 +172,9 @@ export class PluginHost {
         const sources: Record<string, string> = config.get("system:plugins:sources") || {};
         const defaults: DefaultPlugin[] = config.get("system:plugins:defaults") || [];
         const namespaces: PluginNamespace[] = normalizePluginNamespaces(config.get("system:plugins:namespaces") ?? DEFAULT_PLUGIN_NAMESPACES);
-        // A package in a namespace with its own registry is read from that registry, like npm's scoped registries.
+        // A package in a namespace with its own registry is read from that registry, like npm's scoped registries. This is the deployment's registry on
+        // purpose, never the one saved in the console's Integrations: the host runs before the integrations layer is built from the database, and the row's
+        // registry fields are plain, so a database writer who could move them would decide where the code this server runs is installed from.
         const registryFor = (packageName: string): NpmRegistryClient => {
             if (options.registry) {
                 return options.registry;

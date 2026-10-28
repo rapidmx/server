@@ -2,20 +2,13 @@
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
-import {
-    FsDkimKeyProvider,
-    LocalFsBlobStore,
-    LocalX509CertificateAuthority,
-    ManualSigningCertificateEnrollment,
-    NodeDnsResolver,
-    RedisConfigKeyChannel,
-    Rfc8823AcmeSigningCertificateEnrollment,
-    S3BlobStore,
-} from "@rapidmx/restapi";
-import { DohDnssecDnsResolver } from "../dns/DohDnssecDnsResolver.js";
+import { FsDkimKeyProvider, LocalFsBlobStore, LocalX509CertificateAuthority, RedisConfigKeyChannel, S3BlobStore } from "@rapidmx/restapi";
+import { DelegatingDnsResolver } from "../dns/DelegatingDnsResolver.js";
 import { KubeDnsControllerTokenVerifier } from "../dns/KubeDnsControllerTokenVerifier.js";
 import { RedisDnsPublisher } from "../dns/RedisDnsPublisher.js";
+import { LocalIntegrationsChannel, RedisIntegrationsChannel } from "../integrations/IntegrationsChannel.js";
 import { OpenBaoClientPkiCertificateAuthority } from "../openbao/OpenBaoClientPkiCertificateAuthority.js";
+import { DelegatingSigningCertificateEnrollment } from "../pki/DelegatingSigningCertificateEnrollment.js";
 import { KubePodRolloutCheck } from "../secrets/KubePodRolloutCheck.js";
 import { KubernetesConfigKeyringStore } from "../secrets/KubernetesConfigKeyringStore.js";
 import { OpenBaoConfigKeyringStore } from "../secrets/OpenBaoConfigKeyringStore.js";
@@ -50,16 +43,15 @@ export interface RegisterCoreProvidersOptions {
      */
     blobStore?: any;
     /**
-     * Forces `DnsResolver` to this implementation instead of the config-driven `mail:dns:resolver` selection
+     * Forces `DnsResolver` to this implementation instead of the delegating one that follows `mail:dns:resolver`
      * (`NodeDnsResolver`/`DohDnssecDnsResolver`). Used by the `Server.*.test.ts` harnesses, which must never make
      * live DoH network calls.
      */
     dnsResolver?: any;
     /**
-     * Forces `SigningCertificateEnrollment` to this implementation instead of the config-driven
-     * `mail:pki:signing_enrollment:backend` selection (`ManualSigningCertificateEnrollment`/
-     * `Rfc8823AcmeSigningCertificateEnrollment`). Used by the `Server.*.test.ts` harnesses, which must never make
-     * live ACME network calls.
+     * Forces `SigningCertificateEnrollment` to this implementation instead of the delegating one that follows
+     * `mail:pki:signing_enrollment:backend` (`ManualSigningCertificateEnrollment`/`Rfc8823AcmeSigningCertificateEnrollment`/none).
+     * Used by the `Server.*.test.ts` harnesses, which must never make live ACME network calls.
      */
     signingCertificateEnrollment?: any;
 }
@@ -103,9 +95,9 @@ export function registerCoreProviders(objectFactory: ClassRegistry, config: Core
     // mail:pki:backend below: "node" (default) is Node's own built-in resolver with no DNSSEC validation,
     // "doh-dnssec" validates DNSSEC (specs/end-to-end_encryption.md's Transport Trust requirement) via a
     // trusted upstream DoH resolver (mail:dns:doh:*) instead - see DohDnssecDnsResolver.ts's own doc comment
-    // for why Node's built-in resolver can't do this itself.
-    const dnsResolverBackend: string = (config.get("mail:dns:resolver") as string) || "node";
-    objectFactory.register(options.dnsResolver ?? (dnsResolverBackend === "doh-dnssec" ? DohDnssecDnsResolver : NodeDnsResolver), "DnsResolver");
+    // for why Node's built-in resolver can't do this itself. The administrator can change it in the console's Integrations, so the
+    // registered resolver is one that reads the setting at each lookup (DelegatingDnsResolver) rather than one chosen here, once.
+    objectFactory.register(options.dnsResolver ?? DelegatingDnsResolver, "DnsResolver");
     // Opts into automatic per-domain DKIM key generation (writing into the shared volume the Postfix/rspamd
     // container reads from - see docker-compose.mail.yml's `dkim_rspamd_keys` volume and `mail:dkim:*`
     // config) rather than the library's default manual model (`NullDkimKeyProvider`, an admin fills in
@@ -122,18 +114,10 @@ export function registerCoreProviders(objectFactory: ClassRegistry, config: Core
     // SigningCertificateEnrollment backend is config-driven (mail:pki:signing_enrollment:backend) rather
     // than hardcoded, same pattern as mail:pki:backend above: "manual" (default) is the CA-agnostic,
     // human-in-the-loop flow (mail:pki:manual_enrollment:store_path); "rfc8823" automates public-CA
-    // enrollment end to end via RFC 8823 email-reply-00 ACME (mail:pki:rfc8823:*).
-    objectFactory.register(
-        options.signingCertificateEnrollment ??
-            selectConfigDrivenBackend(
-                config,
-                "mail:pki:signing_enrollment:backend",
-                "rfc8823",
-                ManualSigningCertificateEnrollment,
-                Rfc8823AcmeSigningCertificateEnrollment,
-            ),
-        "SigningCertificateEnrollment",
-    );
+    // enrollment end to end via RFC 8823 email-reply-00 ACME (mail:pki:rfc8823:*); "none" turns enrollment off.
+    // The administrator can change it in the console's Integrations, so the registered enrollment is one that picks the backend at
+    // each enrollment start (DelegatingSigningCertificateEnrollment) and leaves an enrollment in flight with its own.
+    objectFactory.register(options.signingCertificateEnrollment ?? DelegatingSigningCertificateEnrollment, "SigningCertificateEnrollment");
     // The configuration encryption (restapi spec 5): the cipher the routes, jobs and the key heartbeat share, and what the key rotation and the plugin secret
     // encryption need of the deployment.
     objectFactory.register(options.configCipher, "ConfigCipher");
@@ -163,4 +147,7 @@ export function registerCoreProviders(objectFactory: ClassRegistry, config: Core
     if (config.get("datastores:cache") && config.get("datastores:events")) {
         objectFactory.register(RedisDnsPublisher, "DnsPublisher");
     }
+    // How a saved change to the Integrations reaches every server copy (rapidmx:integrations:changed) is the events Redis, as for the keyring and the DNS
+    // desired state. A server without the two Redis datastores (the Server.*.test.ts harnesses) is one copy, and its own listeners are all there are.
+    objectFactory.register(config.get("datastores:cache") && config.get("datastores:events") ? RedisIntegrationsChannel : LocalIntegrationsChannel, "IntegrationsChannel");
 }

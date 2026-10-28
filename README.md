@@ -1022,6 +1022,28 @@ global selector and never acknowledges a switch, so scheduled rotation ships off
 disagree). Until then a rotation started by hand records the missing acknowledgement as the domain's `lastError` after an hour and keeps both records published; cancel it
 with the route above.
 
+## Integrations Set in the Admin Console
+
+The third-party services an administrator picks in the admin console's Integrations (Giphy, STUN, the signing certificate authority, the DNS resolver, the plugin
+registry; `system/integrations`, which needs a trusted role and, to write, an elevated token) take effect **without a restart**. What an administrator sets is
+saved in the `IntegrationSettings` row (its secrets encrypted with the configuration keyring) and becomes a configuration layer, `integrations`, directly below
+the plugin settings: it outranks the environment, the command line and the shipped defaults until the administrator resets the field, which puts the deployment's
+own value back. Every copy of the server rebuilds the layer when it hears `rapidmx:integrations:changed` on the `events` Redis, and compares the row's version
+every minute in case it missed one; the Giphy key and the registry tokens are decrypted then and kept in memory, never decrypted per request. A secret that
+can't be decrypted (the keyring lost its key) is left out, so the deployment's value applies, and the console shows it as "Set, but can't be read: enter it again".
+
+| Section | Config keys it overrides | Applies |
+|---|---|---|
+| Giphy | `giphy:enabled` (default `true`), `giphy:api_key` | At the next GIF search. Turning Giphy off also empties the key. |
+| STUN | `integrations:stun:urls` | At the next ICE-server request of the Video Conferencing plugin. |
+| Signing CA | `mail:pki:signing_enrollment:backend` (`manual`, `rfc8823` or `none`), `mail:pki:rfc8823:directory_url`, `mail:pki:rfc8823:contact_email` | At the next signing-certificate enrollment. One already started stays with the backend that started it; `none` starts no new ones. |
+| DNS resolver | `mail:dns:resolver` (`node` or `doh-dnssec`), `mail:dns:doh:endpoint` | At the next DNS lookup (every DNS check, verification and key discovery). |
+| Plugin registry | `system:plugins:registry`, `system:plugins:registry_token`, `system:plugins:namespaces` | At the next plugin install or update made in the console, including the plugin list's own registry lookups. The install the server does when it starts (and so the rolling restart a plugin change causes) uses the deployment's registry and namespaces only, since the row's registry fields are not encrypted and must not decide where the code this server runs comes from. |
+
+`giphy:enabled` and `integrations:stun:urls` are new settings for the deployment too (`giphy__enabled=false` turns GIF search off; `integrations__stun__urls` is a
+JSON list of `stun:`/`stuns:` URIs); the layer is not in the plugin settings plugins may write, and no plugin can declare these keys. The deployment's registry token
+only goes to the deployment's registry: when an administrator points the plugin registry elsewhere, the token is the administrator's own or none.
+
 ## Administrators and Other Users' Mail
 
 An administrator is an ordinary user with more powers over the *platform* (domains, policies, plugins, branding, mailbox settings) - **not** over other people's mail. In the mail client and its settings an

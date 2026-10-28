@@ -4,6 +4,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 import { ObjectDecorators } from "@rapidrest/core";
 import { DnsMxRecord, DnsResolver, DnsSrvRecord } from "@rapidmx/restapi";
+import { liveConfig } from "../integrations/liveConfig.js";
 const { Config } = ObjectDecorators;
 
 const TXT_TYPE = 16;
@@ -107,6 +108,8 @@ function parseSrvRecord(data: string): DnsSrvRecord {
  * @author Jean-Philippe Steinmetz
  */
 export class DohDnssecDnsResolver implements DnsResolver {
+    // The endpoint configured when the server started: it applies in a process with no host. Otherwise the endpoint is read at each lookup (`liveConfig()`), so
+    // the one an administrator sets in the console's Integrations applies without a restart (restapi spec 11.3).
     @Config("mail:dns:doh:endpoint", "https://cloudflare-dns.com/dns-query")
     private endpoint: string = "https://cloudflare-dns.com/dns-query";
 
@@ -137,7 +140,7 @@ export class DohDnssecDnsResolver implements DnsResolver {
     }
 
     private async query(hostname: string, type: number): Promise<DohAnswer[]> {
-        const url = `${this.endpoint}?name=${encodeURIComponent(hostname)}&type=${type}`;
+        const url = `${liveConfig<string>("mail:dns:doh:endpoint", this.endpoint) || this.endpoint}?name=${encodeURIComponent(hostname)}&type=${type}`;
         const response = await fetch(url, {
             headers: { accept: "application/dns-json" },
             signal: AbortSignal.timeout(this.timeoutMs),

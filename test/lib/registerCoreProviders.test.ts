@@ -8,17 +8,10 @@
 // covers both that the function itself registers the full token set correctly, and that all three entry points
 // actually call it (rather than reverting to their own inline copy, which is exactly how the drift happened before).
 import * as fs from "fs";
-import {
-    FsDkimKeyProvider,
-    LocalFsBlobStore,
-    LocalX509CertificateAuthority,
-    ManualSigningCertificateEnrollment,
-    NodeDnsResolver,
-    Rfc8823AcmeSigningCertificateEnrollment,
-    RedisConfigKeyChannel,
-    S3BlobStore,
-} from "@rapidmx/restapi";
-import { DohDnssecDnsResolver } from "../../src/dns/DohDnssecDnsResolver.js";
+import { FsDkimKeyProvider, LocalFsBlobStore, LocalX509CertificateAuthority, RedisConfigKeyChannel, S3BlobStore } from "@rapidmx/restapi";
+import { DelegatingDnsResolver } from "../../src/dns/DelegatingDnsResolver.js";
+import { LocalIntegrationsChannel, RedisIntegrationsChannel } from "../../src/integrations/IntegrationsChannel.js";
+import { DelegatingSigningCertificateEnrollment } from "../../src/pki/DelegatingSigningCertificateEnrollment.js";
 import { DevBypassAvScanProvider, DevBypassSpamScanProvider } from "../../src/dev/DevScanBypass.js";
 import { DevLocalDeliveryTransportMongo } from "../../src/dev/DevLocalDeliveryTransportMongo.js";
 import { TieredRateLimiter } from "../../src/lib/TieredRateLimiter.js";
@@ -74,6 +67,7 @@ describe("registerCoreProviders", () => {
                 "ConfigCipher",
                 "ServerRolloutCheck",
                 "DnsControllerTokenVerifier",
+                "IntegrationsChannel",
             ].sort(),
         );
     });
@@ -134,28 +128,40 @@ describe("registerCoreProviders", () => {
         expect(registered.SecretStore).toBeUndefined();
     });
 
-    it("resolves every config-driven backend to its documented default when unset", () => {
-        const registered = recordRegistrations(fakeConfig());
-        expect(registered.BlobStore).toBe(LocalFsBlobStore);
-        expect(registered.DnsResolver).toBe(NodeDnsResolver);
-        expect(registered.EncryptionCertificateAuthority).toBe(LocalX509CertificateAuthority);
-        expect(registered.SigningCertificateEnrollment).toBe(ManualSigningCertificateEnrollment);
+    it("registers the delegating DnsResolver and SigningCertificateEnrollment whatever the configuration says, since the integrations layer chooses at use time", () => {
+        for (const values of [
+            {},
+            { "mail:dns:resolver": "doh-dnssec", "mail:pki:signing_enrollment:backend": "rfc8823" },
+            { "mail:dns:resolver": "node", "mail:pki:signing_enrollment:backend": "none" },
+        ]) {
+            const registered = recordRegistrations(fakeConfig(values));
+            expect(registered.DnsResolver).toBe(DelegatingDnsResolver);
+            expect(registered.SigningCertificateEnrollment).toBe(DelegatingSigningCertificateEnrollment);
+        }
     });
 
-    it("resolves every config-driven backend to its alternate when configured", () => {
-        const registered = recordRegistrations(
-            fakeConfig({
-                "mail:blob:backend": "s3",
-                "mail:dns:resolver": "doh-dnssec",
-                "mail:pki:backend": "openbao",
-                "mail:pki:signing_enrollment:backend": "rfc8823",
-            }),
-        );
+    it("registers the channel the integrations change is announced on: Redis when both Redis datastores are configured, the process's own otherwise", async () => {
+        expect(recordRegistrations(fakeConfig(REDIS)).IntegrationsChannel).toBe(RedisIntegrationsChannel);
+        expect(recordRegistrations(fakeConfig()).IntegrationsChannel).toBe(LocalIntegrationsChannel);
+        expect(recordRegistrations(fakeConfig({ "datastores:cache": { url: "redis://cache" } })).IntegrationsChannel).toBe(LocalIntegrationsChannel);
+        for (const file of ["../../src/config.mongo.js", "../../src/config.sql.js"]) {
+            vi.resetModules();
+            const { default: shipped } = await import(file);
+            expect(recordRegistrations(shipped).IntegrationsChannel, file).toBe(RedisIntegrationsChannel);
+        }
+    });
+
+    it("resolves the config-driven backends the layer doesn't decide to their documented default when unset", () => {
+        const registered = recordRegistrations(fakeConfig());
+        expect(registered.BlobStore).toBe(LocalFsBlobStore);
+        expect(registered.EncryptionCertificateAuthority).toBe(LocalX509CertificateAuthority);
+    });
+
+    it("resolves the config-driven backends the layer doesn't decide to their alternate when configured", () => {
+        const registered = recordRegistrations(fakeConfig({ "mail:blob:backend": "s3", "mail:pki:backend": "openbao" }));
         expect(registered.BlobStore).toBe(S3BlobStore);
-        expect(registered.DnsResolver).toBe(DohDnssecDnsResolver);
         // restapi's OpenBao PKI CA, talking through the server's client (a CA bundle, Kubernetes auth).
         expect(registered.EncryptionCertificateAuthority).toBe(OpenBaoClientPkiCertificateAuthority);
-        expect(registered.SigningCertificateEnrollment).toBe(Rfc8823AcmeSigningCertificateEnrollment);
     });
 
     it("registers the dev-bypass mail providers for a development environment, matching registerMailProviders() directly", () => {
@@ -204,6 +210,21 @@ describe("worker.ts/worker.mongo.ts/worker.sql.ts registration drift guard", () 
             const calls = source.match(/startDnsPublishing\(objectFactory,/g) ?? [];
             expect(calls, file).toHaveLength(1);
             expect(source.indexOf("startDnsPublishing(objectFactory,"), file).toBeGreaterThan(source.indexOf("await pluginHost.start("));
+        }
+    });
+
+    it("takes up the integrations around the plugin host and the server: the layer before the host reads the registry, the live sync once the server is up", () => {
+        for (const file of files) {
+            const source = fs.readFileSync(file, "utf-8");
+            expect(source, file).toMatch(/import\s*\{[^}]*prepareIntegrations[^}]*startIntegrationsSync[^}]*\}\s*from\s*"\.\/integrations\/startIntegrations\.js"/);
+            expect(source.match(/prepareIntegrations\(config,/g) ?? [], file).toHaveLength(1);
+            expect(source.match(/startIntegrationsSync\(objectFactory,/g) ?? [], file).toHaveLength(1);
+            // The plugin host installs plugins from the registry the layer holds, so the layer is built first; the sync needs the connected datastores.
+            expect(source.indexOf("prepareIntegrations(config,"), file).toBeLessThan(source.indexOf("PluginHost.prepare("));
+            expect(source.indexOf("startIntegrationsSync(objectFactory,"), file).toBeGreaterThan(source.indexOf("await server.start()"));
+            // Stopped with the server.
+            expect(source, file).toMatch(/integrationsSync\?\.stop\(\)/);
+            expect(source, file).toMatch(/integrations\?\.stop\(\)/);
         }
     });
 

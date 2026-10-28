@@ -6,6 +6,7 @@ vi.mock("redis", async () => {
     return createFakeRedisModule();
 });
 
+import { LocalIntegrationsChannel } from "../../src/integrations/IntegrationsChannel.js";
 import config from "../../src/config.mongo.js";
 import fs from "fs";
 import * as http from "http";
@@ -91,6 +92,8 @@ describe("StaticAssetRoute over a real HTTP server", () => {
     objectFactory.register(CountingRateLimiter, "RateLimiter");
     // Reads the active key from the datastore.
     objectFactory.register(ConfigCipherMongo, "ConfigCipher");
+    // Where a saved change to the Integrations is announced (a test server is one copy, so the process's own listeners are all there are).
+    objectFactory.register(LocalIntegrationsChannel, "IntegrationsChannel");
 
     let server: Server;
     let port: number;

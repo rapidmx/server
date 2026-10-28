@@ -10,6 +10,7 @@ import {
     DEFAULT_COOKIE_SECRET,
     DEFAULT_MAIL_INGEST_SECRET,
     ensurePushDatastore,
+    INTEGRATIONS_STORE,
     PLUGIN_SETTINGS_STORE,
     SECRETS_GUARD_SKIP_ENVIRONMENTS,
     SecretsConfig,
@@ -372,5 +373,32 @@ describe("the DNS controller in the shipped configuration", () => {
     it("keeps the controller's subject out of a plugin's reach", () => {
         expect(isProtectedPluginSettingKey("mail:dns:controller:subject")).toBe(true);
         expect(isProtectedPluginSettingKey("mail__dns__controller__subject")).toBe(true);
+    });
+});
+
+describe("the integrations layer in the shipped configuration", () => {
+    for (const file of ["../src/config.mongo.js", "../src/config.sql.js"]) {
+        it(`${file} has the integrations layer directly below the plugin settings, above the command line, the environment and the defaults`, async () => {
+            vi.resetModules();
+            const { default: conf } = await import(file);
+            const stores = Object.keys(conf.stores);
+            expect(stores.slice(0, 3)).toEqual([PLUGIN_SETTINGS_STORE, INTEGRATIONS_STORE, "argv"]);
+            expect(stores.indexOf(INTEGRATIONS_STORE)).toBeLessThan(stores.indexOf("env"));
+            expect(stores.indexOf(INTEGRATIONS_STORE)).toBeLessThan(stores.indexOf("defaults"));
+            // Empty until the server builds it from the Integrations row.
+            expect(conf.stores[INTEGRATIONS_STORE].store).toEqual({});
+        });
+
+        it(`${file} ships Giphy on, which the key alone decided before (giphy:enabled)`, async () => {
+            vi.resetModules();
+            const { default: conf } = await import(file);
+            expect(conf.get("giphy:enabled")).toBe(true);
+        });
+    }
+
+    it("keeps a plugin from declaring or saving the keys the layer sets", () => {
+        for (const key of ["integrations:stun:urls", "giphy:api_key", "giphy:enabled", "mail:dns:resolver", "mail:dns:doh:endpoint", "mail:pki:signing_enrollment:backend", "mail:pki:rfc8823:directory_url", "system:plugins:registry", "system:plugins:namespaces"]) {
+            expect(isProtectedPluginSettingKey(key), key).toBe(true);
+        }
     });
 });

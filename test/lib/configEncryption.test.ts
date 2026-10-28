@@ -247,7 +247,9 @@ describe("the entry points", () => {
     it("give the plugin host the cipher and the key state model, and start the encryption after the server is up", () => {
         for (const file of files) {
             const source = fs.readFileSync(file, "utf-8");
-            expect(source, file).toMatch(/cipher: await createPluginHostCipher\(objectFactory\)/);
+            // One cipher, the plugin host's, which the integrations layer decrypts with too.
+            expect(source, file).toMatch(/const hostCipher = await createPluginHostCipher\(objectFactory\)/);
+            expect(source, file).toMatch(/cipher: hostCipher/);
             expect(source, file).toMatch(/configKeyStateClass: ConfigKeyState(Mongo|SQL)/);
             expect(source.indexOf("await server.start()"), file).toBeLessThan(source.indexOf("await startConfigEncryption("));
             expect(source, file).toMatch(/configEncryption\?\.stop\(\)/);

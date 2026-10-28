@@ -14,6 +14,7 @@ import {
     DEFAULT_MAX_BODY_SIZE_BYTES,
     DEFAULT_APPEARANCE_BACKGROUND_MAX_BYTES,
     DEFAULT_MAX_COMPOSE_ATTACHMENT_BYTES,
+    INTEGRATIONS_STORE,
     PLUGIN_SETTINGS_STORE,
     ensurePushDatastore,
 } from "./config.defaults.js";
@@ -23,9 +24,11 @@ const _dirname = dirname(_filename);
 const _require = createRequire(import.meta.url);
 const packageInfo = _require(join(process.cwd(), "package.json"));
 
-// The first layer, so the settings saved on plugins in the admin console win over the environment (config.defaults.ts).
+// The first layer, so the settings saved on plugins in the admin console win over the environment (config.defaults.ts). The second is what an administrator
+// set in the console's Integrations, which also wins over the environment until it is reset (src/integrations/IntegrationsLayer.ts).
 const conf = nconf
     .add(PLUGIN_SETTINGS_STORE, { type: "literal", store: {} })
+    .add(INTEGRATIONS_STORE, { type: "literal", store: {} })
     .argv()
     .env({
         separator: "__",
@@ -496,6 +499,8 @@ conf.defaults({
         },
     },
     giphy: {
+        // Whether GIF search is offered at all; the console's Integrations can turn it off (the key alone decided before). Without a key it is unavailable either way.
+        enabled: true,
         api_key: DEFAULT_GIPHY_API_KEY,
     },
     // The configuration keyring (restapi specs/dns_publishing_and_integrations.md section 5): the AES-256-GCM key that the credentials,

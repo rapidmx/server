@@ -8,6 +8,7 @@ vi.mock("redis", async () => {
     return createFakeRedisModule();
 });
 
+import { LocalIntegrationsChannel } from "../../src/integrations/IntegrationsChannel.js";
 import * as http from "http";
 import { MongoMemoryServer } from "mongodb-memory-server";
 import { JWTUtils, Logger, sleep } from "@rapidrest/core";
@@ -55,6 +56,8 @@ describe("PluginRoute over HTTP (MongoDB)", () => {
     objectFactory.register(TieredRateLimiter, "RateLimiter");
     // Reads the active key from the datastore.
     objectFactory.register(ConfigCipherMongo, "ConfigCipher");
+    // Where a saved change to the Integrations is announced (a test server is one copy, so the process's own listeners are all there are).
+    objectFactory.register(LocalIntegrationsChannel, "IntegrationsChannel");
     let server: Server;
     let port: number;
     let db: any;
