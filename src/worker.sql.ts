@@ -11,7 +11,7 @@ import config from "./config.sql.js";
 import { fileURLToPath } from "url";
 import { dirname } from "path";
 import { Logger } from "@rapidrest/core";
-import { ObjectFactory, Server } from "@rapidrest/service-core";
+import { ObjectFactory } from "@rapidrest/service-core";
 import { PostgresFullTextSearchProvider } from "@rapidmx/restapi/search";
 import {
     configureDevAutoProvisioningIfApplicable,
@@ -23,6 +23,9 @@ import { registerCoreProviders } from "./lib/registerCoreProviders.js";
 import { enableBasicAuthIfApplicable } from "./lib/enableBasicAuth.js";
 import { assertConfigKeyringIsSet, createPluginHostCipher, ensureDevelopmentKeyring, startConfigEncryption, type ConfigEncryptionRuntime } from "./lib/configEncryption.js";
 import { startDnsPublishing } from "./dns/AutodiscoverAnnouncement.js";
+import { InstallationServer } from "./lib/InstallationServer.js";
+import { seedInstallation } from "./lib/seedInstallation.js";
+import { SQL_INSTALLATION } from "./lib/installation/sql.js";
 import { prepareIntegrations, startIntegrationsSync, type PreparedIntegrations, type RunningIntegrationsSync } from "./integrations/startIntegrations.js";
 
 import * as fs from "fs";
@@ -142,7 +145,11 @@ const start = async function (config: any, logger: any) {
             logger.info(`Adjusted ${adjusted} SQL columns for ${config.get("datastores:sql:type")}.`);
         }
     };
-    server = new Server({ config, basePath: config.get("base_path"), logger, objectFactory, classLoader: pluginHost.classLoader });
+    // The installation's own setup (the DNS provider config the installer created, the domains it was installed for) runs once the datastores are connected and before the
+    // server listens, so the readiness probe passes only after it - see lib/InstallationServer.ts and lib/seedInstallation.ts.
+    server = new InstallationServer({ config, basePath: config.get("base_path"), logger, objectFactory, classLoader: pluginHost.classLoader }, () =>
+        seedInstallation(objectFactory, config, logger, SQL_INSTALLATION),
+    );
     await server.start();
     notifyListening();
     await pluginHost.start(objectFactory, restartForPlugins);

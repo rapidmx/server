@@ -369,6 +369,11 @@ conf.defaults({
         security: {
             trusted_authserv_id: "",
         },
+        // The domains this deployment is installed for (restapi spec 13): each entry is a domain name or an object of name, dnsProvider, dmarcPolicy,
+        // dmarcReportEmail and aliasOf, or a comma-separated string of names. The server creates the ones it has not seeded before at every start, before it
+        // reports ready (DomainSeeder: never again after the administrator deleted one, never changing one that exists). The chart renders it from global.domain and
+        // postfixBridge.domains (mail__domains, JSON); `yarn dev` seeds example.com. `"bootstrap"` as an entry's dnsProvider is the installer's DNS provider below.
+        domains: [],
         // DnsResolver backend selection (see server.mongo.ts) plus that backend's own config.
         // `resolver: "node"` (default) uses Node's own built-in resolver, with no DNSSEC validation.
         // `resolver: "doh-dnssec"` validates DNSSEC on every lookup via a trusted upstream DoH resolver
@@ -392,6 +397,14 @@ conf.defaults({
             controller: {
                 subject: "",
             },
+            // The DNS provider config the installer asked for (--dns-provider), created once at start-up and before the server reports ready, with origin
+            // "installer" (restapi spec 12.1): JSON (the chart renders it into the service ConfigMap) of { name, type, zones, options } and allowTakeover for
+            // --dns-takeover, checked as the admin console checks a new one. Empty, an installation without a DNS provider. It is made only while no config of
+            // the installer exists, so a restart or the administrator's edits never meet a second one or an overwritten one.
+            bootstrap_provider: "",
+            // Where the Secret `<fullname>-dns-bootstrap` is mounted (optional; only the server pod mounts it): one file per credential of the provider's type
+            // (apiToken, accessKeyId, ...). The credentials are encrypted into the config's row, and the installer deletes the Secret once the rollout is ready.
+            bootstrap_credentials_dir: "/etc/rapidmx/dns-bootstrap",
         },
         // EncryptionCertificateAuthority backend selection (see server.mongo.ts) plus that backend's own
         // config. `backend: "local"` (default) needs only `local_ca.*` below; `backend: "openbao"` needs

@@ -106,6 +106,10 @@ export async function mountDevImpersonationRouteIfApplicable(
  * asks, which under `yarn dev` is `DevAutoAuthStrategy`'s synthetic user (uid `DEV_USER_UID`). It's a
  * name, not the uid - uids are UUIDs (restapi only grants mailbox access to UUID-shaped uids).
  *
+ * `mail:domains` is also the list of domains the server seeds at start-up (`seedInstallation()`, before it reports ready), so under `yarn dev` `example.com`
+ * is a real `Domain` from the first start rather than only the name auto-provisioning offers. Like creating one in the console, that needs somewhere to write the
+ * DKIM key (`mail:dkim:key_dir`); a domain whose key can't be made is skipped with a warning.
+ *
  * Only fills in a value that isn't already explicitly configured (checked via a plain `config.get()`,
  * not `@Config`'s own decorator — that only supplies a fallback at the read site, it never writes the
  * default back into the shared config store), so an admin who already set `mail:auto_provision:*`/
@@ -134,7 +138,7 @@ export function configureDevAutoProvisioningIfApplicable(config: any, logger: an
     if (configured) {
         logger.warn(
             "[dev] Self-service mailbox auto-provisioning is configured for local testing (domain: " +
-                "example.com, static alias list — no real auth-server call). yarn dev only; set " +
+                "example.com, which is also seeded as a real domain at start-up; static alias list — no real auth-server call). yarn dev only; set " +
                 "mail:auto_provision:*/mail:domains yourself to override any of this.",
         );
     }

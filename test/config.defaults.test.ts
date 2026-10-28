@@ -18,6 +18,7 @@ import {
     trustedAuthservIdWarning,
     weakIngestSecretWarning,
 } from "../src/config.defaults.js";
+import { DEFAULT_BOOTSTRAP_CREDENTIALS_DIR } from "../src/dns/BootstrapDnsProvider.js";
 import fs from "fs";
 import path from "path";
 
@@ -398,6 +399,27 @@ describe("the integrations layer in the shipped configuration", () => {
 
     it("keeps a plugin from declaring or saving the keys the layer sets", () => {
         for (const key of ["integrations:stun:urls", "giphy:api_key", "giphy:enabled", "mail:dns:resolver", "mail:dns:doh:endpoint", "mail:pki:signing_enrollment:backend", "mail:pki:rfc8823:directory_url", "system:plugins:registry", "system:plugins:namespaces"]) {
+            expect(isProtectedPluginSettingKey(key), key).toBe(true);
+        }
+    });
+});
+
+describe("the installation in the shipped configuration", () => {
+    for (const file of ["../src/config.mongo.js", "../src/config.sql.js"]) {
+        it(`${file} ships no installer provider and no domains, and the directory the Secret <fullname>-dns-bootstrap is mounted at`, async () => {
+            vi.resetModules();
+            const { default: conf } = await import(file);
+            // An installation without --dns-provider has no bootstrap provider; the chart renders both settings.
+            expect(conf.get("mail:dns:bootstrap_provider")).toBe("");
+            expect(conf.get("mail:dns:bootstrap_credentials_dir")).toBe(DEFAULT_BOOTSTRAP_CREDENTIALS_DIR);
+            expect(conf.get("mail:domains")).toEqual([]);
+            // The settings beside them are untouched.
+            expect(conf.get("mail:dns:controller")).toEqual({ subject: "" });
+        });
+    }
+
+    it("keeps a plugin from declaring or saving what the installation is set up from", () => {
+        for (const key of ["mail:dns:bootstrap_provider", "mail:dns:bootstrap_credentials_dir", "mail:domains"]) {
             expect(isProtectedPluginSettingKey(key), key).toBe(true);
         }
     });

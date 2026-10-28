@@ -1044,6 +1044,32 @@ can't be decrypted (the keyring lost its key) is left out, so the deployment's v
 JSON list of `stun:`/`stuns:` URIs); the layer is not in the plugin settings plugins may write, and no plugin can declare these keys. The deployment's registry token
 only goes to the deployment's registry: when an administrator points the plugin registry elsewhere, the token is the administrator's own or none.
 
+## The Domains and DNS Provider an Installation Starts With
+
+A deployment is installed for one or more domains, and with a DNS provider when the installer was given one (`--dns-provider`). The server sets both up itself at every
+start, after its datastores are connected and **before it reports ready** (`GET /api/status` passes only afterwards), so the first request already finds them. Every
+step is idempotent and safe across server copies, and none can stop the server from starting: what fails is logged with its reason (never a credential) and tried
+again at the next start.
+
+1. **The installer's DNS provider config.** `mail:dns:bootstrap_provider` is JSON (`{ "name", "type", "zones", "options" }`, plus `"allowTakeover"` for the installer's
+   `--dns-takeover`; the chart renders it into the service ConfigMap) and is checked with the rules of a provider created in the console. The credentials are the files of
+   the Kubernetes Secret `<fullname>-dns-bootstrap` (one file per credential of the type, named like it: `apiToken` for Cloudflare), which only the server pod mounts, at
+   `mail:dns:bootstrap_credentials_dir` (`/etc/rapidmx/dns-bootstrap`, optional: a config that needs none, such as Route 53 through IRSA, has no Secret). The server
+   creates the `DnsProvider` once, with `origin: "installer"`, its credentials encrypted with the configuration keyring in the row's one write, audited as
+   `DNS_PROVIDER_CREATE` without a user and announced to the DNS controller. It is created only while no config with `origin: "installer"` exists and the setup state
+   (`SetupState.bootstrapDnsProviderUid`) does not record that it was created, so a restart, another server copy, a re-installation and the administrator's edits in
+   the console never meet a second or an overwritten one, and a config the administrator deleted stays deleted. A re-installation with another provider, other zones or
+   new credentials does not change an existing config either: the server says so in a warning (never a value), and the config is changed in the admin console. The
+   installer deletes the Secret once the rollout is ready, and the database is the only place the credentials stay. A name or zone another config already has, or a zone that would take a domain from the
+   config it is assigned to, is refused (logged, nothing created), as in the console.
+2. **The domains.** `mail:domains` (a list of domain names or objects of `name`, `dnsProvider`, `dmarcPolicy`, `dmarcReportEmail` and `aliasOf`; a comma-separated string
+   works too, as `mail__domains=a.com,b.com`) is seeded by `DomainSeeder`: a domain is created only when it is absent and was never seeded before, an existing domain is
+   never changed, a name taken off the list is never deleted, and a seeded domain the administrator deleted stays deleted. `"dnsProvider": "bootstrap"` assigns the
+   installer's config from step 1 (when its zones cover the domain; otherwise the domain is created manual, with a warning; on a start where the config could not be
+   created the domain is not seeded at all, so that it is seeded with the config at the first start that has it). A deployment that predates seeding has its
+   first list adopted, not created. Under `yarn dev`, `example.com` is seeded (creating a domain writes its DKIM key to `mail:dkim:key_dir`, so that directory must be
+   writable, as when adding a domain in the console).
+
 ## Administrators and Other Users' Mail
 
 An administrator is an ordinary user with more powers over the *platform* (domains, policies, plugins, branding, mailbox settings) - **not** over other people's mail. In the mail client and its settings an

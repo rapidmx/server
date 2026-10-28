@@ -1,6 +1,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 // Copyright (C) 2026 Jean-Philippe Steinmetz
 ///////////////////////////////////////////////////////////////////////////////
+import { parseSeedDomainEntries } from "@rapidmx/restapi";
 import config from "../../src/config.mongo.js";
 import { AuthMiddleware, ObjectFactory, RouteUtils } from "@rapidrest/service-core";
 import { Logger } from "@rapidrest/core";
@@ -258,6 +259,18 @@ describe("configureDevAutoProvisioningIfApplicable Tests", () => {
         expect(fake.get("mail:domains")).toEqual(["example.com"]);
         expect(fake.get("mail:auto_provision:static_aliases")).toEqual(["dev-user"]);
         expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("[dev]"));
+    });
+
+    it("sets mail:domains to a list the server's domain seeder reads, so yarn dev has a real example.com domain from its first start (restapi spec 13).", () => {
+        process.argv[1] = "/project/src/server.ts";
+        process.env.NODE_ENV = "development";
+        delete process.env.VITEST;
+        delete process.env.JEST_WORKER_ID;
+        const fake = fakeConfig({ port: 3001 });
+
+        configureDevAutoProvisioningIfApplicable(fake, { warn: vi.fn() });
+
+        expect(parseSeedDomainEntries(fake.get("mail:domains"))).toEqual({ entries: [{ name: "example.com" }], problems: [] });
     });
 
     it("offers the dev-user alias whatever mail:dev_auto_login:uid is, since the uid is a UUID rather than a username.", () => {
