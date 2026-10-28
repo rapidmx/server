@@ -419,6 +419,26 @@ conf.defaults({
         dkim: {
             key_dir: "/var/lib/rspamd/dkim",
             selector: "mail",
+            // Rotation of the keys the server made itself (DkimRotationJob, restapi specs/dns_publishing_and_integrations.md 6.2). A domain keeps
+            // the global selector above until its first rotation, which mints rmx<yyyymmdd>. A domain whose key was imported by hand, the SES
+            // transport and a key provider that cannot rotate are never rotated; "Rotate now" in the admin console works whatever `enabled` says.
+            rotation: {
+                // Whether rotations start on schedule (also the text false, 0, no or off). A rotation in progress still finishes. Off until the
+                // chart pins a postfix-bridge release with per-domain selectors (helm/Chart.yaml, newer than 1.5.0): 1.5.0 never acknowledges a
+                // switch, so a rotation started under it could not finish. test/jobs/DkimRotationJob.test.ts ties this value to that pin.
+                enabled: false,
+                // Days since the latest of the last rotation, the last cancelled one and the domain's creation before a new rotation starts.
+                interval_days: 180,
+                // Days the old record stays published after signing has switched, for mail still in queues or verified later.
+                overlap_days: 7,
+                // Hours the new record must have been live in DNS before signing switches to it, so receivers' resolvers drop a cached "no such record".
+                publish_grace_hours: 48,
+                // Size of every new RSA key, a whole number from 2048 to 4096; anything else is 2048 with a warning.
+                key_bits: 2048,
+                // At most this many rotations start per run and server copy, so the first run, when every older domain is due, spreads the new keys
+                // and records over several runs.
+                max_starts_per_run: 10,
+            },
         },
         // The authserv-id whose Authentication-Results this server trusts to say a message's From is DKIM-verified
         // (@rapidmx/restapi's verifiedFromAddress()/hasAlignedPassingDkim(), used by ingest, ScanQueueJob, KeyringUtils
@@ -548,6 +568,11 @@ conf.defaults({
                 // (seconds field included): every 10 seconds, so guests hear of a meeting that was deleted or cancelled within
                 // moments rather than at the next 5-minute run. Each run is a few indexed queries.
                 schedule: "*/10 * * * * *",
+            },
+            dkim_rotation: {
+                // How often DkimRotationJob moves the domains through the phases of a rotation, cron syntax (seconds field included): hourly. It runs on
+                // every server copy; a run with nothing due reads the domains and returns.
+                schedule: "0 0 * * * *",
             },
             acme_enrollment_driver: {
                 // Every 5 minutes, cron syntax (seconds field included).

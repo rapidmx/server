@@ -986,6 +986,42 @@ memory. The plugin UI build gets its own at startup. `static_assets:compress`, `
   15 s) how long a shutdown waits for the ones in flight. A message the mail system refuses outright (or that fails the spam/virus scan) is reported as
   failed at once instead of being retried, and stays in Outbox marked as failed.
 
+## DKIM Key Rotation
+
+The server rotates the DKIM keys it made itself, per domain, so a leaked or old key stops being good for ever. A domain keeps signing with the global
+selector (`mail:dkim:selector`, `mail` by default) until its first rotation; each rotation mints a new selector `rmx<yyyymmdd>` and moves through four
+phases: the new record is published (by the DNS provider the domain is assigned to, or shown in the console for the administrator to add), signing
+switches to it only after the record is live in DNS for `publish_grace_hours` (a manual domain follows the same rule however long the administrator
+takes) and the MTA has confirmed the switch (postfix-bridge acknowledges it), the old record stays published for `overlap_days`, and then the old record
+and key are removed. The job runs on every server copy and each step is one versioned update of the domain, so copies never double a step. Domains with
+a key imported by hand, deployments that send through SES, and a key provider that cannot rotate are never rotated, and the domain's rotation view says why.
+Per domain, an administrator (a trusted role with an elevated token) can start a rotation at once ("rotate now", or its "compromised" variant, which skips the grace and
+the overlap), cancel one the MTA has not confirmed, and pause or resume the scheduled ones; these work whatever `enabled` says. They are REST routes today, and the
+admin console's DKIM panel arrives with the web-client release:
+
+- `GET /mail/domains/:id/dkim/rotation` - the rotation's phase and `lastError`, whether the key can rotate (and the `blocker` if not), and when the next scheduled one starts.
+- `POST /mail/domains/:id/dkim/rotate` - body `{ "compromised": true }` or empty.
+- `POST /mail/domains/:id/dkim/rotation/cancel` - abandons a rotation that has not reached its overlap (a switch is reverted first).
+- `PUT /mail/domains/:id/dkim/rotation` - body `{ "paused": true }` or `{ "paused": false }`.
+
+`DkimRotationJobMongo`/`DkimRotationJobSQL` are registered with the server's other jobs. Configuration (all optional; the environment spells `:` as `__`,
+for example `mail__dkim__rotation__interval_days`):
+
+| Setting | Default | |
+|---|---|---|
+| `mail:jobs:dkim_rotation:schedule` | `0 0 * * * *` | How often the job runs (cron, seconds field included): hourly. |
+| `mail:dkim:rotation:enabled` | `false` | Whether rotations start on schedule (the text `false`, `0`, `no` or `off` is off). Off until the chart pins a postfix-bridge release with per-domain selectors, then `true`; see below. |
+| `mail:dkim:rotation:interval_days` | `180` | Days since the last rotation (or the last cancelled one, or the domain's creation) before one starts. |
+| `mail:dkim:rotation:overlap_days` | `7` | Days the old record stays published after signing has switched. |
+| `mail:dkim:rotation:publish_grace_hours` | `48` | Hours the new record must have been live before signing switches to it. |
+| `mail:dkim:rotation:key_bits` | `2048` | RSA size of every new key, 2048 to 4096. |
+| `mail:dkim:rotation:max_starts_per_run` | `10` | Rotations started per run and server copy, so the first run after an upgrade, when every older domain is due at once, spreads the new keys and records over several runs. |
+
+Rotation needs a postfix-bridge release with per-domain selectors (the `postfixBridge` subchart). Version 1.5.0, the one the chart pins now, signs every domain with the
+global selector and never acknowledges a switch, so scheduled rotation ships off and turns on by default with the chart pin that replaces it (a test fails if the two
+disagree). Until then a rotation started by hand records the missing acknowledgement as the domain's `lastError` after an hour and keeps both records published; cancel it
+with the route above.
+
 ## Administrators and Other Users' Mail
 
 An administrator is an ordinary user with more powers over the *platform* (domains, policies, plugins, branding, mailbox settings) - **not** over other people's mail. In the mail client and its settings an

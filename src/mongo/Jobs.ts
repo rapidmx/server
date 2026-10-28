@@ -10,6 +10,7 @@ export {
     CalendarReminderJobMongo,
     ConfigKeyRotationJobMongo,
     DataExportJobMongo,
+    DkimRotationJobMongo,
     DomainVerificationJobMongo,
     ErasureExecutionJobMongo,
     ExternalShareExpirationJobMongo,

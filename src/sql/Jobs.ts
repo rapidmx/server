@@ -10,6 +10,7 @@ export {
     CalendarReminderJobSQL,
     ConfigKeyRotationJobSQL,
     DataExportJobSQL,
+    DkimRotationJobSQL,
     DomainVerificationJobSQL,
     ErasureExecutionJobSQL,
     ExternalShareExpirationJobSQL,
