@@ -646,29 +646,6 @@ describe.skipIf(!bashAvailable)("single_node_install.sh: DNS publishing", () => 
         });
     });
 
-    describe("requireDnsControllerImage", () => {
-        it("stops the install before anything is installed or any credential saved when the controller's release is named by neither tag nor digest", () => {
-            const r = dns("requireDnsControllerImage; echo continued");
-            expect(r.status).toBe(1);
-            expect(r.stdout).toContain("DNS_CONTROLLER_TAG");
-            expect(r.stdout).not.toContain("continued");
-            expect(kubectlCalls(r)).toEqual([]);
-        });
-
-        it("goes on with a tag, a digest, or no provider", () => {
-            expect(dns("requireDnsControllerImage; echo continued", { DNS_CONTROLLER_TAG: "0.1.0" }).stdout).toContain("continued");
-            expect(dns("requireDnsControllerImage; echo continued", { DNS_CONTROLLER_DIGEST: "sha256:" + "a".repeat(64) }).stdout).toContain("continued");
-            expect(dns('DNS_PROVIDER=""; requireDnsControllerImage; echo continued').stdout).toContain("continued");
-        });
-
-        it("runs before the credentials are checked and before k3s and the Secret are in place", () => {
-            const script = fs.readFileSync(SCRIPT, "utf8").replace(/\r\n/g, "\n");
-            const required = script.indexOf("\nrequireDnsControllerImage\nprepareDns\n");
-            expect(required).toBeGreaterThan(0);
-            expect(required).toBeLessThan(script.indexOf('run_step "Updating system packages"'));
-        });
-    });
-
     describe("forgetDnsBootstrapSecret", () => {
         it("deletes the Secret with the credentials when the release could not be installed, so no DNS token stays behind in the namespace", () => {
             const r = dns(`DNS_ZONE=example.com; loadDnsCredentials; createDnsBootstrapSecret >/dev/null; forgetDnsBootstrapSecret`, { CF_API_TOKEN: TOKEN });

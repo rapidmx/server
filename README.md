@@ -396,7 +396,7 @@ Best for one Linux server. A single script installs k3s (a small Kubernetes), HT
 With `--dns-provider` the script publishes the DNS records for you, so there is nothing to add at your DNS host: the addresses of `mail.<domain>`, the `auth.`, `autodiscover.` and `openpgpkey.` names, and for each mail domain its ownership, MX, DKIM, DMARC and autodiscover records (see [DNS Publishing](#dns-publishing) for what is published and what stays manual). Your domain's DNS zone must be at the provider you name. Give the provider's credentials in a file of `NAME=value` lines (a file only you can read, passed with `--dns-credentials-file`; it is read as text and never run) or in the environment (`sudo` drops them unless you run `sudo -E`); a credential is never a command-line option, where every local user could read it, and the script never prints one.
 
 ```bash
-DNS_CONTROLLER_TAG=<the dns-controller release> ./single_node_install.sh --domain example.com --email you@example.com \
+./single_node_install.sh --domain example.com --email you@example.com \
   --dns-provider cloudflare --dns-credentials-file ./dns.env     # dns.env holds the line CF_API_TOKEN=<your token>
 ```
 
@@ -411,7 +411,7 @@ DNS_CONTROLLER_TAG=<the dns-controller release> ./single_node_install.sh --domai
 Everything is checked before anything is installed: an option used without `--dns-provider`, a name in the credentials file that is not a setting of the provider, a credential of a wrong form, a `--domain` outside the zone. Then:
 
 - The `DNSEndpoint` custom resource definition of external-dns is installed when the cluster has none (it is cluster-wide, so a copy somebody else installed is left alone), the release gets the DNS controller, and the credentials go into the Secret `<fullname>-dns-bootstrap`, which only the server pod mounts. The server turns them into a DNS provider config in its database, with the credentials encrypted, before it reports ready, and the script deletes the Secret once the server has rolled out and says it has the config. If the config could not be made, the Secret is kept and the script says why.
-- **The DNS controller has no published release yet, so `--dns-provider` cannot complete until it has one.** From its first release, set `DNS_CONTROLLER_TAG` (or `DNS_CONTROLLER_DIGEST`) to the release to deploy, as in the example above. Without it the script stops before anything is installed or any credential is saved, naming the variable (the chart would refuse to render, naming `dns.controller.image`). If the script stops for any reason after it made the credentials Secret and before the server has stored them (the release fails to install, the Gateway or nginx step fails, the keyring Secret cannot be released), it deletes the Secret on exit, and running it again with the same options makes it again.
+- The DNS controller is the release the chart pins (`dns.controller.image`, 0.1.0 now). `DNS_CONTROLLER_TAG` (or `DNS_CONTROLLER_DIGEST`) deploys another one instead. If the script stops for any reason after it made the credentials Secret and before the server has stored them (the release fails to install, the Gateway or nginx step fails, the keyring Secret cannot be released), it deletes the Secret on exit, and running it again with the same options makes it again.
 - `mail.<domain>` is published at the server's public addresses: the global IPv4 addresses of the machine, else the address it is seen from outside. IPv6 is published only for an address you give with `--public-address`. `--dns-zone` names the zone when `--domain` is below its apex, and the `--mail-domains` outside the zone stay manual, as the final message says.
 - **Existing records.** A record that is already at a name RapidMX publishes (the MX of the domain's earlier mail provider) is left alone and shown as a conflict, with the existing value, until you take it over for that domain in the admin console. `--dns-takeover` allows it for the whole provider from the start. The SPF record at the domain's root is never taken over by either; see [DNS Publishing](#dns-publishing).
 - **A release installed without publishing** keeps its domains as they are (the server never changes a domain that exists), so adding `--dns-provider` to it publishes the hosts and installs the controller, but nothing for those domains, and the script does not wait for `openpgpkey.<domain>`. Assign each domain to the provider in the admin console (the domain's DNS panel), then run the script again.
@@ -1047,17 +1047,17 @@ for example `mail__dkim__rotation__interval_days`):
 | Setting | Default | |
 |---|---|---|
 | `mail:jobs:dkim_rotation:schedule` | `0 0 * * * *` | How often the job runs (cron, seconds field included): hourly. |
-| `mail:dkim:rotation:enabled` | `false` | Whether rotations start on schedule (the text `false`, `0`, `no` or `off` is off). Off until the chart pins a postfix-bridge release with per-domain selectors, then `true`; see below. |
+| `mail:dkim:rotation:enabled` | `true` | Whether rotations start on schedule (the text `false`, `0`, `no` or `off` is off). On because the chart pins a postfix-bridge release with per-domain selectors; see below. |
 | `mail:dkim:rotation:interval_days` | `180` | Days since the last rotation (or the last cancelled one, or the domain's creation) before one starts. |
 | `mail:dkim:rotation:overlap_days` | `7` | Days the old record stays published after signing has switched. |
 | `mail:dkim:rotation:publish_grace_hours` | `48` | Hours the new record must have been live before signing switches to it. |
 | `mail:dkim:rotation:key_bits` | `2048` | RSA size of every new key, 2048 to 4096. |
 | `mail:dkim:rotation:max_starts_per_run` | `10` | Rotations started per run and server copy, so the first run after an upgrade, when every older domain is due at once, spreads the new keys and records over several runs. |
 
-Rotation needs a postfix-bridge release with per-domain selectors (the `postfixBridge` subchart). Version 1.5.0, the one the chart pins now, signs every domain with the
-global selector and never acknowledges a switch, so scheduled rotation ships off and turns on by default with the chart pin that replaces it (a test fails if the two
-disagree). Until then a rotation started by hand records the missing acknowledgement as the domain's `lastError` after an hour and keeps both records published; cancel it
-with the route above.
+Rotation needs a postfix-bridge release with per-domain selectors (the `postfixBridge` subchart). Version 1.5.0 and older sign every domain with the
+global selector and never acknowledge a switch, so scheduled rotation is on by default only with the chart pin that replaced it, 1.6.0 (a test fails if the two
+disagree). With an older postfix-bridge, set `mail:dkim:rotation:enabled` to `false`: a rotation started under it records the missing acknowledgement as the domain's
+`lastError` after an hour and keeps both records published; cancel it with the route above.
 
 ## Integrations Set in the Admin Console
 
@@ -1178,7 +1178,7 @@ rendered and every record is published by hand, as each domain's DNS checklist s
 | Value | Default | What it does |
 | --- | --- | --- |
 | `dns.publishing.enabled` | `false` | Renders the DNS controller and external-dns's rights, and sets the server's `mail:dns:controller:subject` and `mail:dns:publish:*`. |
-| `dns.controller.image` | `ghcr.io/rapidmx/dns-controller`, `tag` (`digest` instead of it when set) | The controller's image, an exact release moved together with the server's. **Empty until the controller's first release is published**: enabling publishing with neither a tag nor a digest fails the render, instead of pulling an image that does not exist. |
+| `dns.controller.image` | `ghcr.io/rapidmx/dns-controller`, `tag` (`digest` instead of it when set) | The controller's image, an exact release moved together with the server's. Pinned to `0.1.0`; clearing both the tag and the digest fails the render of publishing. |
 | `dns.controller.resyncMinutes`, `dns.controller.resources` | `10`, small requests and a memory limit | How often the controller reconciles everything again; its resources. |
 | `dns.controller.longPollTimeoutSeconds`, `dns.controller.statusIntervalSeconds` | `0`, `0` | The controller's wait for the server's long-poll answer and its status interval; `0` keeps its defaults (75 and 60), except that a `service.config` `mail__dns__desired_state__long_poll_seconds` above 55 raises the wait to that plus 20, so the poll never ends as a timeout. |
 | `dns.controller.serverCA.configMap`, `dns.controller.serverCA.key` | none, `ca.crt` | With `global.gateway.tlsTermination: pod` the controller calls the server over TLS; when the Issuer's certificate is not signed by a public CA, the ConfigMap holding the CA bundle, which the controller trusts for that call (`NODE_EXTRA_CA_CERTS`). |

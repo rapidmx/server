@@ -1592,17 +1592,6 @@ function seedDomains() {
   done
 }
 
-# Stops the install, before anything is installed or any credential is saved, when --dns-provider has no controller release to deploy: the chart has no
-# default version of the DNS controller's image, so with publishing on the release would fail to render (dns.controller.image has neither a tag nor a digest).
-function requireDnsControllerImage() {
-  if [[ -z "$DNS_PROVIDER" || -n "$DNS_CONTROLLER_TAG" || -n "$DNS_CONTROLLER_DIGEST" ]]; then
-    return 0
-  fi
-  echo "--dns-provider needs the release of the DNS controller to deploy: set DNS_CONTROLLER_TAG (or DNS_CONTROLLER_DIGEST, sha256:...), which the chart"
-  echo "has no default for (dns.controller.image). The controller has no published release yet; see the README, \"Publishing DNS records with the installer\"."
-  exit 1
-}
-
 # Everything --dns-provider needs before anything is installed: the zone (--dns-zone, else --domain's, which for Cloudflare is the one its API
 # has, looking from --domain upwards), the credentials, Cloudflare's zone id and the public addresses. It stops the install on what can't work,
 # and says which domains the zone doesn't contain: their records stay with the administrator, as the server leaves a domain outside the
@@ -2589,7 +2578,7 @@ do
           echo -e "\tGOOGLE_APPLICATION_CREDENTIALS, EXTERNAL_DNS_GOOGLE_PROJECT\tGoogle Cloud DNS (the key file's path, the project)"
           echo -e "\tAZURE_CLIENT_ID, AZURE_CLIENT_SECRET, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID, AZURE_RESOURCE_GROUP\tAzure DNS"
           echo -e "\t\t\t\t(sudo passes none of these on unless you ask: sudo -E, or put them in --dns-credentials-file)"
-          echo -e "\tDNS_CONTROLLER_TAG\tThe dns-controller release to deploy (dns.controller.image.tag); DNS_CONTROLLER_DIGEST pins by digest instead"
+          echo -e "\tDNS_CONTROLLER_TAG\tThe dns-controller release to deploy instead of the one the chart pins (dns.controller.image.tag); DNS_CONTROLLER_DIGEST pins by digest instead"
           exit 1
           ;;
         --) shift; break;;
@@ -2711,7 +2700,6 @@ fi
 
 # Everything --dns-provider needs that can be checked before anything is installed (the zone, the credentials, Cloudflare's zone id, the public
 # addresses), then how openpgpkey.<domain> is installed: now, in a second step once its record is published, or not at all.
-requireDnsControllerImage
 prepareDns
 decideOpenpgpkeyHost
 

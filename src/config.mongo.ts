@@ -337,10 +337,10 @@ conf.defaults({
             // the global selector above until its first rotation, which mints rmx<yyyymmdd>. A domain whose key was imported by hand, the SES
             // transport and a key provider that cannot rotate are never rotated; "Rotate now" in the admin console works whatever `enabled` says.
             rotation: {
-                // Whether rotations start on schedule (also the text false, 0, no or off). A rotation in progress still finishes. Off until the
+                // Whether rotations start on schedule (also the text false, 0, no or off). A rotation in progress still finishes. On because the
                 // chart pins a postfix-bridge release with per-domain selectors (helm/Chart.yaml, newer than 1.5.0): 1.5.0 never acknowledges a
                 // switch, so a rotation started under it could not finish. test/jobs/DkimRotationJob.test.ts ties this value to that pin.
-                enabled: false,
+                enabled: true,
                 // Days since the latest of the last rotation, the last cancelled one and the domain's creation before a new rotation starts.
                 interval_days: 180,
                 // Days the old record stays published after signing has switched, for mail still in queues or verified later.

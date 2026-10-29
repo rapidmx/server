@@ -123,9 +123,8 @@ describe.skipIf(!helmAvailable || !depsAvailable)("chart: DNS publishing", () =>
         it("pins the images: the controller to a release, external-dns to v0.23.0 by digest", () => {
             const values = loadAll(fs.readFileSync(path.join(CHART, "values.yaml"), "utf8").replace(/\{\{[^}]*\}\}/g, "x"))[0] as any;
             expect(values.dns.controller.image).toMatchObject({ registry: "ghcr.io", repository: "rapidmx/dns-controller", digest: "" });
-            // Never a floating tag; and none at all until the controller's first release is published, so that enabling publishing fails the render
-            // instead of pulling an image that does not exist.
-            expect(values.dns.controller.image.tag).toMatch(/^(\d+\.\d+\.\d+)?$/);
+            // Never a floating tag: an exact release.
+            expect(values.dns.controller.image.tag).toMatch(/^\d+\.\d+\.\d+$/);
             expect(values.dns.externalDns.image).toMatch(/^registry\.k8s\.io\/external-dns\/external-dns:v0\.23\.0@sha256:[0-9a-f]{64}$/);
         });
 
@@ -136,7 +135,7 @@ describe.skipIf(!helmAvailable || !depsAvailable)("chart: DNS publishing", () =>
             expect(controller(render([ON, "dns.controller.image.tag=9.8.7"])).spec.template.spec.containers[0].image).toBe("ghcr.io/rapidmx/dns-controller:9.8.7");
         });
 
-        it("refuses to render without a release to run, which the chart's own default is until one is published", () => {
+        it("refuses to render without a release to run, once the chart's pinned one is cleared", () => {
             const res = helm([ON, "dns.controller.image.tag="], []);
             expect(res.status).not.toBe(0);
             expect(res.stderr).toMatch(/dns\.controller\.image/);
@@ -297,9 +296,9 @@ describe.skipIf(!helmAvailable || !depsAvailable)("chart: DNS publishing", () =>
             for (const role of off.filter((d) => d.kind === "Role")) {
                 expect(find(on, "Role", role.metadata!.name!)!.rules).toEqual(role.rules);
             }
-            // The write rights are the controller's and the keyring's, and only those.
+            // The write rights are the controller's alone (the keyring's Role is not rendered for a keyring Secret the installer does not own).
             const writers = on.filter((d) => d.kind === "Role" && d.rules!.some((rule) => rule.verbs.some((verb) => !["get", "list", "watch"].includes(verb))));
-            expect(writers.map((d) => d.metadata?.name).sort()).toEqual([CONTROLLER, EXTERNAL_DNS, "keyring"].sort());
+            expect(writers.map((d) => d.metadata?.name).sort()).toEqual([CONTROLLER, EXTERNAL_DNS].sort());
             // The server is not bound to either of them.
             for (const binding of on.filter((d) => d.kind === "RoleBinding" && [CONTROLLER, EXTERNAL_DNS].includes(d.metadata?.name ?? ""))) {
                 expect(binding.subjects!.map((s) => s.name)).not.toContain("rapidmx-server");

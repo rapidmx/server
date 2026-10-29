@@ -387,13 +387,12 @@ dns:
       annotations: {}
   controller:
     # Pinned to an exact rapidmx/dns-controller release, moved together with the server release (the handshake refuses a pair that does
-    # not speak the same API version). digest, when set, is used instead of the tag. Empty until the first release of the controller
-    # is published (rapidmx/dns-controller has no tag or image yet): enabling dns.publishing with neither fails the render, rather
-    # than pinning an image that does not exist and leaving a pod in ImagePullBackOff. Set the tag, by its YAML key path, when it is out.
+    # not speak the same API version). digest, when set, is used instead of the tag. Clearing both fails the render of dns.publishing
+    # rather than leaving a pod without an image to run. Move the tag, by its YAML key path, with the release.
     image:
       registry: ghcr.io
       repository: rapidmx/dns-controller
-      tag: ''
+      tag: '0.1.0'
       digest: ''
     # How often the whole desired state is reconciled again while nothing changes.
     resyncMinutes: 10

@@ -82,7 +82,7 @@ describe("the README", () => {
             expect(options.toLowerCase(), `the installer section names ${type}`).toContain(type);
         }
         expect(options).toContain("--dns-credentials-file");
-        expect(options, "the controller's tag, until the chart pins one").toContain("DNS_CONTROLLER_TAG");
+        expect(options, "the controller's tag override").toContain("DNS_CONTROLLER_TAG");
     });
 
     it("serves openpgpkey.<domain> by default where it can, not as the opt-in beta.46 made it", () => {
@@ -140,10 +140,10 @@ describe("the README", () => {
         expect(text).toMatch(/published release/);
     });
 
-    it("shows the controller's tag in the installer's DNS example", () => {
+    it("needs no controller tag in the installer's DNS example, the chart pins one", () => {
         const example = section("Publishing DNS records with the installer").match(/```bash\n([\s\S]*?)```/)![1];
         expect(example).toContain("--dns-provider");
-        expect(example).toContain("DNS_CONTROLLER_TAG");
+        expect(example).not.toContain("DNS_CONTROLLER_TAG");
     });
 
     it("says that --openpgpkey-host true also waits for the published record with --dns-provider", () => {
