@@ -401,6 +401,8 @@ conf.defaults({
             // controller's status report, at most one pass per this many seconds.
             takeover: {
                 min_interval_seconds: 60,
+                // How long a domain or host set found with nothing to take over is not looked at again while its endpoint stays as it is.
+                recheck_seconds: 21600,
             },
             // The DNS provider config the installer asked for (--dns-provider), created once at start-up and before the server reports ready, with origin
             // "installer" (restapi spec 12.1): JSON (the chart renders it into the service ConfigMap) of { name, type, zones, options } and allowTakeover for

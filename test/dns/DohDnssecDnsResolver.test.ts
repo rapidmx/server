@@ -96,6 +96,26 @@ describe("DohDnssecDnsResolver Tests", () => {
             await expect(resolver.resolveTxt("nonexistent.example.com")).rejects.toThrow(/status 3/);
         });
 
+        it("marks an authenticated NXDOMAIN and a NODATA as no records (ENOTFOUND, ENODATA), and nothing else", async () => {
+            const codeOf = async (response: object, requireAd = true): Promise<unknown> => {
+                vi.stubGlobal("fetch", vi.fn().mockResolvedValue(fakeFetchResponse(response)));
+                const resolver = new DohDnssecDnsResolver();
+                (resolver as unknown as { requireAd: boolean }).requireAd = requireAd;
+                try {
+                    await resolver.resolveTxt("example.com");
+                } catch (err) {
+                    return (err as { code?: unknown }).code ?? "none";
+                }
+                return "resolved";
+            };
+            expect(await codeOf({ Status: 3, AD: true })).toBe("ENOTFOUND");
+            expect(await codeOf({ Status: 3, AD: false }, false)).toBe("ENOTFOUND");
+            expect(await codeOf({ Status: 0, AD: true })).toBe("ENODATA");
+            expect(await codeOf({ Status: 3, AD: false })).toBe("none");
+            expect(await codeOf({ Status: 2, AD: true })).toBe("none");
+            expect(await codeOf({ Status: 0, AD: false, Answer: [] })).toBe("none");
+        });
+
         it("throws when DNSSEC validation was not confirmed (AD flag missing) under the default fail-closed setting.", async () => {
             vi.stubGlobal(
                 "fetch",

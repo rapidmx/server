@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 ///////////////////////////////////////////////////////////////////////////////
 import { ObjectDecorators } from "@rapidrest/core";
-import { DnsMxRecord, DnsResolver, DnsSrvRecord } from "@rapidmx/restapi";
+import { DnsMxRecord, DnsResolver, DnsSrvRecord, isDnsNoRecordsError } from "@rapidmx/restapi";
 import { liveConfig } from "../integrations/liveConfig.js";
 const { Config } = ObjectDecorators;
 
@@ -147,7 +147,7 @@ export class DohDnssecDnsResolver implements DnsResolver {
             return addresses;
         }
         const failures: unknown[] = [v4, v6].flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
-        throw failures.find((err) => !/returned no records/.test(String((err as Error)?.message))) ?? failures[0];
+        throw failures.find((err) => !isDnsNoRecordsError(err)) ?? failures[0];
     }
 
     public async resolveSrv(hostname: string): Promise<DnsSrvRecord[]> {
@@ -165,15 +165,19 @@ export class DohDnssecDnsResolver implements DnsResolver {
             throw new Error(`DoH query for ${hostname} failed: HTTP ${response.status}`);
         }
         const body = (await response.json()) as DohResponse;
+        // Only an answer that is authenticated (when `require_ad` asks for that) may say a record is gone: the error then carries the code restapi reads as "no
+        // records" (`isDnsNoRecordsError`). SERVFAIL, other statuses, timeouts and unauthenticated answers carry none, so the caller sees "unknown".
+        const authenticated: boolean = !this.requireAd || !!body.AD;
         if (body.Status !== 0) {
-            throw new Error(`DoH query for ${hostname} failed: DNS response status ${body.Status}`);
+            const code: string | undefined = body.Status === 3 && authenticated ? "ENOTFOUND" : undefined;
+            throw Object.assign(new Error(`DoH query for ${hostname} failed: DNS response status ${body.Status}`), code ? { code } : {});
         }
-        if (this.requireAd && !body.AD) {
+        if (!authenticated) {
             throw new Error(`DoH query for ${hostname} failed: DNSSEC validation was not confirmed (AD flag not set)`);
         }
         const answers = (body.Answer ?? []).filter((answer) => answer.type === type);
         if (answers.length === 0) {
-            throw new Error(`DoH query for ${hostname} returned no records of type ${type}`);
+            throw Object.assign(new Error(`DoH query for ${hostname} returned no records of type ${type}`), { code: "ENODATA" });
         }
         return answers;
     }
