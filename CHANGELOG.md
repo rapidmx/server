@@ -7,6 +7,114 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.47] - 2026-10-29
+
+### Added
+- Added OpenBaoClient, sending to OpenBao over node:https verified against a CA file re-read on every request, with a static token or OpenBao's kubernetes auth method using the pod's projected ServiceAccount token, logging in again after two thirds of the lease and once on a 403 to a token older than a minute, refusing plain HTTP off this host and never putting a token or response body in an error
+- Added OpenBaoClientPkiCertificateAuthority, sending restapi's OpenBaoPkiCertificateAuthority requests through OpenBaoClient, failing startup if restapi renames the method it replaces, and register it for mail:pki:backend openbao
+- Added the settings mail:pki:openbao:ca_file, mail:pki:openbao:auth:* and mail:secrets:openbao:*, protect mail:secrets, integrations and mail:jobs:dkim_rotation from plugins and hide mail:secrets:openbao:token from Diagnostics
+- Added the DNS provider, deployment identity, DNS operation, DNS controller state and integration settings models to both model lists and register NullSecretStore as the SecretStore, as the current restapi requires
+- Added the chart values global.openbao.caConfigMap (External Secrets' caProvider and the server's CA mount), global.openbao.auth.kubernetes.audience with a <fullname>-openbao-eso ServiceAccount, and openbao.auth giving the server pod a projected token for the audience openbao
+- Added openbao.auth.tokenSecret, giving the server's clients a static OpenBao token from a Secret, and refuse an OpenBao token in service.config, whose ConfigMap is plaintext
+- Added the rule that the more specific agent model assignment wins where categories overlap
+- Added the configuration encryption to the server: the ConfigKeyState model, the datastore's cipher registered as ConfigCipher, the keyring store chosen by config_encryption:keyring_store:backend, the Redis key channel and the pod rollout check
+- Added the production keyring guard and the yarn dev keyring file
+- Added the keyring heartbeat, ConfigKeyRotationJob and PluginSecretEncryptor, started in the background after the server is up
+- Added the plugin host's decryption of secret settings with a cipher of its own, registered under a name that cannot collide with ConfigCipher, and the sealing of default plugin secrets once the first encryption run has completed
+- Added KubeClient.put() for the keyring Secret
+- Added the unreadable flag to the mask of a DNS provider credential that was not decrypted or whose key is not loaded
+- Added the system/config-keys, system/dns-providers and system/integrations routes
+- Added the configuration keyring to the chart: the Secret <fullname>-config-keyring generated once as a pre-install/pre-upgrade hook with the keep policy, or with OpenBao its ExternalSecret refreshed every minute, mounted read-only into the server pods only
+- Added config_encryption keyring_file, keyring_store and plugin_secrets pod_selector to the server's ConfigMap, with the none backend when the server has no OpenBao identity to write the vault with
+- Added the Role and RoleBinding <fullname>-config-keyring, get and update on that one Secret, behind configEncryption.rbac.create
+- Added configEncryption.existingSecret for a keyring managed outside the chart, and fail the render that would generate one without cluster access or that would orphan the Secret of an ExternalSecret
+- Added the keyring to both installers: the KV entry created once over stdin, the copy of a kept Secret, read and update for the server and read for External Secrets, releaseKeyringSecret, the backup line in the final message and the uninstall notice
+- Added the helm template and installer tests for the keyring and give the other chart render tests an existing keyring Secret
+- Added DnsPublisher as RedisDnsPublisher: a version counter on the cache datastore, the change notice on the events datastore, long polls woken through one subscriber connection of their own with an error listener, never waited for, and closed again when it cannot connect or subscribe, plus a poll of the counter every 5 seconds Add DnsControllerTokenVerifier as KubeDnsControllerTokenVerifier, the ServiceAccount token check moved from the dns-controller over the server's KubeClient, with the keys refetched every ten minutes so a rotated-out key stops verifying Mount /internal/dns with the credentials route and mail:dns:controller:subject, guarded by guardInternalCaller() on the route's asynchronous authorize Announce the Autodiscover plugin being enabled or disabled and a changed public URL from each copy after the plugin host starts, per copy, with a second announcement two minutes later for a rolled Deployment Register the verifier and the publisher in registerCoreProviders Add the tests for the publisher, the verifier, the announcement, the route and the guard, with incr, set EX and event emitting in FakeRedis and the issuer and key paths in fakeKubernetes Record the step in the project notes
+- Added mail:dkim:rotation:{enabled,interval_days,overlap_days,publish_grace_hours,key_bits,max_starts_per_run} to both configs, with scheduled rotation off while the chart pins a postfix-bridge that never acknowledges a switch
+- Added the DkimRotationJob test, tying the shipped default of enabled to the chart's postfixBridge pin and checking the keys restapi reads against the documented ones
+- Added the integrations config layer directly after the plugins layer in both configs, rebuilt from the IntegrationSettings row with the keyring-only cipher and the configuration without the layer, leaving out and warning once per field about a secret that cannot be decrypted, and install the server's configuration for HostConfig before any plugin loads
+- Added giphy:enabled, shipped true, and read it with giphy:api_key at each GIF search
+- Added IntegrationsChannel for rapidmx:integrations:changed, on the events Redis or in-process without the Redis datastores, and IntegrationsSync, which re-reads the row on a notice, on a one-minute version timer and while a secret is unreadable, without start or stop waiting on the subscription
+- Added integrationsChanged() and deploymentConfig() to the Integrations route and the unreadable flag on the masks of the Giphy key and the registry tokens, never decrypting for a request
+- Added DelegatingDnsResolver choosing Node or DoH at each lookup and read the DoH endpoint at each query
+- Added DelegatingSigningCertificateEnrollment choosing manual, rfc8823 or none at each enrollment start, keeping an enrollment in flight with its backend, answering checkNow of an enrollment whose backend has none with its progress, and failing only the start of an enrollment for a backend that cannot be built
+- Added withLivePluginRegistry reading the registry, token and namespaces of the plugin route at each call
+- Added the tests for the layer, the channel, the sync, the start-up and each live consumer without a restart
+- Added InstallationServer, which runs seedInstallation() in the step Server.start() has after the datastores connect and before it listens, so GET /api/status passes only after the installation's setup, built by the three workers with their datastore's classes from lib/installation Add createBootstrapDnsProvider() creating the installer's DnsProvider (origin installer) once from mail:dns:bootstrap_provider, with allowTakeover, and the credential files of the <fullname>-dns-bootstrap Secret in mail:dns:bootstrap_credentials_dir, sealed for their row and field, audited with no user and announced to the DNS publisher, with the console's validation and refusals and the loser of two copies starting together taking the winner's config Record the creation in SetupState.bootstrapDnsProviderUid so that a config the administrator deleted in the console is not created again, creating nothing when the setup row cannot be read Warn, naming no value, when the setting or the Secret differs from the config that exists Add seedInstallation() creating the provider config and then running DomainSeeder, holding back the mail:domains entries that name bootstrap on a start where the config was not created Add mail:domains, mail:dns:bootstrap_provider and mail:dns:bootstrap_credentials_dir to both configs, so yarn dev seeds example.com Add the tests for the parsing, the credentials, the creation, the record, the notices, the order, the hold-back and a real server on MongoDB and on SQL Update the README, the release notes and the project notes for the installation's setup
+- Added the dns.* values to the chart: dns.publishing.enabled (off), dns.publicAddresses, dns.ttl, dns.bootstrapProvider, dns.externalDns.{image,resources,serviceAccount.annotations} with external-dns v0.23.0 pinned by digest, and dns.controller.{image,resyncMinutes,resources,longPollTimeoutSeconds,statusIntervalSeconds,serverCA}, with no controller tag until its first release is published so that enabling publishing before then fails the render
+- Added the DNS controller's Deployment (one replica, Recreate, non-root, read-only root, only the health port, only the token projected for the audience rapidmx-internal-dns, no Service or NetworkPolicy), its ServiceAccount, namespaced Role and RoleBinding, and external-dns's ServiceAccount, Role and RoleBinding, with no ClusterRole
+- Added mail__dns__controller__subject and mail__dns__publish__{ttl,external_dns_image,addresses,hosts} to the service ConfigMap, the hosts being the mail host's addresses and CNAMEs for host, auth, autodiscover and openpgpkey
+- Added mail__domains from mail.domains, each default domain on the installer's DNS provider when dns.bootstrapProvider is set, and mail__dns__bootstrap_provider with the server Deployment's optional read-only mount of the <fullname>-dns-bootstrap Secret
+- Added the helm template tests for the controller, its rights, the settings, the domains, the bootstrap mount and the openpgpkey default
+- Added --dns-provider, --dns-zone, --dns-credentials-file, --dns-takeover, --public-address and --keep-dns to single_node_install.sh, all checked before anything is installed and refused without --dns-provider rather than ignored, with the credentials read as text from the file or from the environment, the file winning, and a name or a value that is not the provider's refused without saying the value
+- Added the installer's DNS provider config to the chart values and its credentials to the Secret <fullname>-dns-bootstrap through stdin before the release, looking up Cloudflare's zone id with the token in a request configuration on stdin and deleting the Secret after the server's rollout once the server's log since the Secret was made says the config exists, restarting the server once when it said nothing since because its pods predate the Secret
+- Added --uninstall for what the controller published: stop the controller, delete the DNSEndpoints, wait only for the answers that are a target they published, remove the leftovers by label and refuse, with nothing removed, while a domain's apex TXT set is managed, found by its label or by the MX or _dmarc record beside it, naming the opt-out in the console and turning publishing back on when the controller is gone, with --keep-dns stopping external-dns first so no record is deleted
+- Added the final message for what is published, what stays manual, takeover or conflict, where to watch it and that the same flags must be passed again, saying that --dns-takeover was not applied when the config existed and which domains are not on the provider yet
+- Added test/installer/dns.test.ts and move the bash harness the installer tests share to test/helpers/installerHarness.ts, with the DNSEndpoint listing also checked against the real kubectl and a stand-in API server
+- Added the DNS Publishing section to the README with what is published and when a record stays manual, the five provider types and their limits, takeover and conflicts, the apex TXT opt-in for SPF, verification at _rapidmx-verify and where to watch it, with rfc2136 marked not yet live-tested and openpgpkey.<domain> published whenever the mail host is set Add Publishing DNS records with the installer to the README with the provider variable table, the <fullname>-dns-bootstrap Secret, DNS_CONTROLLER_TAG in the example and the note that the controller has no published release yet, domains that predate publishing, repeating the same --dns-* flags, --uninstall and --keep-dns Replace beta.46's openpgpkey opt-in wording in the README with --openpgpkey-host true|false|auto and its default, point the DNS records in Before you deploy at publishing without promising SPF, say that the keyring must be backed up with the database, document unreadable on the integration masks and correct that deleting a managed domain also restores its SPF and kept values Add to the release notes the configuration encryption and keyring, manual key rotation, the encrypted plugin secret settings, the three mounted routes, the server side of DNS, the installer's DNS options and --uninstall for DNS, ending beta.46's opt-in in the openpgpkey entry Add test/docs/dnsDocs.test.ts tying the README and the release notes to the installer's flags and credential variables, every dns.* chart value, the openpgpkey and uninstall wording and the README's own anchors Record the step in the project notes
+- Added resolveAddresses() to DelegatingDnsResolver and DohDnssecDnsResolver so address records and a CNAME next to addresses are seen on a running server, and mail.dns.takeover.min_interval_seconds to both configs
+- Added dns-controller and external-dns to the Diagnostics versions, the integrations layer to the information with the unreadable flag on its secrets
+- Added applyIntegrations() and prepareInstallation() applying the administrator's Integrations row in InstallationServer's before-listening step of all three workers, so the DNS resolver, signing CA and Giphy choices are in force from the first request, keeping startIntegrationsSync() for the timer and the change notice
+- Added the tests for the above and record the DNS review round 1 fixes in the project notes
+- Added mail.dns.takeover.recheck_seconds to both configs with restapi's six hour default
+
+### Changed
+- Refuse the server's Kubernetes auth in the chart when its pod runs as the namespace's default ServiceAccount, whether unnamed or named default, and External Secrets logging in as the server's own ServiceAccount
+- Make the installers' OpenBao listen on TLS only with a certificate cert-manager issues from a CA of its own, reloaded on renewal by a sidecar that sends SIGHUP to the bao server process alone, matched by its arguments and never itself
+- Restart an existing plain-HTTP OpenBao pod to move it to TLS and have the unsealer reach it over TLS
+- Enable OpenBao's kubernetes auth method in the installers with the roles <fullname>-server, <fullname>-eso and <fullname>-dns-controller, each bound to one ServiceAccount and the audience openbao, and copy OpenBao's CA into <fullname>-openbao-ca
+- Revoke the installers' old periodic OpenBao tokens and delete their Secrets and policies only once every SecretStore is Ready and both new roles have logged in
+- Check after an upgrade that the certificate OpenBao serves is the one in its Secret
+- Require https for an OpenBao the installers don't install, with OPENBAO_CA_FILE naming its CA
+- Describe OpenBao's Kubernetes auth, TLS listener and token migration in the README, the AWS README and the release notes
+- Record the standing agent model assignments in the project notes
+- Move the agent model assignments to the top of the project notes, keeping session history at the bottom
+- Update the agent model assignments to JP's revised criteria: Sonnet for general code and review, Opus for architecture, planning, investigation, security and performance, Haiku for simple operations
+- Update the protected and hidden settings for config_encryption
+- Record the step in the project notes
+- Update the README and the project notes for the keyring
+- Register DkimRotationJobMongo and DkimRotationJobSQL with the server's other jobs, hourly by mail:jobs:dkim_rotation:schedule
+- Document the DKIM rotation settings, its REST routes and the postfix-bridge requirement in the README and the release notes
+- Record the step in the project notes
+- Keep the plugin host installing from the deployment's registry and namespaces only, since the row's registry fields are not encrypted and a database writer must not decide where the code this server runs comes from
+- Update the README, the release notes and the project notes for live integrations
+- Set DNS_CONTROLLER_LONG_POLL_TIMEOUT_SECONDS above a raised mail__dns__desired_state__long_poll_seconds, and NODE_EXTRA_CA_CERTS from a mounted ConfigMap for the server's certificate with pod-terminated TLS
+- Default mail.wkd.openpgpkeyHost.enabled to auto, on only when publishing is on and the bootstrap provider's zones cover global.domain, and refuse any other value than true, false or auto
+- Update the README, the release notes and the project notes for the chart for DNS, including how to remove what the controller made when publishing is turned off
+- Detect the mail host's public addresses as the node's global IPv4 addresses, else the IPv4 address seen from outside, publishing an IPv6 address only when it is given with --public-address since the k3s here is single-stack and a AAAA record for the MX target would send IPv6 mail servers to an address nothing listens on
+- Vendor external-dns v0.23.0's DNSEndpoint CRD at deploy/crds, embed it in the script, apply it server-side when absent or when the installer put it there and remove it on uninstall only then and when no DNSEndpoint is left
+- Install openpgpkey.<domain> in two steps with --openpgpkey-host true|false|auto, serving it once its record resolves, asking the lookup three times and keeping a host the release serves already when the lookup says no, and waiting for no record when the domains predate publishing and so are not on the provider
+- Record the step in the project notes
+- Ask the Kubernetes API for the OIDC keys as application/jwk-set+json through KubeClient.get(path, { accept }) so the DNS controller's tokens are no longer refused with 403
+- Publish auth.<global.domain> as A/AAAA at the public addresses like the mail host rather than a CNAME, in the chart, the README, the release notes and the installer's final message
+- Set the postfix-bridge resources limits to a table with a null memory so helm lint prints no coalesce warning, with test/helm/postfixBridgeLimits.test.ts
+- Record the step in the project notes
+- Make the config keyring safe by default for configEncryption.existingSecret: no Role and keyring_store backend none unless configEncryption.existingSecretRotation is set, so a rotation cannot write into a Secret a GitOps tool or ExternalSecret owns and lose the rotated key
+- Delete the keyring Secret in single_node_install.sh and deploy/aws/bootstrap.sh only after installRelease has applied the ExternalSecret, the check before the external-secrets install only comparing it with the vault
+- Refuse --dns-provider without DNS_CONTROLLER_TAG or DNS_CONTROLLER_DIGEST before anything is installed, and delete the <fullname>-dns-bootstrap Secret from the EXIT trap on any exit after it was made and before finishDnsBootstrap takes it over
+- Read the uninstall wait's unique records with mapfile so MX and SRV targets with spaces are waited for
+- Ask Cloudflare for the zone over IPv4 and blame a client address restriction, not the token's permissions, when it refuses the location
+- Make DohDnssecDnsResolver throw ENOTFOUND for an authenticated NXDOMAIN and ENODATA for an empty answer so DkimRotationJob sees no records rather than unknown when a record vanishes, keeping SERVFAIL, timeouts and unauthenticated answers codeless
+- Record the fixes in the project notes
+- Pin @rapidmx/restapi to ^0.36.0 and @rapidmx/web-client to ^0.38.0, resolving 0.38.1
+- Pin the auth-server chart to 1.0.0-beta.35 and the postfix-bridge chart to 1.6.0
+- Pin the DNS controller image to 0.1.0 and stop single_node_install.sh requiring DNS_CONTROLLER_TAG, which now only overrides the chart's pin
+- Turn mail:dkim:rotation:enabled on by default in both configs and the README now that postfix-bridge 1.6.0 acknowledges a selector switch
+- Record the pins and DKIM rotation default in the release notes
+- Name an existing keyring Secret in CI's helm template step, which cannot generate one without cluster access
+
+### Fixed
+- Fixed global.openbao.enabled failing to render without openbao.pki values
+- Fixed the plugin state connection synchronizing Plugin and ConfigKeyState with different MySQL column types than the main connection
+- Fixed the installers writing an invalid keyring to the vault when openssl fails by generating it from the kernel where openssl is missing and checking it before the write
+- Fixed the DNS publishing chart test to expect no keyring Role for an existing keyring Secret
+- Fixed the registration drift guard to expect prepareInstallation, which replaced seedInstallation in the worker entry points
+
+### Removed
+- Removed openbao.pki.tokenSecret, whose Secret the chart never loaded
+- Removed the settings mail:secrets:openbao:*, the chart's mail__secrets__openbao__* keys and the service.config refusal of mail__secrets__openbao__token, which the encrypted configuration replaces Unreserve mail:secrets in PROTECTED_PLUGIN_SETTING_KEYS and stop hiding mail:secrets:openbao:token from Diagnostics Limit the installers' OpenBao server policy to the PKI sign and revoke paths and External Secrets' policy to its read of <fullname>/secrets, dropping the integrations/{dns,server,plugins}/* paths and ESO's read on integrations/dns/* Stop writing the installers' <fullname>-dns-controller OpenBao role and policy and delete them from an existing vault on every run Remove the NullSecretStore registration from registerCoreProviders and the tests that build their own server, as restapi has removed the class Update the README, the release notes and the OpenBaoClient comments for the trim Record the trim in the project notes
+
 ## [1.0.0-beta.46] - 2026-10-27
 
 ### Added
@@ -1292,7 +1400,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed test from .dockerignore, fixing yarn build's lint step failing outright when the build context is missing the test directory its tsconfig.eslint.json requires
 - Removed docker-compose.mail.yml's partial server: service block, since include: only supports merging resources that don't already exist in the including file and hard-errors ("services.server conflicts with imported resource") on a Compose version newer than whatever this had only ever been tested against locally
 
-[Unreleased]: https://github.com/rapidmx/server/compare/v1.0.0-beta.46...HEAD
+[Unreleased]: https://github.com/rapidmx/server/compare/v1.0.0-beta.47...HEAD
+[1.0.0-beta.47]: https://github.com/rapidmx/server/compare/v1.0.0-beta.46...v1.0.0-beta.47
 [1.0.0-beta.46]: https://github.com/rapidmx/server/compare/v1.0.0-beta.45...v1.0.0-beta.46
 [1.0.0-beta.45]: https://github.com/rapidmx/server/compare/v1.0.0-beta.44...v1.0.0-beta.45
 [1.0.0-beta.44]: https://github.com/rapidmx/server/compare/v1.0.0-beta.43...v1.0.0-beta.44

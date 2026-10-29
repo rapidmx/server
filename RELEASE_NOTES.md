@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v1.0.0-beta.47
+
 ### Added
 
 - **Dependency pins:** `@rapidmx/restapi` ^0.36.0, `@rapidmx/web-client` ^0.38.0, the auth-server chart 1.0.0-beta.35, the postfix-bridge chart 1.6.0 and the DNS controller image `ghcr.io/rapidmx/dns-controller:0.1.0` (`dns.controller.image.tag`). **DKIM rotation is now on by default** (`mail:dkim:rotation:enabled: true`), since postfix-bridge 1.6.0 acknowledges a selector switch: see the DKIM key rotation entry below for what it does to domains whose DNS you publish by hand.

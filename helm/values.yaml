@@ -208,7 +208,7 @@ service:
   image:
     registry: ghcr.io
     repository: rapidmx/server
-    tag: 1.0.0-beta.46
+    tag: 1.0.0-beta.47
   replicas: 1
   # The image of the init containers that wait for the datastores (a TCP check with nc) and of `helm test`'s pod. Pinned, like the
   # other images, so a pull can't bring a different one.
