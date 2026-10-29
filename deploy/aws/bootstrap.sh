@@ -734,6 +734,9 @@ EOF
 # ExternalSecret has creationPolicy Owner and can't take over a Secret it didn't create). Only once the vault holds exactly that Secret's keyring,
 # compared inside the vault's pod (the keyring and the root token reach it over stdin), since what is already encrypted needs that ring and no other;
 # a Secret External Secrets already owns is left alone. The pods keep the files they have mounted until the ExternalSecret has made the Secret again.
+# With "check" only the comparison is made, so a mismatch stops the script before anything is installed; the delete is made after the release has been
+# upgraded (the ExternalSecret is applied by then, and recreates the Secret within its refresh interval): a step that fails between the delete and the
+# upgrade would leave a release that still mounts a Secret that no longer exists, and an operator who re-ran without OpenBao would get a new ring.
 function releaseKeyringSecret() {
   if ! kubectl -n "$NAMESPACE" get secret "$KEYRING_SECRET" >/dev/null 2>&1; then
     return 0
@@ -755,6 +758,9 @@ export BAO_TOKEN=`shQuote "$OPENBAO_ROOT_TOKEN"`
 EOF
   then
     fail "the Secret $KEYRING_SECRET in namespace $NAMESPACE holds a configuration keyring that OpenBao's $OPENBAO_KV_MOUNT/$OPENBAO_KEYRING_PATH isn't, or can't be confirmed to be, the same one, so the Secret was kept: values already encrypted need the keyring the Secret holds. Put it in the vault, or delete the Secret if the vault's is the right one, then re-run this script."
+  fi
+  if [[ "$1" = "check" ]]; then
+    return 0
   fi
   # The running pods still write this Secret until the chart switches them to the vault, and a key rotation they finish after the comparison above
   # would add a key to it that only the Secret holds. kubectl can't delete at a resourceVersion, so this leaves a window of the time between the two
@@ -1241,7 +1247,7 @@ if [[ "$OPENBAO" = "true" ]]; then
     installOpenbao
     prepareOpenbao
     copyOpenbaoCa
-    releaseKeyringSecret
+    releaseKeyringSecret check
   else
     log "Keeping this release's secrets in the OpenBao at $OPENBAO_ADDRESS. It must already hold them at"
     log "$OPENBAO_KV_MOUNT/$OPENBAO_SECRETS_PATH, with the Secret $OPENBAO_ESO_SECRET in namespace $NAMESPACE holding"
@@ -1380,6 +1386,8 @@ rm -f "$VALUES_FILE"
 VALUES_FILE=""
 
 if [[ "$OPENBAO_INSTALL" = "true" ]]; then
+  # The release has the ExternalSecret now: the Secret an install without OpenBao kept is released for it to own.
+  releaseKeyringSecret
   # The release logs in with Kubernetes auth now; the tokens an earlier version of this script made are revoked once it does.
   migrateOpenbaoTokens
   checkOpenbaoCertificate

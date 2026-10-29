@@ -24,7 +24,7 @@ import { enableBasicAuthIfApplicable } from "./lib/enableBasicAuth.js";
 import { assertConfigKeyringIsSet, createPluginHostCipher, ensureDevelopmentKeyring, startConfigEncryption, type ConfigEncryptionRuntime } from "./lib/configEncryption.js";
 import { startDnsPublishing } from "./dns/AutodiscoverAnnouncement.js";
 import { InstallationServer } from "./lib/InstallationServer.js";
-import { seedInstallation } from "./lib/seedInstallation.js";
+import { prepareInstallation } from "./lib/prepareInstallation.js";
 import { SQL_INSTALLATION } from "./lib/installation/sql.js";
 import { prepareIntegrations, startIntegrationsSync, type PreparedIntegrations, type RunningIntegrationsSync } from "./integrations/startIntegrations.js";
 
@@ -145,10 +145,12 @@ const start = async function (config: any, logger: any) {
             logger.info(`Adjusted ${adjusted} SQL columns for ${config.get("datastores:sql:type")}.`);
         }
     };
-    // The installation's own setup (the DNS provider config the installer created, the domains it was installed for) runs once the datastores are connected and before the
-    // server listens, so the readiness probe passes only after it - see lib/InstallationServer.ts and lib/seedInstallation.ts.
+    // The Integrations an administrator chose are applied, then the installation's own setup (the DNS provider config the installer created, the domains it was installed
+    // for), once the datastores are connected and before the server listens, so the readiness probe passes only after them and no request
+    // reads the deployment's values instead of the administrator's (a cron tick in the moments before this step does: service-core starts its background services first) - see
+    // lib/InstallationServer.ts and lib/prepareInstallation.ts.
     server = new InstallationServer({ config, basePath: config.get("base_path"), logger, objectFactory, classLoader: pluginHost.classLoader }, () =>
-        seedInstallation(objectFactory, config, logger, SQL_INSTALLATION),
+        prepareInstallation(objectFactory, config, logger, SQL_INSTALLATION, { layer: integrations!.layer, settingsClass: IntegrationSettingsSQL }),
     );
     await server.start();
     notifyListening();

@@ -299,6 +299,17 @@ describe.skipIf(!bashAvailable)("installers: OpenBao with Kubernetes auth and TL
                     expect(r.read("kubectl.log")).not.toContain("s.root-token");
                 });
 
+                it("with 'check' only compares, and stops on a mismatch, so a Secret is never deleted before the release has the ExternalSecret that recreates it", () => {
+                    const same = run(installer, "releaseKeyringSecret check", {}, kept);
+                    expect(same.status, same.stderr + same.stdout).toBe(0);
+                    expect(same.read("kubectl.log")).toContain("exec -i openbao-0");
+                    expect(same.read("kubectl.log")).not.toContain("delete secret");
+
+                    const different = run(installer, "releaseKeyringSecret check", { POD_EXIT: "1" }, kept);
+                    expect(different.status).not.toBe(0);
+                    expect(different.read("kubectl.log")).not.toContain("delete secret");
+                });
+
                 it("compares the vault's keyring with the Secret's in the pod, and only an identical one passes", () => {
                     const r = run(installer, "releaseKeyringSecret", {}, kept);
                     expect(runInPod(r, "pod-script-0.sh", { BAO_KEYRING: KEPT }).status).toBe(0);
@@ -609,11 +620,20 @@ describe.skipIf(!bashAvailable)("installers: OpenBao with Kubernetes auth and TL
                     expect(text).toContain('KEYRING_SECRET="$FULLNAME-config-keyring"');
                     const calls = (name: string) => [...text.matchAll(new RegExp(`^\\s+${name}$`, "gm"))].map((m) => m.index);
                     const [prepare] = calls("prepareOpenbao");
-                    const [release] = calls("releaseKeyringSecret");
+                    const [check] = calls("releaseKeyringSecret check");
                     const chart = text.indexOf("helm upgrade --install --create-namespace");
                     expect(prepare).toBeGreaterThan(0);
-                    expect(release).toBeGreaterThan(prepare);
-                    expect(chart).toBeGreaterThan(release);
+                    expect(check).toBeGreaterThan(prepare);
+                    expect(chart).toBeGreaterThan(check);
+                });
+
+                it("deletes the Secret only after the release was upgraded: a step that fails before that would leave a release mounting a Secret that no longer exists", () => {
+                    const calls = (name: string) => [...text.matchAll(new RegExp(`^\\s+${name}$`, "gm"))].map((m) => m.index);
+                    const [release] = calls("releaseKeyringSecret");
+                    // The call of installRelease (single_node_install.sh), or the helm upgrade that stands in the script itself (bootstrap.sh).
+                    const upgraded = Math.max(text.indexOf("\ninstallRelease\n"), text.indexOf("\nhelm upgrade --install --create-namespace --namespace"));
+                    expect(upgraded).toBeGreaterThan(0);
+                    expect(release).toBeGreaterThan(upgraded);
                 });
 
                 it("tells the operator to back the keyring up with the database, where it lives with and without OpenBao", () => {

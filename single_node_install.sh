@@ -101,6 +101,8 @@ DNS_DOMAINS_ASSIGNED=true
 DNS_CONFIG_EXISTED=false
 # When the credentials Secret was made, so finishDnsBootstrap reads only what the server said after that.
 DNS_SECRET_APPLIED_AT=""
+# Set once finishDnsBootstrap has the Secret in hand (it keeps it on purpose when the server's outcome is unknown); until then an exit deletes it (exitCleanup).
+DNS_BOOTSTRAP_HANDED_OVER=false
 # How many times a lookup that decides whether openpgpkey.<domain> is served is tried before it is taken to say no.
 OPENPGPKEY_LOOKUP_TRIES=${OPENPGPKEY_LOOKUP_TRIES:-3}
 # The dns-controller release the chart pins (dns.controller.image). Empty keeps the chart's own pin, which is empty until the controller's
@@ -1046,6 +1048,9 @@ function copyOpenbaoCa() {
 # ExternalSecret has creationPolicy Owner and can't take over a Secret it didn't create). Only once the vault holds exactly that Secret's keyring,
 # compared inside the vault's pod (the keyring and the root token reach it over stdin), since what is already encrypted needs that ring and no other;
 # a Secret External Secrets already owns is left alone. The pods keep the files they have mounted until the ExternalSecret has made the Secret again.
+# With "check" only the comparison is made, so a mismatch stops the install before anything is installed; the delete is made after the release has
+# been upgraded (the ExternalSecret is applied by then, and recreates the Secret within its refresh interval): a step that fails between the delete and
+# the upgrade would leave a release that still mounts a Secret that no longer exists, and an operator who re-ran without OpenBao would get a new ring.
 function releaseKeyringSecret() {
   if ! kubectl -n "$NAMESPACE" get secret "$KEYRING_SECRET" >/dev/null 2>&1; then
     return 0
@@ -1070,6 +1075,9 @@ EOF
     echo "isn't, or can't be confirmed to be, the same one, so the Secret was kept. Values already encrypted need the keyring the Secret holds: put it"
     echo "in the vault, or delete the Secret if the vault's is the right one, then re-run this script."
     exit 1
+  fi
+  if [[ "$1" = "check" ]]; then
+    return 0
   fi
   # The running pods still write this Secret until the chart switches them to the vault, and a key rotation they finish after the comparison above
   # would add a key to it that only the Secret holds. kubectl can't delete at a resourceVersion, so this leaves a window of the time between the two
@@ -1541,17 +1549,23 @@ function dnsZoneCovers() {
 }
 
 # Prints the id of Cloudflare's zone $1, asked with the token (in a request configuration on stdin, not an argument, which any local user could
-# read in the process list). Returns 3 for no such zone (with $2 = quiet, without saying so) and 1 when Cloudflare can't be asked or refuses.
+# read in the process list), over IPv4 like detectPublicAddresses and like the cluster, whose k3s is single-stack: a token restricted by client address is then
+# judged by the address that the DNS controller and external-dns reach Cloudflare from, not by an IPv6 one the cluster never uses. Returns 3 for no such zone (with $2 = quiet, without saying so) and 1 when Cloudflare can't be asked or refuses.
 function cloudflareZoneId() {
   local zone=$1 response message id
-  response=$(printf 'header = "Authorization: Bearer %s"\n' "${DNS_SECRETS[apiToken]}" | curl -sS --max-time 30 -K - "https://api.cloudflare.com/client/v4/zones?name=$zone" 2>/dev/null)
+  response=$(printf 'header = "Authorization: Bearer %s"\n' "${DNS_SECRETS[apiToken]}" | curl -4 -sS --max-time 30 -K - "https://api.cloudflare.com/client/v4/zones?name=$zone" 2>/dev/null)
   if [[ -z "$response" ]]; then
     echo "Cloudflare could not be asked for the zone $zone (no answer, or it refused the request). Check the network and the token." >&2
     return 1
   fi
   if ! grep -Eq '"success": *true' <<< "$response"; then
     message=`sed -n 's/.*"errors": *\[ *{[^}]*"message": *"\([^"]*\)".*/\1/p' <<< "$response"`
-    echo "Cloudflare refused the lookup of the zone $zone${message:+: $message}. The token needs Zone:Zone:Read and Zone:DNS:Edit on the zone." >&2
+    if grep -q 'from location' <<< "$response"; then
+      # The token's client-address restriction, which is not a matter of what the token may do.
+      echo "Cloudflare refused the lookup of the zone $zone${message:+: $message}. The token is restricted by client address: list the address this server goes out from (IPv4)." >&2
+    else
+      echo "Cloudflare refused the lookup of the zone $zone${message:+: $message}. The token needs Zone:Zone:Read and Zone:DNS:Edit on the zone." >&2
+    fi
     return 1
   fi
   id=`sed -n 's/.*"result": *\[ *{ *"id": *"\([0-9a-f]\{32\}\)".*/\1/p' <<< "$response"`
@@ -1576,6 +1590,17 @@ function seedDomains() {
       echo "$domain"
     fi
   done
+}
+
+# Stops the install, before anything is installed or any credential is saved, when --dns-provider has no controller release to deploy: the chart has no
+# default version of the DNS controller's image, so with publishing on the release would fail to render (dns.controller.image has neither a tag nor a digest).
+function requireDnsControllerImage() {
+  if [[ -z "$DNS_PROVIDER" || -n "$DNS_CONTROLLER_TAG" || -n "$DNS_CONTROLLER_DIGEST" ]]; then
+    return 0
+  fi
+  echo "--dns-provider needs the release of the DNS controller to deploy: set DNS_CONTROLLER_TAG (or DNS_CONTROLLER_DIGEST, sha256:...), which the chart"
+  echo "has no default for (dns.controller.image). The controller has no published release yet; see the README, \"Publishing DNS records with the installer\"."
+  exit 1
 }
 
 # Everything --dns-provider needs before anything is installed: the zone (--dns-zone, else --domain's, which for Cloudflare is the one its API
@@ -1686,6 +1711,31 @@ function dnsBootstrapSecretManifest() {
   done < <(printf '%s\n' "${!DNS_SECRETS[@]}" | sort)
 }
 
+# Deletes the Secret with the credentials, so a DNS credential is not left in the namespace by an install that gave up (a run without --dns-provider
+# afterwards never looks at it). The next run with the same flags makes it again.
+function forgetDnsBootstrapSecret() {
+  if [[ -z "$DNS_SECRET_APPLIED_AT" ]]; then
+    return 0
+  fi
+  if kubectl -n "$NAMESPACE" delete secret "$FULLNAME-dns-bootstrap" --ignore-not-found >/dev/null 2>&1; then
+    echo "The Secret $FULLNAME-dns-bootstrap with the DNS credentials was deleted; running this script again with the same options makes it again."
+  else
+    echo "The Secret $FULLNAME-dns-bootstrap holds the DNS credentials and could not be deleted. Delete it unless you run this script again with the same options:"
+    echo "  kubectl -n $NAMESPACE delete secret $FULLNAME-dns-bootstrap"
+  fi
+}
+
+# Run when the script exits, for any reason: a Secret with the credentials that finishDnsBootstrap has not taken over is deleted, whichever step failed
+# between making it and there (the release, the Gateway policies, nginx, OpenBao's tokens, the keyring Secret), since a run without --dns-provider
+# afterwards never looks at it. A step that fails after the release is installed may have it read by the server already; the run that repeats the same
+# options makes it again, and finishDnsBootstrap restarts the pods when they have not read it.
+function exitCleanup() {
+  if [[ "$DNS_BOOTSTRAP_HANDED_OVER" != "true" ]]; then
+    forgetDnsBootstrapSecret
+  fi
+  cleanup
+}
+
 # Creates that Secret before the release, in a namespace made first, through stdin: the credentials are never an argument.
 function createDnsBootstrapSecret() {
   local manifest
@@ -1739,6 +1789,8 @@ function dnsBootstrapOutcome() {
 # Secret: when the log has nothing since the Secret was made, the server is restarted so that it reads this one.
 function finishDnsBootstrap() {
   local secret="$FULLNAME-dns-bootstrap" line
+  # From here the Secret is kept or deleted by what the server says, not by the script's exit.
+  DNS_BOOTSTRAP_HANDED_OVER=true
   if ! kubectl -n "$NAMESPACE" get secret "$secret" >/dev/null 2>&1; then
     return 0
   fi
@@ -2221,7 +2273,7 @@ function reportPublishingTurnedOff() {
 # this script has no credentials for the server's API.
 function uninstallDns() {
   local release=$1 keep=$2 fullname=$1 selector controller crd=false rows="" name domain records txts rec rest dnsName type apex managed="" mxNames=" " txtNames=()
-  local pairs=() pair remaining deadline
+  local pairs=() unique=() pair remaining deadline
   if [[ "$release" != *server* ]]; then
     fullname="$release-server"
   fi
@@ -2288,7 +2340,9 @@ function uninstallDns() {
       deadline=$(( SECONDS + DNS_CLEANUP_WAIT_SECONDS ))
       while true; do
         remaining=""
-        for pair in `printf '%s\n' "${pairs[@]}" | sort -u`; do
+        # One pair per line: an MX or SRV target has spaces in it ("10 mail.example.com"), so the list is not split on them.
+        mapfile -t unique < <(printf '%s\n' "${pairs[@]}" | sort -u)
+        for pair in "${unique[@]}"; do
           # <dnsName>=<type>=<targets>: only an answer that is one of the targets the DNSEndpoint published is waited for.
           rest=${pair#*=}
           if dnsServesTarget "${pair%%=*}" "${rest%%=*}" "${rest#*=}"; then
@@ -2657,11 +2711,13 @@ fi
 
 # Everything --dns-provider needs that can be checked before anything is installed (the zone, the credentials, Cloudflare's zone id, the public
 # addresses), then how openpgpkey.<domain> is installed: now, in a second step once its record is published, or not at all.
+requireDnsControllerImage
 prepareDns
 decideOpenpgpkeyHost
 
 # Catch Ctrl-C, kill, termination, normal exit
-trap cleanup EXIT INT TERM
+trap exitCleanup EXIT
+trap cleanup INT TERM
 
 # Start background progress bar
 #progress_loop --bg &
@@ -3196,7 +3252,7 @@ if [[ "$OPENBAO" = "true" ]]; then
     installOpenbao
     prepareOpenbao
     copyOpenbaoCa
-    releaseKeyringSecret
+    releaseKeyringSecret check
   else
     echo "Keeping this release's secrets in the OpenBao at $OPENBAO_ADDRESS."
     echo "It must already hold them at $OPENBAO_KV_MOUNT/$OPENBAO_SECRETS_PATH, with the Secret $OPENBAO_ESO_SECRET in"
@@ -3313,10 +3369,6 @@ function installRelease() {
     --set-json "global.corsHosts=[\"$SERVER_HOST\",\"$AUTH_HOST\"]" \
     -f "$VALUES_FILE"; then
     echo "There was a problem installing the RapidMX server."
-    if [[ -n "$DNS_PROVIDER" && -z "$DNS_CONTROLLER_TAG" && -z "$DNS_CONTROLLER_DIGEST" ]]; then
-      echo "With --dns-provider the chart needs the DNS controller's image (dns.controller.image) pinned to a released version: if the message above says"
-      echo "it is empty, set DNS_CONTROLLER_TAG (or DNS_CONTROLLER_DIGEST)."
-    fi
     exit 1
   fi
   if [[ "$RELEASE_NEW" = "true" ]]; then
@@ -3335,6 +3387,8 @@ fi
 installRelease
 
 if [[ "$OPENBAO_INSTALL" = "true" ]]; then
+  # The release has the ExternalSecret now: the Secret an install without OpenBao kept is released for it to own.
+  releaseKeyringSecret
   # The release logs in with Kubernetes auth now; the tokens an earlier version of this script made are revoked once it does.
   migrateOpenbaoTokens
   checkOpenbaoCertificate

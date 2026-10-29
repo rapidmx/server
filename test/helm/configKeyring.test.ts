@@ -150,15 +150,27 @@ describe.skipIf(!helmAvailable || !depsAvailable)("chart: the configuration keyr
             expect(() => renderReal()).toThrow(/without cluster access[\s\S]*configEncryption\.existingSecret/);
         });
 
-        it("mounts and updates a Secret you manage instead, and renders none of its own, when configEncryption.existingSecret names one", () => {
+        it("mounts a Secret you manage instead, and renders none of its own, when configEncryption.existingSecret names one", () => {
             const all = renderReal("configEncryption.existingSecret=gitops-keyring");
             expect(all.filter((d) => d.kind === "Secret" && d.metadata?.name?.includes("keyring"))).toEqual([]);
             expect(serverPod(all).volumes).toContainEqual({ name: "config-keyring", secret: { secretName: "gitops-keyring" } });
-            expect(serverConfig(all).config_encryption__keyring_store__secret_name).toBe("gitops-keyring");
-            // The rotation may replace that Secret (and only that one), unless the Role is turned off.
+        });
+
+        it("refuses a rotation for a Secret you manage by default: no Role, and the backend none, since a tool that owns it would put its own copy back and lose the rotated key", () => {
+            const all = renderReal("configEncryption.existingSecret=gitops-keyring");
+            expect(find(all, "Role", "gitops-keyring")).toBeUndefined();
+            expect(find(all, "RoleBinding", "gitops-keyring")).toBeUndefined();
+            expect(find(all, "Role", NAME)).toBeUndefined();
+            expect(serverConfig(all).config_encryption__keyring_store__backend).toBe("none");
+        });
+
+        it("lets the rotation replace a Secret you manage, and only that one, when configEncryption.existingSecretRotation is set (unless the Role is turned off)", () => {
+            const all = renderReal("configEncryption.existingSecret=gitops-keyring", "configEncryption.existingSecretRotation=true");
             expect(find(all, "Role", "gitops-keyring")!.rules).toEqual([{ apiGroups: [""], resources: ["secrets"], resourceNames: ["gitops-keyring"], verbs: ["get", "update"] }]);
             expect(find(all, "Role", NAME)).toBeUndefined();
-            expect(find(renderReal("configEncryption.existingSecret=gitops-keyring", "configEncryption.rbac.create=false"), "Role", "gitops-keyring")).toBeUndefined();
+            expect(serverConfig(all).config_encryption__keyring_store__backend).toBe("kubernetes");
+            expect(serverConfig(all).config_encryption__keyring_store__secret_name).toBe("gitops-keyring");
+            expect(find(renderReal("configEncryption.existingSecret=gitops-keyring", "configEncryption.existingSecretRotation=true", "configEncryption.rbac.create=false"), "Role", "gitops-keyring")).toBeUndefined();
         });
 
         describe("a Secret an ExternalSecret owns, now that the render has no ExternalSecret for it", () => {

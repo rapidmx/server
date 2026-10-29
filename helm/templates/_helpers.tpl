@@ -911,7 +911,10 @@ to it (configEncryption.openbao.path, <fullname>/config-keyring when empty).
 Where the server writes a new keyring when an administrator rotates the key (config_encryption:keyring_store:backend): the vault when
 External Secrets syncs the keyring out of it and the server holds an OpenBao identity to write it with (openbao.auth.method "kubernetes" or
 "token"), "none" when it syncs but the server has no such identity (rotation is then refused with 503, and the console says so, instead of
-failing on a missing OpenBao login when it is needed), else the Kubernetes Secret itself.
+failing on a missing OpenBao login when it is needed), else the Kubernetes Secret itself. Also "none" for a Secret you manage
+(configEncryption.existingSecret) unless configEncryption.existingSecretRotation is set: the rotation adds a key, re-encrypts and retires the old
+one within a minute or two, far sooner than a tool that owns the Secret can be given the new ring, and when that tool puts its own copy back
+everything the rotation re-encrypted is unreadable, so a rotation that writes into it is something to ask for.
 */}}
 {{- define "rapidmx.configKeyringBackend" -}}
 {{-   if eq (include "rrst.vaultManagedSecrets" .) "true" -}}
@@ -920,6 +923,8 @@ openbao
 {{-     else -}}
 none
 {{-     end -}}
+{{-   else if and .Values.configEncryption.existingSecret (not .Values.configEncryption.existingSecretRotation) -}}
+none
 {{-   else -}}
 kubernetes
 {{-   end -}}

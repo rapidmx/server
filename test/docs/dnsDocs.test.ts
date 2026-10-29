@@ -157,6 +157,15 @@ describe("the README", () => {
         expect(text).toMatch(/you must back up together with the database/);
     });
 
+    it("says a rotation is refused for a keyring Secret you manage unless it is asked for, and why", () => {
+        const text = README.slice(README.indexOf("configEncryption.existingSecret"));
+        expect(text).toMatch(/key rotation is refused for it/);
+        expect(text).toMatch(/configEncryption\.existingSecretRotation=true/);
+        const values = read("helm/values.yaml");
+        expect(values).toMatch(/existingSecretRotation: false/);
+        expect(values).toMatch(/would be undone when the tool puts/);
+    });
+
     it("says deleting a managed domain restores its root TXT values too, in the chart section", () => {
         const text = section("DNS Publishing") + section("Publishing DNS records with the installer");
         expect(text).toMatch(/or deleting the domain/);

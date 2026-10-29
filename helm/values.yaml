@@ -336,8 +336,14 @@ openbao:
 configEncryption:
   # Without OpenBao: a Secret you manage (GitOps, sealed secrets, ...) with the key keyring.json, holding the keyring as restapi's
   # parseConfigKeyring() reads it: { "keys": [ { "kid", "key", "createdAt" } ] }. The chart then renders no Secret of its own and mounts this
-  # one, and the server's key rotation (the Role below, if configEncryption.rbac.create) replaces it in place. Ignored with OpenBao.
+  # one. The server's key rotation is refused for it (no Role, config_encryption:keyring_store:backend "none"; the console says so): you rotate
+  # by adding the new key to the Secret's source yourself, and a rotation that writes into a Secret a tool owns would be undone when the tool puts
+  # its own copy back (Argo CD self-heal, an ExternalSecret from another provider), leaving everything it re-encrypted unreadable. Ignored with OpenBao.
   existingSecret: ''
+  # Lets the server's key rotation replace the Secret in existingSecret in place (the Role below, if configEncryption.rbac.create). Only for a
+  # Secret nothing else reconciles: a rotation adds a key, re-encrypts and retires the old one within a minute or two, so a tool that restores
+  # its own copy in that time loses the new key, and with it everything the rotation re-encrypted. No effect without existingSecret.
+  existingSecretRotation: false
   # How often External Secrets looks at the vault's keyring, which is how soon a key the server adds reaches the other pods.
   externalSecretRefreshInterval: 1m
   rbac:

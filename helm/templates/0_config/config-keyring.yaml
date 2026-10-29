@@ -39,12 +39,13 @@ data:
   keyring.json: {{ dict "keys" (list $key) | toJson | b64enc | quote }}
 {{-     end }}
 {{-   end }}
-{{-   if and .Values.configEncryption.rbac.create (include "rrst.serviceAccountName" .) }}
+{{-   if and .Values.configEncryption.rbac.create (or (not .Values.configEncryption.existingSecret) .Values.configEncryption.existingSecretRotation) (include "rrst.serviceAccountName" .) }}
 ---
 # What the server's key rotation needs of the Kubernetes API when the vault is off, and nothing more: it reads the keyring Secret and replaces it
 # (a PUT at the resourceVersion it read, so a concurrent change fails the write instead of being overwritten). get and update on that one Secret by
 # name, in this namespace (a Role, not a ClusterRole), bound to the chart's own ServiceAccount: the server stays read-only on every other resource.
 # With OpenBao the server writes the vault's KV path instead and holds no Kubernetes write right. Turn it off with configEncryption.rbac.create=false.
+# A Secret you manage (configEncryption.existingSecret) is not written to unless configEncryption.existingSecretRotation is set: no Role then.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:

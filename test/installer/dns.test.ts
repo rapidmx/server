@@ -433,6 +433,21 @@ describe.skipIf(!bashAvailable)("single_node_install.sh: DNS publishing", () => 
             expect(r.read("cloudflare-config.log")).toContain(`Authorization: Bearer ${TOKEN}`);
         });
 
+        it("asks over IPv4, which is how the single-stack cluster reaches Cloudflare, so a token restricted to the server's IPv4 address is accepted", () => {
+            const r = dns(`DNS_ZONE=example.com; loadDnsCredentials; cloudflareZoneId example.com`, { CF_API_TOKEN: TOKEN }, files({ "cloudflare.json": CLOUDFLARE_FOUND }));
+            expect(r.status, r.stderr + r.stdout).toBe(0);
+            expect(r.read("curl.log")).toMatch(/^-4 /m);
+        });
+
+        it("does not blame the token's permissions when Cloudflare refuses its client address", () => {
+            const location = JSON.stringify({ success: false, errors: [{ code: 9109, message: "Cannot use the access token from location: 2001:db8::1" }], result: null });
+            const r = dns(`DNS_ZONE=example.com; loadDnsCredentials; cloudflareZoneId example.com`, { CF_API_TOKEN: TOKEN }, files({ "cloudflare.json": location }));
+            expect(r.status).toBe(1);
+            expect(r.stdout + r.stderr).toContain("Cannot use the access token from location");
+            expect(r.stdout + r.stderr).toContain("restricted by client address");
+            expect(r.stdout + r.stderr).not.toContain("Zone:DNS:Edit");
+        });
+
         it("fails when Cloudflare has no such zone, and says Cloudflare's own reason when it refuses the token", () => {
             const none = dns(`DNS_ZONE=example.com; loadDnsCredentials; cloudflareZoneId example.com`, { CF_API_TOKEN: TOKEN }, files({ "cloudflare.json": CLOUDFLARE_EMPTY }));
             // 3: no such zone, which prepareDns walks past; 1 is any other failure.
@@ -628,6 +643,87 @@ describe.skipIf(!bashAvailable)("single_node_install.sh: DNS publishing", () => 
             const r = dns(`DNS_PROVIDER=google; DNS_ZONE=example.com; GOOGLE_APPLICATION_CREDENTIALS="$WORK/key.json"; export GOOGLE_APPLICATION_CREDENTIALS; loadDnsCredentials; createDnsBootstrapSecret`, { EXTERNAL_DNS_GOOGLE_PROJECT: "my-project-123" }, files({ "key.json": key }));
             const secret = applied(r).find((d) => d?.kind === "Secret");
             expect(JSON.parse(Buffer.from(secret.data.serviceAccountJson, "base64").toString())).toEqual(JSON.parse(key));
+        });
+    });
+
+    describe("requireDnsControllerImage", () => {
+        it("stops the install before anything is installed or any credential saved when the controller's release is named by neither tag nor digest", () => {
+            const r = dns("requireDnsControllerImage; echo continued");
+            expect(r.status).toBe(1);
+            expect(r.stdout).toContain("DNS_CONTROLLER_TAG");
+            expect(r.stdout).not.toContain("continued");
+            expect(kubectlCalls(r)).toEqual([]);
+        });
+
+        it("goes on with a tag, a digest, or no provider", () => {
+            expect(dns("requireDnsControllerImage; echo continued", { DNS_CONTROLLER_TAG: "0.1.0" }).stdout).toContain("continued");
+            expect(dns("requireDnsControllerImage; echo continued", { DNS_CONTROLLER_DIGEST: "sha256:" + "a".repeat(64) }).stdout).toContain("continued");
+            expect(dns('DNS_PROVIDER=""; requireDnsControllerImage; echo continued').stdout).toContain("continued");
+        });
+
+        it("runs before the credentials are checked and before k3s and the Secret are in place", () => {
+            const script = fs.readFileSync(SCRIPT, "utf8").replace(/\r\n/g, "\n");
+            const required = script.indexOf("\nrequireDnsControllerImage\nprepareDns\n");
+            expect(required).toBeGreaterThan(0);
+            expect(required).toBeLessThan(script.indexOf('run_step "Updating system packages"'));
+        });
+    });
+
+    describe("forgetDnsBootstrapSecret", () => {
+        it("deletes the Secret with the credentials when the release could not be installed, so no DNS token stays behind in the namespace", () => {
+            const r = dns(`DNS_ZONE=example.com; loadDnsCredentials; createDnsBootstrapSecret >/dev/null; forgetDnsBootstrapSecret`, { CF_API_TOKEN: TOKEN });
+            expect(r.status, r.stderr + r.stdout).toBe(0);
+            expect(kubectlCalls(r)).toContain("-n rapidmx delete secret rapidmx-server-dns-bootstrap --ignore-not-found");
+            expect(r.stdout).toContain("was deleted");
+            expect(r.stdout).not.toContain(TOKEN);
+        });
+
+        it("has nothing to delete when no Secret was made in this run", () => {
+            const r = dns("forgetDnsBootstrapSecret");
+            expect(r.status).toBe(0);
+            expect(kubectlCalls(r).join("\n")).not.toContain("delete secret");
+        });
+
+        it("says how to delete it when it can't", () => {
+            const r = dns('DNS_SECRET_APPLIED_AT=2026-10-28T00:00:00Z; kubectl() { echo "$*" >> "$WORK/kubectl.log"; return 1; }; forgetDnsBootstrapSecret');
+            expect(r.stdout).toContain("kubectl -n rapidmx delete secret rapidmx-server-dns-bootstrap");
+        });
+
+        it("is not left to the two helm failures: it is the script's exit that deletes it", () => {
+            const script = fs.readFileSync(SCRIPT, "utf8").replace(/\r\n/g, "\n");
+            expect(script).toMatch(/\ntrap exitCleanup EXIT\n/);
+            // The signals keep the plain cleanup: the script goes on after them, and must still have its Secret.
+            expect(script).toMatch(/\ntrap cleanup INT TERM\n/);
+        });
+    });
+
+    describe("exitCleanup", () => {
+        const DELETE = "-n rapidmx delete secret rapidmx-server-dns-bootstrap --ignore-not-found";
+
+        it("deletes the Secret when the script exits after it was made and before finishDnsBootstrap, whichever step failed (a Gateway policy, nginx, the keyring Secret)", () => {
+            const r = dns(`DNS_ZONE=example.com; loadDnsCredentials; createDnsBootstrapSecret >/dev/null; trap exitCleanup EXIT; echo "There was a problem configuring the Gateway"; exit 1`, { CF_API_TOKEN: TOKEN });
+            expect(r.status).toBe(1);
+            expect(kubectlCalls(r)).toContain(DELETE);
+            expect(r.stdout).toContain("was deleted");
+            expect(r.stdout).not.toContain(TOKEN);
+        });
+
+        it("deletes it when the script ends with an error before any other step too, and still runs cleanup", () => {
+            const r = dns(`DNS_ZONE=example.com; loadDnsCredentials; createDnsBootstrapSecret >/dev/null; cleanup() { echo cleaned > "$WORK/cleaned"; }; trap exitCleanup EXIT; exit 2`, { CF_API_TOKEN: TOKEN });
+            expect(r.status).toBe(2);
+            expect(kubectlCalls(r)).toContain(DELETE);
+            expect(r.read("cleaned")).toContain("cleaned");
+        });
+
+        it("leaves the Secret to finishDnsBootstrap once that has it, which keeps it on purpose when the server's outcome is unknown", () => {
+            const r = dns(`DNS_ZONE=example.com; loadDnsCredentials; createDnsBootstrapSecret >/dev/null; finishDnsBootstrap >/dev/null; trap exitCleanup EXIT; exit 0`, { CF_API_TOKEN: TOKEN }, files({ "secret-rapidmx-server-dns-bootstrap": "" }));
+            expect(kubectlCalls(r)).not.toContain(DELETE);
+        });
+
+        it("does nothing for a run that made no Secret", () => {
+            const r = dns("trap exitCleanup EXIT; exit 1");
+            expect(r.status).toBe(1);
+            expect(kubectlCalls(r).join("\n")).not.toContain("delete secret");
         });
     });
 
@@ -1184,6 +1280,22 @@ describe.skipIf(!bashAvailable)("single_node_install.sh: DNS publishing", () => 
             expect(r.stdout).toContain("have been removed");
             expect(r.stdout).not.toMatch(/still answer/);
             expect(r.read("slept.log")).toBe("");
+        });
+
+        it("waits for an MX or SRV record as it does for an address: its target has spaces in it, which must not split the pair", () => {
+            // Only the MX answers, as when a provider's sets hold nothing else: it is still the DNSEndpoint's own value, so the wait goes on to the end.
+            const mx = dns(`dnsLookup() { case "$1 $2" in "example.com MX") echo "10 mail.example.com.";; esac; }; sleep() { echo slept >> "$WORK/slept.log"; }; uninstallDns rapidmx false`, {}, world());
+            expect(mx.status, mx.stderr + mx.stdout).toBe(0);
+            expect(mx.stdout).toMatch(/still answer with what RapidMX published: example\.com/);
+            expect(mx.stdout).not.toContain("have been removed");
+
+            // An SRV record in a set of its own.
+            const srv = dns(
+                `dnsLookup() { case "$1 $2" in "_imaps._tcp.example.com SRV") echo "0 0 993 mail.example.com.";; esac; }; sleep() { :; }; uninstallDns rapidmx false`,
+                {},
+                world({ rows: "rapidmx-server-domain-srv|example.com|_imaps._tcp.example.com=SRV=0 0 993 mail.example.com,;|" }),
+            );
+            expect(srv.stdout).toMatch(/still answer with what RapidMX published: _imaps\._tcp\.example\.com/);
         });
 
         it("compares an answer with a target without regard to case, a trailing dot or spacing", () => {
