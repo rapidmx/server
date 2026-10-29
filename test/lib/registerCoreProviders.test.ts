@@ -228,7 +228,7 @@ describe("worker.ts/worker.mongo.ts/worker.sql.ts registration drift guard", () 
         }
     });
 
-    it("seeds the installation before the server listens: an InstallationServer that runs seedInstallation with the entry point's own datastore classes", () => {
+    it("prepares the installation before the server listens: an InstallationServer that runs prepareInstallation with the entry point's own datastore classes", () => {
         const classes: Record<string, string> = {
             "src/worker.ts": "MONGO_INSTALLATION",
             "src/worker.mongo.ts": "MONGO_INSTALLATION",
@@ -237,12 +237,12 @@ describe("worker.ts/worker.mongo.ts/worker.sql.ts registration drift guard", () 
         for (const file of files) {
             const source = fs.readFileSync(file, "utf-8");
             expect(source, file).toMatch(/import\s*\{\s*InstallationServer\s*\}\s*from\s*"\.\/lib\/InstallationServer\.js"/);
-            expect(source, file).toMatch(/import\s*\{\s*seedInstallation\s*\}\s*from\s*"\.\/lib\/seedInstallation\.js"/);
+            expect(source, file).toMatch(/import\s*\{\s*prepareInstallation\s*\}\s*from\s*"\.\/lib\/prepareInstallation\.js"/);
             // The only Server this process builds, so there is no listening server that skipped it.
             expect(source.match(/new InstallationServer\(/g) ?? [], file).toHaveLength(1);
             expect(source, file).not.toMatch(/new Server\(/);
-            expect(source.match(/seedInstallation\(objectFactory, config, logger, /g) ?? [], file).toHaveLength(1);
-            expect(source, file).toContain(`seedInstallation(objectFactory, config, logger, ${classes[file]})`);
+            expect(source.match(/prepareInstallation\(objectFactory, config, logger, /g) ?? [], file).toHaveLength(1);
+            expect(source, file).toContain(`prepareInstallation(objectFactory, config, logger, ${classes[file]},`);
         }
     });
 
