@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.48] - 2026-11-05
+
+### Added
+- Added the RapidREST Claude Code plugin to the project settings
+
+### Changed
+- Upgrade @rapidrest/core to 6.1.0, @rapidrest/service-core to 2.5.1, @rapidrest/react to 2.3.0 and @rapidrest/cli to 3.0.1
+- Upgrade @rapidmx/web-client to ^0.38.1
+- Upgrade every other dependency to its latest release, keeping typescript on 6.x, keeping better-sqlite3 on 12.x for the Docker build
+- Pin the auth-server chart to 1.0.0
+- Record the auth-server pin and the dependency upgrades in the release notes
+- Install corepack globally before enabling it in CI, since the node:lts images no longer bundle it
+- Upgrade @rapidmx/restapi to ^0.37.0 and @rapidmx/web-client to ^0.39.0
+- Pin the postfix-bridge chart to 1.6.1 and the DNS controller image to 0.1.1
+- Record the pins and restapi's transport rule fix in the release notes and the README
+
 ## [1.0.0-beta.47] - 2026-10-29
 
 ### Added
@@ -1400,7 +1416,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed test from .dockerignore, fixing yarn build's lint step failing outright when the build context is missing the test directory its tsconfig.eslint.json requires
 - Removed docker-compose.mail.yml's partial server: service block, since include: only supports merging resources that don't already exist in the including file and hard-errors ("services.server conflicts with imported resource") on a Compose version newer than whatever this had only ever been tested against locally
 
-[Unreleased]: https://github.com/rapidmx/server/compare/v1.0.0-beta.47...HEAD
+[Unreleased]: https://github.com/rapidmx/server/compare/v1.0.0-beta.48...HEAD
+[1.0.0-beta.48]: https://github.com/rapidmx/server/compare/v1.0.0-beta.47...v1.0.0-beta.48
 [1.0.0-beta.47]: https://github.com/rapidmx/server/compare/v1.0.0-beta.46...v1.0.0-beta.47
 [1.0.0-beta.46]: https://github.com/rapidmx/server/compare/v1.0.0-beta.45...v1.0.0-beta.46
 [1.0.0-beta.45]: https://github.com/rapidmx/server/compare/v1.0.0-beta.44...v1.0.0-beta.45

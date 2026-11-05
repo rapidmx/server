@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v1.0.0-beta.48
+
 ### Changed
 
 - **The auth-server chart is pinned to 1.0.0**, its first stable release (from 1.0.0-beta.35; the chart's values are unchanged apart from the image tag).
