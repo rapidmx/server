@@ -5,7 +5,9 @@
 ### Changed
 
 - **The auth-server chart is pinned to 1.0.0**, its first stable release (from 1.0.0-beta.35; the chart's values are unchanged apart from the image tag).
-- **Dependencies upgraded:** `@rapidrest/core` 6.1.0, `@rapidrest/service-core` 2.5.1, `@rapidrest/react` 2.3.0, `@rapidrest/cli` 3.0.1 and `@rapidmx/web-client` 0.38.1, plus every other dependency to its latest release (TypeScript stays on 6.x and `better-sqlite3` on 12.x).
+- **The postfix-bridge chart is pinned to 1.6.1 and the DNS controller image to 0.1.1** (`dns.controller.image.tag`), both dependency-upgrade releases with no behaviour change.
+- **Transport rules can no longer be dodged with svg/math markup** (from `@rapidmx/restapi` 0.37.0): a phrase hidden behind an `<svg>`/`<math>` element that htmlparser2 12 mistook for an HTML integration point is now seen by `bodyContains`.
+- **Dependencies upgraded:** `@rapidrest/core` 6.1.0, `@rapidrest/service-core` 2.5.1, `@rapidrest/react` 2.3.0, `@rapidrest/cli` 3.0.1, `@rapidmx/restapi` 0.37.0 and `@rapidmx/web-client` 0.39.0, plus every other dependency to its latest release (TypeScript stays on 6.x and `better-sqlite3` on 12.x).
 
 ## v1.0.0-beta.47
 

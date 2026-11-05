@@ -392,7 +392,7 @@ dns:
     image:
       registry: ghcr.io
       repository: rapidmx/dns-controller
-      tag: '0.1.0'
+      tag: '0.1.1'
       digest: ''
     # How often the whole desired state is reconciled again while nothing changes.
     resyncMinutes: 10

@@ -39,6 +39,6 @@ dependencies:
     alias: authserver
   - name: postfix-bridge
     repository: oci://ghcr.io/rapidmx/charts
-    version: 1.6.0
+    version: 1.6.1
     condition: postfixBridge.create
     alias: postfixBridge
