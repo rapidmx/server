@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Changed
+
+- **The auth-server chart is pinned to 1.0.0**, its first stable release (from 1.0.0-beta.35; the chart's values are unchanged apart from the image tag).
+- **Dependencies upgraded:** `@rapidrest/core` 6.1.0, `@rapidrest/service-core` 2.5.1, `@rapidrest/react` 2.3.0, `@rapidrest/cli` 3.0.1 and `@rapidmx/web-client` 0.38.1, plus every other dependency to its latest release (TypeScript stays on 6.x and `better-sqlite3` on 12.x).
+
 ## v1.0.0-beta.47
 
 ### Added
