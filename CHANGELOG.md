@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.49] - 2026-11-05
+
+### Changed
+- Refresh node-forge to 1.4.3 through acme-client, fixing its high-severity advisories
+
+### Removed
+- Removed the audit ignore for npm advisory 1240912, which node-forge 1.4.3 fixes
+
 ## [1.0.0-beta.48] - 2026-11-05
 
 ### Added
@@ -1416,7 +1424,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed test from .dockerignore, fixing yarn build's lint step failing outright when the build context is missing the test directory its tsconfig.eslint.json requires
 - Removed docker-compose.mail.yml's partial server: service block, since include: only supports merging resources that don't already exist in the including file and hard-errors ("services.server conflicts with imported resource") on a Compose version newer than whatever this had only ever been tested against locally
 
-[Unreleased]: https://github.com/rapidmx/server/compare/v1.0.0-beta.48...HEAD
+[Unreleased]: https://github.com/rapidmx/server/compare/v1.0.0-beta.49...HEAD
+[1.0.0-beta.49]: https://github.com/rapidmx/server/compare/v1.0.0-beta.48...v1.0.0-beta.49
 [1.0.0-beta.48]: https://github.com/rapidmx/server/compare/v1.0.0-beta.47...v1.0.0-beta.48
 [1.0.0-beta.47]: https://github.com/rapidmx/server/compare/v1.0.0-beta.46...v1.0.0-beta.47
 [1.0.0-beta.46]: https://github.com/rapidmx/server/compare/v1.0.0-beta.45...v1.0.0-beta.46
