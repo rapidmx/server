@@ -1663,6 +1663,18 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@peculiar/asn1-cms@npm:3.1.0, @peculiar/asn1-cms@npm:^3.1.0":
+  version: 3.1.0
+  resolution: "@peculiar/asn1-cms@npm:3.1.0"
+  dependencies:
+    "@peculiar/asn1-x509": "npm:^3.1.0"
+    "@peculiar/asn1-x509-attr": "npm:^3.1.0"
+  peerDependencies:
+    "@peculiar/asn1-schema": ^3.1.0
+  checksum: 10c0/961502068b9708367c0a0a22ae31bf1e9c84aa1fb1a07d214c102f8b030f1eb9aa9136bcf574950db51c34dc07aca18f3ddf47ae6ecc38bef5b5d23d27157d80
+  languageName: node
+  linkType: hard
+
 "@peculiar/asn1-cms@npm:^2.6.0, @peculiar/asn1-cms@npm:^2.9.4":
   version: 2.9.4
   resolution: "@peculiar/asn1-cms@npm:2.9.4"
@@ -1685,6 +1697,17 @@ __metadata:
   peerDependencies:
     "@peculiar/asn1-schema": ^3.0.0
   checksum: 10c0/0f9b181483416f4e3cb808686eeb22a3f695b5fe6f1301943652973eeb1fbe76d1bd590438750e1401d75c0f6f564aeafd8cd413003b40dc56ebd44479aceea9
+  languageName: node
+  linkType: hard
+
+"@peculiar/asn1-csr@npm:3.1.0":
+  version: 3.1.0
+  resolution: "@peculiar/asn1-csr@npm:3.1.0"
+  dependencies:
+    "@peculiar/asn1-x509": "npm:^3.1.0"
+  peerDependencies:
+    "@peculiar/asn1-schema": ^3.1.0
+  checksum: 10c0/41818dcad8ea885765f8388bcafc0bea63e00b6cbdfca7ae7319a1bdde58190c7375f0f2279b6fc7db8550995f8284b9a2a703c5eb2e8b92213a75f46b9bf878
   languageName: node
   linkType: hard
 
@@ -1711,6 +1734,17 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@peculiar/asn1-ecc@npm:3.1.0":
+  version: 3.1.0
+  resolution: "@peculiar/asn1-ecc@npm:3.1.0"
+  dependencies:
+    "@peculiar/asn1-x509": "npm:^3.1.0"
+  peerDependencies:
+    "@peculiar/asn1-schema": ^3.1.0
+  checksum: 10c0/61aae82de9f865656ba5d528648ff92e93b32a02f98348b4b3916314a62d967fe248aec4a969212d3e9dc20b263f0bc5706051e673894ca527f7278508064d83
+  languageName: node
+  linkType: hard
+
 "@peculiar/asn1-ecc@npm:^2.6.0":
   version: 2.9.4
   resolution: "@peculiar/asn1-ecc@npm:2.9.4"
@@ -1731,6 +1765,19 @@ __metadata:
   peerDependencies:
     "@peculiar/asn1-schema": ^3.0.0
   checksum: 10c0/4a67a3f175c7d624d26e13037fa611fca15a9cb8d4272590eb57c0d33244d94924b2ed13ca177a87b10a4d2b2d75a47b500ab7862085149b122f3db9271ebf9f
+  languageName: node
+  linkType: hard
+
+"@peculiar/asn1-pfx@npm:3.1.0, @peculiar/asn1-pfx@npm:^3.1.0":
+  version: 3.1.0
+  resolution: "@peculiar/asn1-pfx@npm:3.1.0"
+  dependencies:
+    "@peculiar/asn1-cms": "npm:^3.1.0"
+    "@peculiar/asn1-pkcs8": "npm:^3.1.0"
+    "@peculiar/asn1-rsa": "npm:^3.1.0"
+  peerDependencies:
+    "@peculiar/asn1-schema": ^3.1.0
+  checksum: 10c0/a0c70631660eb046866eb157307ea6cd68a46f0e5d65cdcee7a0efdc5f26080532ee7d3c83fe51141a8cf5476b2f5e33eea13e20caf8f433134ea802401d7e94
   languageName: node
   linkType: hard
 
@@ -1761,6 +1808,17 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@peculiar/asn1-pkcs8@npm:3.1.0, @peculiar/asn1-pkcs8@npm:^3.1.0":
+  version: 3.1.0
+  resolution: "@peculiar/asn1-pkcs8@npm:3.1.0"
+  dependencies:
+    "@peculiar/asn1-x509": "npm:^3.1.0"
+  peerDependencies:
+    "@peculiar/asn1-schema": ^3.1.0
+  checksum: 10c0/97d24385f9649a961457096ae8d089f547fee8e8a43dbb7b31e46eeb877d07b2cc6a5485f106aacf3a7227ee434a4f2f88ce7dbe4fe5d5ac1e76b2af2e6222db
+  languageName: node
+  linkType: hard
+
 "@peculiar/asn1-pkcs8@npm:^2.9.4":
   version: 2.9.4
   resolution: "@peculiar/asn1-pkcs8@npm:2.9.4"
@@ -1781,6 +1839,21 @@ __metadata:
   peerDependencies:
     "@peculiar/asn1-schema": ^3.0.0
   checksum: 10c0/c2527ca9f7ecdc1d47339eb36bba58679d4fcbb1b420882393c177aa3f2b2faad1d4f88696558a09dfdcc9a8d2b21ac23310bc6dd97832d704331a779207bb3d
+  languageName: node
+  linkType: hard
+
+"@peculiar/asn1-pkcs9@npm:3.1.0":
+  version: 3.1.0
+  resolution: "@peculiar/asn1-pkcs9@npm:3.1.0"
+  dependencies:
+    "@peculiar/asn1-cms": "npm:^3.1.0"
+    "@peculiar/asn1-pfx": "npm:^3.1.0"
+    "@peculiar/asn1-pkcs8": "npm:^3.1.0"
+    "@peculiar/asn1-x509": "npm:^3.1.0"
+    "@peculiar/asn1-x509-attr": "npm:^3.1.0"
+  peerDependencies:
+    "@peculiar/asn1-schema": ^3.1.0
+  checksum: 10c0/a8eb0e777bc05354bff6a0feb013289a12886c99569a94827fd121eed14ce1e0747b843bf5d550e02df46e42bf1756a66808bdf58beb795a1eba7a42175c1d5e
   languageName: node
   linkType: hard
 
@@ -1815,6 +1888,17 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@peculiar/asn1-rsa@npm:3.1.0, @peculiar/asn1-rsa@npm:^3.1.0":
+  version: 3.1.0
+  resolution: "@peculiar/asn1-rsa@npm:3.1.0"
+  dependencies:
+    "@peculiar/asn1-x509": "npm:^3.1.0"
+  peerDependencies:
+    "@peculiar/asn1-schema": ^3.1.0
+  checksum: 10c0/aad8f3f1b2ba82b7fd93125d5a38efd238a4462963c45be627425b9996e8d2a338306a10805820d204932acc011d0639302fbe3ea17ba0b564772b31357765b4
+  languageName: node
+  linkType: hard
+
 "@peculiar/asn1-rsa@npm:^2.6.0, @peculiar/asn1-rsa@npm:^2.9.4":
   version: 2.9.4
   resolution: "@peculiar/asn1-rsa@npm:2.9.4"
@@ -1838,6 +1922,17 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@peculiar/asn1-schema@npm:3.1.0":
+  version: 3.1.0
+  resolution: "@peculiar/asn1-schema@npm:3.1.0"
+  dependencies:
+    "@peculiar/utils": "npm:^4.1.0"
+  peerDependencies:
+    asn1js: ^4.0.0
+  checksum: 10c0/f02e82185fc7f035d4a83891b36e13cb8e4ccaec229c001a38ff9c6a4b6abd00a25966dc2de7d9dc93ef5e4ecbb9a2a644a7a6ff7f3f1d3ad1657fe9b947910b
+  languageName: node
+  linkType: hard
+
 "@peculiar/asn1-schema@npm:^2.6.0, @peculiar/asn1-schema@npm:^2.9.4":
   version: 2.9.4
   resolution: "@peculiar/asn1-schema@npm:2.9.4"
@@ -1857,6 +1952,17 @@ __metadata:
   peerDependencies:
     asn1js: ^4.0.0
   checksum: 10c0/018bfbe4f9a1aabe3da746033044e5049c1f2eb0ad0c53bd71f1864257471c399391f193feaa40c6bb23b66896cb371750c2432c69732810a1d6f2b14ac05a42
+  languageName: node
+  linkType: hard
+
+"@peculiar/asn1-x509-attr@npm:3.1.0, @peculiar/asn1-x509-attr@npm:^3.1.0":
+  version: 3.1.0
+  resolution: "@peculiar/asn1-x509-attr@npm:3.1.0"
+  dependencies:
+    "@peculiar/asn1-x509": "npm:^3.1.0"
+  peerDependencies:
+    "@peculiar/asn1-schema": ^3.1.0
+  checksum: 10c0/c8a8eac9a2be2d3217698e3136aab88feac78466f390459631e6c1412265a88b6454a6c37afb781f8446f8424e9791049f4462322e9f3fbf18eb7a61ba3690e2
   languageName: node
   linkType: hard
 
@@ -1892,6 +1998,18 @@ __metadata:
   peerDependencies:
     "@peculiar/asn1-schema": ^3.0.0
   checksum: 10c0/69432ff5f0268898a3955fe79f09af94aa0dceec46283f572242ac0a2c1994e8fb591b578bfbfe4d0319378450315c4f94693c099b822ecc7f14330f177af10b
+  languageName: node
+  linkType: hard
+
+"@peculiar/asn1-x509@npm:3.1.0, @peculiar/asn1-x509@npm:^3.1.0":
+  version: 3.1.0
+  resolution: "@peculiar/asn1-x509@npm:3.1.0"
+  dependencies:
+    "@peculiar/utils": "npm:^4.1.0"
+  peerDependencies:
+    "@peculiar/asn1-schema": ^3.1.0
+    asn1js: ^4.0.0
+  checksum: 10c0/0715ec4ddd19398611f13370e78616e14a1a6d2e2aa7e7791d991fa1fd5ac30025b95fcf17084eed87651bb336c47554b9a77ee4be78572fd1f4074c68719c83
   languageName: node
   linkType: hard
 
@@ -10047,6 +10165,16 @@ __metadata:
   resolution: "server@workspace:."
   dependencies:
     "@aws-sdk/client-s3": "npm:^3.1162.0"
+    "@peculiar/asn1-cms": "npm:3.1.0"
+    "@peculiar/asn1-csr": "npm:3.1.0"
+    "@peculiar/asn1-ecc": "npm:3.1.0"
+    "@peculiar/asn1-pfx": "npm:3.1.0"
+    "@peculiar/asn1-pkcs8": "npm:3.1.0"
+    "@peculiar/asn1-pkcs9": "npm:3.1.0"
+    "@peculiar/asn1-rsa": "npm:3.1.0"
+    "@peculiar/asn1-schema": "npm:3.1.0"
+    "@peculiar/asn1-x509": "npm:3.1.0"
+    "@peculiar/asn1-x509-attr": "npm:3.1.0"
     "@rapidmx/restapi": "npm:^0.37.0"
     "@rapidmx/web-client": "npm:^0.39.0"
     "@rapidrest/cli": "npm:^3.0.1"
